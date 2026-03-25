@@ -33,6 +33,26 @@ The assistant works through a constrained pattern:
 
 ### Thresholding
 
+### Contrast Enhancement
+
+- `apply_clahe`
+  - target: one grayscale `Image` layer
+  - supports 2D and 3D image data
+  - creates a new output image layer
+  - adjustable parameters:
+    - `kernel_size`
+    - `clip_limit`
+    - `nbins`
+
+- `apply_clahe_batch`
+  - target: all open grayscale `Image` layers
+  - supports 2D and 3D image data
+  - creates one output image layer per source image
+  - adjustable parameters:
+    - `kernel_size`
+    - `clip_limit`
+    - `nbins`
+
 - `preview_threshold`
   - target: one `Image` layer
   - creates or updates a preview `Labels` layer
@@ -79,6 +99,7 @@ The assistant works through a constrained pattern:
 ## Layer Expectations
 
 - Threshold tools operate on `Image` layers.
+- CLAHE tools operate on grayscale `Image` layers.
 - Mask cleanup and measurement tools operate on `Labels` layers.
 - If no layer name is specified for a single-layer tool:
   - the selected compatible layer is preferred
@@ -93,6 +114,7 @@ Batch tools are intended for requests such as:
 - `batch`
 
 Current batch rules:
+- CLAHE batch iterates over all grayscale `Image` layers
 - threshold batch iterates over all `Image` layers
 - mask operation batch iterates over all `Labels` layers
 - measurement batch iterates over all `Labels` layers
@@ -108,6 +130,16 @@ Current batch rules:
   - `__assistant_threshold_preview__::<image_layer_name>`
 
 ### Threshold Output Layers
+
+### CLAHE Output Layers
+
+- default output:
+  - `<image_layer_name>_clahe`
+
+- if that name already exists:
+  - suffixes are appended, such as:
+    - `<image_layer_name>_clahe_01`
+    - `<image_layer_name>_clahe_02`
 
 - default output:
   - `<image_layer_name>_labels`

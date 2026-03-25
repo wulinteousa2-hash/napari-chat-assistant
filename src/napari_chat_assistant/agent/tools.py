@@ -28,6 +28,8 @@ ASSISTANT_TOOL_NAMES = {
     "list_layers",
     "inspect_selected_layer",
     "inspect_layer",
+    "apply_clahe",
+    "apply_clahe_batch",
     "preview_threshold",
     "apply_threshold",
     "preview_threshold_batch",
@@ -54,6 +56,28 @@ def normalize_int(value, default: int, minimum: int = 1, maximum: int = 1_000_00
     except Exception:
         out = int(default)
     return max(int(minimum), min(int(maximum), out))
+
+
+def normalize_float(value, default: float, minimum: float = 0.0, maximum: float = 1_000_000.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = float(default)
+    return max(float(minimum), min(float(maximum), out))
+
+
+def normalize_kernel_size(value, ndim: int | None = None):
+    if isinstance(value, (list, tuple)):
+        values = [normalize_int(v, 32, minimum=1, maximum=4096) for v in value]
+    else:
+        values = [normalize_int(value, 32, minimum=1, maximum=4096)]
+    if ndim is None:
+        return values[0] if len(values) == 1 else values
+    if len(values) == 1:
+        return tuple([values[0]] * ndim)
+    if len(values) < ndim:
+        return tuple((values + [values[-1]] * ndim)[:ndim])
+    return tuple(values[:ndim])
 
 
 def next_snapshot_name(viewer: napari.Viewer, base_name: str) -> str:
@@ -100,6 +124,8 @@ def assistant_system_prompt() -> str:
         "- list_layers: {}\n"
         '- inspect_selected_layer: {}\n'
         '- inspect_layer: {"layer_name": string}\n'
+        '- apply_clahe: {"layer_name": optional string, "kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
+        '- apply_clahe_batch: {"kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
         '- preview_threshold: {"layer_name": optional string, "polarity": "auto|bright|dim"}\n'
         '- apply_threshold: {"layer_name": optional string, "polarity": "auto|bright|dim"}\n'
         '- preview_threshold_batch: {"polarity": "auto|bright|dim"}\n'
@@ -111,6 +137,8 @@ def assistant_system_prompt() -> str:
         "- If the user is asking what exists or what is selected, use list_layers.\n"
         "- If the user asks about the selected layer's kind, properties, dimensions, dtype, or statistics, use inspect_selected_layer.\n"
         "- If the user asks about a specific named layer's kind, properties, dimensions, dtype, or statistics, use inspect_layer.\n"
+        "- If the user asks for CLAHE, adaptive histogram equalization, local contrast enhancement, or EM contrast enhancement, use apply_clahe or apply_clahe_batch.\n"
+        "- CLAHE parameters are kernel_size, clip_limit, and nbins.\n"
         "- If the user asks for all images, every image, batch, or multiple open images, prefer the batch tools.\n"
         "- If the user asks for thresholding or mask creation, use preview_threshold first unless they explicitly ask to apply.\n"
         "- If the user asks for measurement, area, volume, or object count on a mask, use measure_mask.\n"

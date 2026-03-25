@@ -4,7 +4,7 @@ schema_version: 0.1.0
 contributions:
   commands:
     - id: napari-chat-assistant.chat_panel
-      title: Chat Assistant Panel
+      title: Local Chat Assistant
       python_name: napari_chat_assistant.widgets.chat_widget:chat_widget
 
   widgets:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage as ndi
+from skimage import exposure
 from skimage.filters import threshold_otsu
 from skimage.morphology import ball, disk, remove_small_objects
 
@@ -92,3 +93,44 @@ def keep_largest_component(data) -> np.ndarray:
     largest_label = int(np.argmax(counts))
     largest = labeled == largest_label
     return _preserve_dtype(largest, data)
+
+
+def _normalize_image_to_unit_range(data) -> tuple[np.ndarray, float, float]:
+    arr = np.asarray(data)
+    finite = np.isfinite(arr)
+    if not finite.any():
+        raise ValueError("Input image has no finite values.")
+    arr_float = arr.astype(np.float32, copy=False)
+    min_value = float(arr_float[finite].min())
+    max_value = float(arr_float[finite].max())
+    if max_value <= min_value:
+        return np.zeros_like(arr_float, dtype=np.float32), min_value, max_value
+    normalized = (arr_float - min_value) / (max_value - min_value)
+    normalized = np.clip(normalized, 0.0, 1.0)
+    return normalized, min_value, max_value
+
+
+def _resolve_kernel_size(kernel_size, ndim: int):
+    if isinstance(kernel_size, (list, tuple)):
+        values = [max(1, int(v)) for v in kernel_size]
+        if len(values) == ndim:
+            return tuple(values)
+        if len(values) == 1:
+            return tuple(values * ndim)
+        if len(values) < ndim:
+            return tuple((values + [values[-1]] * ndim)[:ndim])
+        return tuple(values[:ndim])
+    value = max(1, int(kernel_size))
+    return tuple([value] * ndim)
+
+
+def apply_clahe(data, *, kernel_size=32, clip_limit: float = 0.01, nbins: int = 256) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.ndim not in (2, 3):
+        raise ValueError(f"CLAHE supports 2D and 3D grayscale images. Got ndim={arr.ndim}.")
+    normalized, _min_value, _max_value = _normalize_image_to_unit_range(arr)
+    kernel = _resolve_kernel_size(kernel_size, arr.ndim)
+    clip = max(1e-6, float(clip_limit))
+    bins = max(2, int(nbins))
+    result = exposure.equalize_adapthist(normalized, kernel_size=kernel, clip_limit=clip, nbins=bins)
+    return result.astype(np.float32, copy=False)

@@ -13,8 +13,17 @@ from .context import (
     layer_summary,
     mask_measurement_summary,
 )
-from .image_ops import auto_threshold_mask, mask_statistics
-from .tools import TOOL_OPS, next_output_name, next_snapshot_name, normalize_int, normalize_polarity, save_mask_snapshot
+from .image_ops import apply_clahe, auto_threshold_mask, mask_statistics
+from .tools import (
+    TOOL_OPS,
+    next_output_name,
+    next_snapshot_name,
+    normalize_float,
+    normalize_int,
+    normalize_kernel_size,
+    normalize_polarity,
+    save_mask_snapshot,
+)
 
 
 def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> dict:
@@ -31,6 +40,55 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
         if layer is None:
             return {"mode": "immediate", "message": f"No layer found with name [{args.get('layer_name', '')}]."}
         return {"mode": "immediate", "message": layer_detail_summary(layer)}
+
+    if tool_name == "apply_clahe":
+        image_layer = find_image_layer(viewer, args.get("layer_name"))
+        if image_layer is None:
+            return {"mode": "immediate", "message": "No valid image layer available for CLAHE."}
+        if getattr(image_layer, "rgb", False):
+            return {"mode": "immediate", "message": "CLAHE currently supports grayscale 2D/3D image layers, not RGB layers."}
+        safe_kernel = normalize_kernel_size(args.get("kernel_size", 32), ndim=np.asarray(image_layer.data).ndim)
+        safe_clip = normalize_float(args.get("clip_limit", 0.01), default=0.01, minimum=1e-6, maximum=10.0)
+        safe_nbins = normalize_int(args.get("nbins", 256), default=256, minimum=2, maximum=65536)
+        return {
+            "mode": "worker",
+            "job": {
+                "kind": "apply_clahe",
+                "layer_name": image_layer.name,
+                "output_name": next_output_name(viewer, f"{image_layer.name}_clahe"),
+                "kernel_size": safe_kernel,
+                "clip_limit": safe_clip,
+                "nbins": safe_nbins,
+                "data": np.asarray(image_layer.data).copy(),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        }
+
+    if tool_name == "apply_clahe_batch":
+        image_layers = find_all_image_layers(viewer)
+        if not image_layers:
+            return {"mode": "immediate", "message": "No image layers available for batch CLAHE."}
+        items = []
+        for layer in image_layers:
+            if getattr(layer, "rgb", False):
+                continue
+            layer_data = np.asarray(layer.data)
+            items.append(
+                {
+                    "layer_name": layer.name,
+                    "output_name": next_output_name(viewer, f"{layer.name}_clahe"),
+                    "kernel_size": normalize_kernel_size(args.get("kernel_size", 32), ndim=layer_data.ndim),
+                    "clip_limit": normalize_float(args.get("clip_limit", 0.01), default=0.01, minimum=1e-6, maximum=10.0),
+                    "nbins": normalize_int(args.get("nbins", 256), default=256, minimum=2, maximum=65536),
+                    "data": layer_data.copy(),
+                    "scale": tuple(layer.scale),
+                    "translate": tuple(layer.translate),
+                }
+            )
+        if not items:
+            return {"mode": "immediate", "message": "No grayscale 2D/3D image layers available for batch CLAHE."}
+        return {"mode": "worker", "job": {"kind": "apply_clahe_batch", "items": items}}
 
     if tool_name in ("preview_threshold", "apply_threshold"):
         image_layer = find_image_layer(viewer, args.get("layer_name"))
@@ -148,6 +206,27 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
 
 def run_tool_job(job: dict) -> dict:
     kind = job["kind"]
+    if kind == "apply_clahe":
+        result = apply_clahe(
+            job["data"],
+            kernel_size=job["kernel_size"],
+            clip_limit=job["clip_limit"],
+            nbins=job["nbins"],
+        )
+        return {**job, "kind": kind, "result": result}
+
+    if kind == "apply_clahe_batch":
+        results = []
+        for item in job["items"]:
+            result = apply_clahe(
+                item["data"],
+                kernel_size=item["kernel_size"],
+                clip_limit=item["clip_limit"],
+                nbins=item["nbins"],
+            )
+            results.append({**item, "result": result})
+        return {"kind": kind, "items": results}
+
     if kind in {"preview_threshold", "apply_threshold"}:
         threshold_value, labels = auto_threshold_mask(job["data"], polarity=job["polarity"])
         return {**job, "kind": kind, "threshold_value": threshold_value, "labels": labels, "stats": mask_statistics(labels)}
@@ -177,6 +256,33 @@ def run_tool_job(job: dict) -> dict:
 
 def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
     kind = result["kind"]
+    if kind == "apply_clahe":
+        viewer.add_image(
+            result["result"],
+            name=result["output_name"],
+            scale=result["scale"],
+            translate=result["translate"],
+        )
+        return (
+            f"Applied CLAHE to [{result['layer_name']}] as [{result['output_name']}]. "
+            f"kernel_size={result['kernel_size']} clip_limit={result['clip_limit']:.6g} nbins={result['nbins']}."
+        )
+
+    if kind == "apply_clahe_batch":
+        lines = []
+        for item in result["items"]:
+            viewer.add_image(
+                item["result"],
+                name=item["output_name"],
+                scale=item["scale"],
+                translate=item["translate"],
+            )
+            lines.append(
+                f"[{item['layer_name']}] -> [{item['output_name']}] "
+                f"kernel_size={item['kernel_size']} clip_limit={item['clip_limit']:.6g} nbins={item['nbins']}."
+            )
+        return f"Applied CLAHE to {len(result['items'])} image layers.\n" + "\n".join(lines)
+
     if kind == "preview_threshold":
         preview_name = "__assistant_threshold_preview__"
         labels = result["labels"]

@@ -29,6 +29,16 @@ from qtpy.QtWidgets import (
 from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, pull_ollama_model_events, unload_ollama_model
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.agent.prompt_library import (
+    load_prompt_library,
+    merged_prompt_records,
+    prompt_library_path,
+    remove_saved_prompt,
+    save_prompt_library,
+    set_saved_prompt_pinned,
+    upsert_recent_prompt,
+    upsert_saved_prompt,
+)
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
 
 
@@ -116,31 +126,30 @@ def chat_widget(napari_viewer=None) -> QWidget:
     context_layout.addWidget(context_btn_row)
     left_layout.addWidget(context_group, 1)
 
-    examples_group = QGroupBox("Example Prompts")
-    examples_layout = QVBoxLayout(examples_group)
-    examples_hint = QLabel("Click an example to load it into the prompt box.")
-    examples_hint.setWordWrap(True)
-    examples_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
-    examples_list = QListWidget()
-    examples_list.addItems(
-        [
-            "show me my layers",
-            "inspect the selected layer",
-            "preview threshold for the selected image",
-            "apply threshold for dim objects",
-            "measure the current mask",
-            "give me QtConsole code to print the selected layer name and shape",
-        ]
-    )
-    examples_layout.addWidget(examples_hint)
-    examples_layout.addWidget(examples_list)
-    left_layout.addWidget(examples_group, 1)
+    prompt_library_group = QGroupBox("Prompt Library")
+    prompt_library_layout = QVBoxLayout(prompt_library_group)
+    prompt_library_hint = QLabel("Click to load. Double-click to run.")
+    prompt_library_hint.setWordWrap(True)
+    prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    prompt_library_list = QListWidget()
+    prompt_library_btn_row = QWidget()
+    prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
+    save_prompt_btn = QPushButton("Save Current")
+    pin_prompt_btn = QPushButton("Pin/Unpin")
+    delete_prompt_btn = QPushButton("Delete Saved")
+    prompt_library_btn_layout.addWidget(save_prompt_btn)
+    prompt_library_btn_layout.addWidget(pin_prompt_btn)
+    prompt_library_btn_layout.addWidget(delete_prompt_btn)
+    prompt_library_layout.addWidget(prompt_library_hint)
+    prompt_library_layout.addWidget(prompt_library_list)
+    prompt_library_layout.addWidget(prompt_library_btn_row)
+    left_layout.addWidget(prompt_library_group, 2)
 
     log_group = QGroupBox("Action Log")
     log_layout = QVBoxLayout(log_group)
     action_log = QListWidget()
     log_layout.addWidget(action_log)
-    left_layout.addWidget(log_group, 1)
+    left_layout.addWidget(log_group, 0)
 
     transcript_group = QGroupBox("Chat")
     transcript_layout = QVBoxLayout(transcript_group)
@@ -190,6 +199,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     active_workers: list[object] = []
     available_models: list[str] = []
     pending_code = {"code": "", "message": ""}
+    prompt_library_state = load_prompt_library()
     generation_defaults = {
         "temperature": 1.0,
         "top_k": 20,
@@ -231,6 +241,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def append_log(message: str):
         action_log.addItem(message)
         action_log.scrollToBottom()
+
+    def selected_prompt_record() -> dict | None:
+        item = prompt_library_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.UserRole)
 
     def format_worker_error(*args) -> str:
         for value in args:
@@ -313,6 +329,85 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 model_combo.addItem(current_text)
             model_combo.setCurrentText(current_text)
         model_combo.blockSignals(False)
+
+    def refresh_prompt_library():
+        prompt_library_list.clear()
+        for record in merged_prompt_records(prompt_library_state):
+            title = str(record.get("title", "")).strip() or "Untitled Prompt"
+            source = str(record.get("source", "built_in"))
+            if record.get("pinned", False):
+                badge = '<span style="color:#fbbc05; font-weight:600;">[Pinned]</span>'
+            elif source == "saved":
+                badge = '<span style="color:#34a853; font-weight:600;">[Saved]</span>'
+            elif source == "recent":
+                badge = '<span style="color:#4285f4; font-weight:600;">[Recent]</span>'
+            else:
+                badge = '<span style="color:#9aa0a6; font-weight:600;">[Built-in]</span>'
+            short_title = title if len(title) <= 72 else f"{title[:69].rstrip()}..."
+            title_html = f'<span style="color:#e5eefc;"> {short_title}</span>'
+            label = f"{badge}{title_html}"
+            item = QListWidgetItem()
+            item.setText("")
+            item.setData(Qt.UserRole, record)
+            prompt_library_list.addItem(item)
+            widget = QLabel()
+            widget.setTextFormat(Qt.RichText)
+            widget.setWordWrap(False)
+            widget.setText(label)
+            widget.setStyleSheet("QLabel { padding: 0px; margin: 0px; }")
+            widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            widget.setFixedHeight(18)
+            item.setSizeHint(widget.sizeHint())
+            prompt_library_list.setItemWidget(item, widget)
+
+    def persist_prompt_library():
+        save_prompt_library(prompt_library_state)
+
+    def save_current_prompt(*_args):
+        prompt_text = prompt.toPlainText().strip()
+        if not prompt_text:
+            set_status("Status: no prompt text to save", ok=False)
+            append_log("Save prompt skipped: prompt box is empty.")
+            return
+        upsert_saved_prompt(prompt_library_state, prompt_text)
+        persist_prompt_library()
+        refresh_prompt_library()
+        set_status("Status: prompt saved to library", ok=True)
+        append_log(f"Saved prompt to library: {prompt_text[:80]}")
+
+    def toggle_pin_selected_prompt(*_args):
+        record = selected_prompt_record()
+        if not record:
+            set_status("Status: no prompt selected", ok=False)
+            append_log("Pin prompt skipped: no prompt selected.")
+            return
+        if record.get("source") == "built_in":
+            upsert_saved_prompt(prompt_library_state, record.get("prompt", ""), pin=True)
+            append_log("Pinned built-in prompt into saved library.")
+        else:
+            new_pinned = not bool(record.get("pinned", False))
+            upsert_saved_prompt(prompt_library_state, record.get("prompt", ""), pin=new_pinned)
+            set_saved_prompt_pinned(prompt_library_state, record.get("prompt", ""), new_pinned)
+            append_log(f"{'Pinned' if new_pinned else 'Unpinned'} saved prompt.")
+        persist_prompt_library()
+        refresh_prompt_library()
+        set_status("Status: prompt library updated", ok=True)
+
+    def delete_selected_prompt(*_args):
+        record = selected_prompt_record()
+        if not record:
+            set_status("Status: no prompt selected", ok=False)
+            append_log("Delete prompt skipped: no prompt selected.")
+            return
+        if record.get("source") != "saved":
+            set_status("Status: only saved prompts can be deleted", ok=False)
+            append_log("Delete prompt skipped: selected prompt is not a saved prompt.")
+            return
+        remove_saved_prompt(prompt_library_state, record.get("prompt", ""))
+        persist_prompt_library()
+        refresh_prompt_library()
+        set_status("Status: saved prompt deleted", ok=True)
+        append_log("Deleted saved prompt from library.")
 
     def model_is_available(requested_name: str, model_names: list[str]) -> bool:
         requested = str(requested_name or "").strip()
@@ -507,6 +602,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
         text = prompt.toPlainText().strip()
         if not text:
             return
+        upsert_recent_prompt(prompt_library_state, text)
+        persist_prompt_library()
+        refresh_prompt_library()
         append_chat_message("user", text)
         prompt.clear()
         append_log(f"Queued message: {text}")
@@ -688,11 +786,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: approved code executed", ok=True)
         set_pending_code()
 
-    def load_example_prompt(item: QListWidgetItem):
-        prompt.setPlainText(item.text())
+    def load_library_prompt(item: QListWidgetItem):
+        record = item.data(Qt.UserRole) or {}
+        prompt.setPlainText(str(record.get("prompt", "")).strip())
         prompt.setFocus()
-        append_log(f"Loaded example prompt: {item.text()}")
-        set_status("Status: example prompt loaded", ok=None)
+        append_log(f"Loaded prompt from library: {record.get('title', 'Untitled Prompt')}")
+        set_status("Status: prompt loaded from library", ok=None)
+
+    def send_library_prompt(item: QListWidgetItem):
+        record = item.data(Qt.UserRole) or {}
+        prompt_text = str(record.get("prompt", "")).strip()
+        if not prompt_text:
+            set_status("Status: selected prompt is empty", ok=False)
+            append_log("Send prompt skipped: selected library prompt is empty.")
+            return
+        prompt.setPlainText(prompt_text)
+        append_log(f"Sending prompt directly from library: {record.get('title', 'Untitled Prompt')}")
+        set_status("Status: sending prompt from library", ok=None)
+        send_message()
 
     test_btn.clicked.connect(test_connection)
     save_btn.clicked.connect(save_settings)
@@ -701,12 +812,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_code_btn.clicked.connect(run_pending_code)
     copy_code_btn.clicked.connect(copy_pending_code)
     discard_code_btn.clicked.connect(discard_pending_code)
-    examples_list.itemClicked.connect(load_example_prompt)
+    prompt_library_list.itemClicked.connect(load_library_prompt)
+    prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
+    save_prompt_btn.clicked.connect(save_current_prompt)
+    pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
+    delete_prompt_btn.clicked.connect(delete_selected_prompt)
     prompt.sendRequested.connect(send_message)
     refresh_btn.clicked.connect(refresh_context)
 
     refresh_context()
     set_pending_code()
     refresh_models()
+    refresh_prompt_library()
+    append_log(f"Prompt library path: {prompt_library_path()}")
     append_log("Assistant panel initialized.")
     return root
