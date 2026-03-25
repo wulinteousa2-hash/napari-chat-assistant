@@ -2,8 +2,7 @@
 
 Local Ollama-powered chat assistant for napari image-analysis workflows.
 
-`napari-chat-assistant` adds a dock widget to napari that stays aware of the current viewer, selected layer, and available layers. It can answer questions about the session, run a controlled set of built-in image-analysis actions, and generate Python code for napari when needed.
-
+`napari-chat-assistant` adds a dock widget inside napari that understands your current viewer session (layers, selections, and image properties). It lets you ask questions, run common image-analysis tools, and generate napari Python code directly from the interface.
 ## Overview
 
 This plugin is designed for local interactive work inside napari.
@@ -19,15 +18,16 @@ Current capabilities:
 
 The current default model is:
 - `qwen3.5`
+- qwen3.5 is the current default because it has performed better in this plugin than the previous qwen2.5 default.
 
 ## Why This Plugin
 
-Most chat interfaces are detached from the napari viewer. This plugin keeps the assistant inside napari and grounds responses in the current session.
+Most chat assistants run outside napari and do not know what is currently loaded in your viewer. This plugin keeps the assistant inside napari and grounded in your active session.
 
 That means the assistant can:
-- see the current layers
-- see which layer is selected
-- distinguish common napari layer kinds such as `Image`, `Labels`, `Points`, and `Shapes`
+access the current layer list
+detect which layer is selected
+recognize common napari layer types such as Image, Labels, Points, and Shapes
 - report layer dimensions, dtype, visibility, and related properties
 - run explicit image-analysis actions rather than only talking about them
 
@@ -61,7 +61,7 @@ When the request is not covered by a built-in tool, the assistant can generate n
 
 There are two ways to use that code:
 - `Run Pending Code`
-  Executes the pending code inside the plugin.
+  Run Pending Code executes the generated code directly inside the plugin.
 - `Copy Pending Code`
   Copies the pending code to the clipboard so you can paste it into the napari QtConsole.
 
@@ -71,7 +71,8 @@ This is useful when you want:
 - code to run in the napari QtConsole instead of through the plugin
 
 ## Requirements
-
+- Hardware
+  - Tested on an NVIDIA DGX Spark workstation
 - Python 3.9+
 - napari
 - Ollama installed on the machine
@@ -83,7 +84,7 @@ The plugin package is self-contained for napari, but it does not bundle the Olla
 
 ### Step 1. Install Ollama Provider
 
-Install Ollama on the machine first.
+Install Ollama locally on the same machine running napari.
 
 Start the local Ollama server:
 
@@ -108,7 +109,7 @@ ollama pull qwen3.5:27b
 Clone the repository and install the plugin:
 
 ```bash
-git clone https://github.com/wteox2/napari-chat-assistant.git
+git clone https://github.com/wulinteousa2-hash/napari-chat-assistant.git
 cd napari-chat-assistant
 pip install -e .
 ```
@@ -125,15 +126,23 @@ pip install -e .
 You do not need to rely only on free-form prompts. The plugin is strongest when you ask for concrete napari actions.
 
 Examples:
-- `show me my layers`
-- `inspect the selected layer`
-- `inspect layer LV-nerve`
-- `preview threshold for the selected image`
-- `apply threshold for dim objects`
-- `measure the current mask`
-- `write napari code to duplicate the selected layer`
-- `give me QtConsole code to print the selected layer shape`
+Layer inspection:
+- `list all layers in the current viewer`
+- `inspect the selected layer properties`
+- `inspect layer LV-nerve and report its shape and dtype`
 
+Segmentation tools:
+- `preview a threshold mask for the selected image layer`
+- `apply a threshold optimized for dim objects on the selected image`
+- `measure connected components in the current mask layer`
+
+Spatial calibration:
+- `set the pixel size of the selected layer to 0.11 µm per pixel`
+
+Code generation:
+- `write napari code to duplicate the selected layer`
+- `generate QtConsole code to print the selected layer shape`
+- 
 ## UI Overview
 
 ### Model Connection
@@ -171,13 +180,12 @@ Examples:
 
 ## How It Works
 
-The assistant is not a fully unrestricted chatbot.
+The assistant is designed to operate within controlled napari workflows rather than as a general-purpose chatbot.
 
 The current strategy is:
 1. collect structured napari viewer context
 2. send that context and the user request to a local Ollama model
-3. let the model return one JSON response
-4. interpret that response as either:
+3. the model returns a structured JSON response that specifies either:
    - a normal reply
    - a built-in tool call
    - generated Python code
@@ -195,13 +203,13 @@ Good starting choices:
 
 ## Current Limitations
 
-- still an early-stage plugin
+- still under active development
 - model output can still be inconsistent, especially for generated code
 - not all requests map cleanly to built-in tools yet
 - generated code can still fail if the model invents incorrect napari APIs
-- no multi-step planning loop yet
+- no multi-step task planning yet (complex workflows may require several prompts)
 - no image attachment or multimodal input pipeline yet
-- large 2D/3D volumes are not heavily optimized yet
+- performance optimization for very large 2D/3D datasets is still in progress
 
 For now, the most reliable path is:
 - use built-in tools for common layer inspection and mask/image actions
