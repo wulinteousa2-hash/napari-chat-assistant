@@ -1,6 +1,6 @@
 name: napari-chat-assistant
 schema_version: 0.1.0
-
+visibility: public
 contributions:
   commands:
     - id: napari-chat-assistant.chat_panel
