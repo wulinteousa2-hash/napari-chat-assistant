@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-chat-assistant"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local chat assistant scaffold for napari image-analysis workflows"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [
-  {name = "wteox2"},
+  {name = "Wulin Teo"},
 ]
 dependencies = [
   "napari",
