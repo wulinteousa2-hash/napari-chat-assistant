@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-chat-assistant"
+version = "0.0.1"
+description = "Local chat assistant scaffold for napari image-analysis workflows"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+  {name = "wteox2"},
+]
+dependencies = [
+  "napari",
+  "numpy",
+  "qtpy",
+  "scipy",
+  "scikit-image",
+]
+
+[project.entry-points."napari.manifest"]
+napari-chat-assistant = "napari_chat_assistant:napari.yaml"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+napari_chat_assistant = ["napari.yaml"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
