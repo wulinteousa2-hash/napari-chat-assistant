@@ -10,7 +10,7 @@ It is designed for local interactive work, repeatable workflows, and gradual aut
 
 Current capabilities include:
 - connect to a local Ollama server
-- discover, pull, and unload local models from the plugin UI
+- discover and unload local models from the plugin UI
 - inspect layers and selected-layer properties
 - apply built-in image tools from chat
 - automate batch actions across multiple layers
@@ -118,10 +118,12 @@ Pull a model before using the plugin:
 ollama pull qwen3.5
 ```
 
-Optional stronger model:
+Optional alternatives:
 
 ```bash
-ollama pull qwen3.5:27b
+ollama pull qwen3-coder-next:latest
+ollama pull qwen3.5:35b
+ollama pull qwen2.5:7b
 ```
 
 ### 2. Install the plugin
@@ -173,8 +175,8 @@ Code generation:
 - local Ollama base URL
 - model picker with discovered local models
 - test connection
-- save current settings
-- pull model
+- use selected model
+- model help with model-tag examples, memory guidance, and terminal pull instructions
 - unload model
 
 ### Prompt Library
@@ -229,9 +231,19 @@ This keeps the assistant more grounded than a plain chat interface and makes com
 
 Good starting choices:
 - `qwen3.5`
-- `qwen3.5:27b`
+- `qwen3-coder-next:latest`
+- `qwen2.5:7b`
+- `qwen3.5:35b`
 
-`qwen3.5` is the current default because it has performed well in this workflow.
+Selection guidance:
+- `qwen3.5` is the current default and a good general model for this workflow. The local install you tested is about 9.7B parameters.
+- `qwen3-coder-next:latest` is a better candidate for Python and napari code generation, but it is significantly heavier.
+- `qwen2.5:7b` is lighter and may fit smaller-memory systems more easily.
+- `qwen3.5:35b` is a larger general model that needs substantially more memory than `qwen3.5`.
+
+Memory note:
+- Larger tags require more RAM or VRAM.
+- On the DGX Spark setup used during development, `qwen3-coder-next:latest` may need around 100 GB of available memory to run comfortably.
 
 ## Current Limitations
 
@@ -246,6 +258,43 @@ Most reliable current workflow:
 - use built-in tools for common layer inspection and mask/image actions
 - use the Prompt Library for repeated tasks
 - use generated code when you want explicit review and control
+
+## Troubleshooting
+
+### Ollama not running
+
+If `Test Connection` fails after restarting your computer, Ollama is usually not running yet.
+
+Start it in a terminal:
+
+```bash
+ollama serve
+```
+
+Then return to the plugin and click `Test Connection` again.
+
+### Pulling a model
+
+Model downloads are intentionally handled outside the plugin.
+
+To try a different model:
+- browse tags at `https://ollama.com/search`
+- type the tag into the plugin `Model` field if needed
+- pull it in a terminal, for example:
+
+```bash
+ollama pull qwen3.5
+```
+
+Then use `Test Connection` to refresh the plugin state.
+
+### Logs and crash logs
+
+The plugin writes two local log files:
+- `~/.napari-chat-assistant/assistant.log`
+- `~/.napari-chat-assistant/crash.log`
+
+Use these together with the terminal traceback when diagnosing crashes or unclear UI failures.
 
 ## Development
 

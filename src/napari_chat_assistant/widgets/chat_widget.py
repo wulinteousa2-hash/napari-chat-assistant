@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, unload_ollama_model
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.agent.logging_utils import APP_LOG_PATH, CRASH_LOG_PATH, enable_fault_logging, get_plugin_logger
 from napari_chat_assistant.agent.prompt_library import (
     load_prompt_library,
     merged_prompt_records,
@@ -57,6 +58,8 @@ class ChatInput(QTextEdit):
 
 def chat_widget(napari_viewer=None) -> QWidget:
     viewer = get_viewer(napari_viewer)
+    logger = get_plugin_logger()
+    enable_fault_logging()
 
     root = QWidget()
     layout = QVBoxLayout(root)
@@ -241,6 +244,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def append_log(message: str):
         action_log.addItem(message)
         action_log.scrollToBottom()
+        logger.info(message)
 
     def selected_prompt_record() -> dict | None:
         item = prompt_library_list.currentItem()
@@ -424,29 +428,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
         set_status("Status: refreshing local models...", ok=None)
         append_log(f"Refreshing local models from {base_url}")
-
-        @thread_worker(ignore_errors=True)
-        def run_refresh_models():
+        try:
             models = list_ollama_models(base_url)
-            return {"models": models, "model": model_name}
-
-        worker = run_refresh_models()
-        active_workers.append(worker)
-
-        def finish():
-            if worker in active_workers:
-                active_workers.remove(worker)
-
-        def on_returned(result):
-            refresh_model_choices(result.get("models", []), preferred=result.get("model"))
-            saved_settings["base_url"] = base_url
-            set_status(f"Status: found {len(result.get('models', []))} local models", ok=True)
-            append_log(f"Loaded {len(result.get('models', []))} local models from Ollama")
-            finish()
-
-        worker.returned.connect(on_returned)
-        worker.errored.connect(lambda *args: (set_status("Status: refresh models failed", ok=False), append_log(f"Refresh models failed: {format_worker_error(*args)}"), finish()))
-        worker.start()
+        except Exception as exc:
+            logger.exception("Refresh models failed for base_url=%s", base_url)
+            set_status("Status: refresh models failed", ok=False)
+            append_log(f"Refresh models failed: {exc}")
+            return
+        refresh_model_choices(models, preferred=model_name)
+        saved_settings["base_url"] = base_url
+        set_status(f"Status: found {len(models)} local models", ok=True)
+        append_log(f"Loaded {len(models)} local models from Ollama")
 
     def test_connection(*_args):
         provider = "Local (Ollama-style)"
@@ -458,41 +450,39 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         set_status(f"Status: testing {provider}...", ok=None)
         append_log(f"Testing connection for {provider} | {base_url} | model={model_name}")
-
-        @thread_worker(ignore_errors=True)
-        def run_test():
+        try:
             models = list_ollama_models(base_url)
-            is_available = model_is_available(model_name, models)
-            return {
-                "models": models,
-                "ok": is_available,
-                "reachable": True,
-                "message": (
-                    f"Connected to Ollama. Model {model_name} is available."
-                    if is_available
-                    else f"Connected to Ollama, but model {model_name} was not found."
-                ),
-            }
-
-        worker = run_test()
-        active_workers.append(worker)
-
-        def finish():
-            if worker in active_workers:
-                active_workers.remove(worker)
-
-        def on_test_returned(result):
-            refresh_model_choices(result.get("models", []), preferred=model_name)
-            saved_settings["base_url"] = base_url
-            if result.get("ok"):
-                saved_settings["model"] = model_name
-            set_status(f"Status: {result['message']}", ok=True if result.get("reachable") else bool(result.get("ok")))
-            append_log(result["message"])
-            finish()
-
-        worker.returned.connect(on_test_returned)
-        worker.errored.connect(lambda *args: (set_status("Status: connection failed", ok=False), append_log(f"Connection test failed: {format_worker_error(*args)}"), finish()))
-        worker.start()
+        except Exception as exc:
+            logger.exception("Connection test failed for base_url=%s model=%s", base_url, model_name)
+            error_text = str(exc).strip()
+            if "Could not connect to Ollama" in error_text:
+                user_message = (
+                    f"Could not connect to Ollama at {base_url}.\n\n"
+                    "This usually means Ollama is not running, often after restarting the computer.\n\n"
+                    "Start it in a terminal:\n"
+                    "ollama serve\n\n"
+                    "Then click Test Connection again."
+                )
+                set_status("Status: Ollama is not running", ok=False)
+                append_chat_message("assistant", user_message)
+                append_log("Connection test failed: Ollama is not running.")
+            else:
+                set_status("Status: connection failed", ok=False)
+                append_chat_message("assistant", f"Connection test failed:\n{error_text}")
+                append_log(f"Connection test failed: {error_text}")
+            return
+        is_available = model_is_available(model_name, models)
+        refresh_model_choices(models, preferred=model_name)
+        saved_settings["base_url"] = base_url
+        if is_available:
+            saved_settings["model"] = model_name
+        message = (
+            f"Connected to Ollama. Model {model_name} is available."
+            if is_available
+            else f"Connected to Ollama, but model {model_name} was not found."
+        )
+        set_status(f"Status: {message}", ok=True)
+        append_log(message)
 
     def save_settings(*_args):
         provider = provider_combo.currentText()
@@ -519,11 +509,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         command = f"ollama pull {model_name}"
         append_chat_message(
             "assistant",
-            "To try a different local model:\n"
-            "1. Browse available tags at https://ollama.com/search\n"
-            "2. Type the model tag into the Model field if needed\n"
-            f"3. Pull it in a terminal with:\n{command}\n"
-            f"4. Then click Test Connection against {host_text}.",
+            "Model Help\n\n"
+            "Use the Model field to choose or enter an Ollama model tag, then pull that tag in a terminal if it is not already installed locally.\n\n"
+            "How to change models:\n"
+            "1. Review available tags at https://ollama.com/search\n"
+            "2. Enter a tag in the Model field, for example:\n"
+            "   qwen3.5\n"
+            "   qwen3-coder-next:latest\n"
+            "   qwen3.5:35b\n"
+            "   qwen2.5:7b\n"
+            f"3. Pull the selected tag in a terminal if needed:\n{command}\n"
+            f"4. Then click Test Connection against {host_text}.\n\n"
+            "Model selection guidance:\n"
+            "- qwen3.5 is the current default for general assistant use in this plugin. Your local qwen3.5 install is about 9.7B parameters.\n"
+            "- qwen3-coder-next:latest is a stronger choice when you want better Python or napari code generation.\n"
+            "- qwen3.5:35b is a larger general model and may improve quality, but it requires much more memory than qwen3.5.\n"
+            "- qwen2.5:7b is a lighter option for smaller-memory systems, but it is usually less capable than qwen3.5.\n\n"
+            "Memory guidance:\n"
+            "- Larger tags generally require more RAM or VRAM.\n"
+            "- In this environment, qwen3-coder-next:latest may require roughly 100 GB of available memory to run comfortably.\n"
+            "- If a model is too large for the workstation, use a smaller tag first and confirm it loads reliably before moving to a larger one.\n\n"
+            "Tip:\n"
+            "- The Model field accepts explicit tags such as qwen3-coder-next:latest, qwen3.5:35b, or qwen2.5:7b, so you can switch models without changing the Base URL.",
         )
         append_log(f"Opened model help. Suggested terminal command: {command}")
         set_status("Status: model help shown", ok=None)
@@ -538,22 +545,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
         set_status(f"Status: unloading {model_name}...", ok=None)
         append_log(f"Unloading model {model_name}")
-
-        @thread_worker(ignore_errors=True)
-        def run_unload():
+        try:
             unload_ollama_model(base_url, model_name)
-            return model_name
-
-        worker = run_unload()
-        active_workers.append(worker)
-
-        def finish():
-            if worker in active_workers:
-                active_workers.remove(worker)
-
-        worker.returned.connect(lambda returned_model: (set_status(f"Status: unloaded {returned_model}", ok=True), append_log(f"Unloaded model {returned_model}"), finish()))
-        worker.errored.connect(lambda *args: (set_status("Status: unload failed", ok=False), append_log(f"Unload failed: {format_worker_error(*args)}"), finish()))
-        worker.start()
+        except Exception as exc:
+            logger.exception("Unload failed for base_url=%s model=%s", base_url, model_name)
+            set_status("Status: unload failed", ok=False)
+            append_log(f"Unload failed: {exc}")
+            return
+        set_status(f"Status: unloaded {model_name}", ok=True)
+        append_log(f"Unloaded model {model_name}")
 
     def send_message():
         text = prompt.toPlainText().strip()
@@ -604,7 +604,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("assistant", text_out)
 
         def on_returned(reply):
-            parsed = normalize_model_response(reply)
+            try:
+                parsed = normalize_model_response(reply)
+            except Exception as exc:
+                logger.exception("Failed to normalize model response.")
+                replace_last_assistant(f"Response parse failed:\n{exc}\n\nRaw reply:\n{reply}")
+                set_status("Status: response parse failed", ok=False)
+                append_log("Failed to parse model response.")
+                finish()
+                return
 
             action = str(parsed.get("action", "reply")).strip().lower()
 
@@ -649,6 +657,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
                 def tool_error(*args):
                     error_text = format_worker_error(*args)
+                    logger.exception("Tool execution failed: %s | %s", tool_name, error_text)
                     replace_last_assistant(f"Tool execution failed: {error_text}")
                     append_log(f"Tool execution failed: {tool_name} | {error_text}")
                     set_status("Status: tool execution failed", ok=False)
@@ -677,7 +686,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
             finish()
 
         worker.returned.connect(on_returned)
-        worker.errored.connect(lambda *args: (replace_last_assistant(f"Request failed: {format_worker_error(*args)}"), set_status("Status: request failed", ok=False), append_log(f"Chat request failed: {format_worker_error(*args)}"), finish()))
+
+        def request_failed(*args):
+            error_text = format_worker_error(*args)
+            logger.exception("Chat request failed: %s", error_text)
+            replace_last_assistant(f"Request failed: {error_text}")
+            set_status("Status: request failed", ok=False)
+            append_log(f"Chat request failed: {error_text}")
+            finish()
+
+        worker.errored.connect(request_failed)
         worker.start()
 
     def discard_pending_code(*_args):
@@ -723,6 +741,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             with redirect_stdout(stdout_buffer):
                 exec(compile(code_text, "<napari-chat-assistant>", "exec"), namespace, namespace)
         except Exception as exc:
+            logger.exception("Approved code failed during execution.")
             error_text = str(exc)
             append_chat_message("assistant", f"Approved code failed:\n{error_text}")
             append_log(f"Approved code failed: {error_text}")
@@ -796,6 +815,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     set_pending_code()
     refresh_models()
     refresh_prompt_library()
+    append_log(f"Assistant log: {APP_LOG_PATH}")
+    append_log(f"Crash log: {CRASH_LOG_PATH}")
     append_log(f"Prompt library path: {prompt_library_path()}")
     append_log("Assistant panel initialized.")
     return root
