@@ -8,7 +8,7 @@ import napari
 import numpy as np
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QTextCursor
+from qtpy.QtGui import QColor, QTextCursor
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
@@ -26,7 +26,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, pull_ollama_model_events, unload_ollama_model
+from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, unload_ollama_model
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
 from napari_chat_assistant.agent.prompt_library import (
@@ -101,14 +101,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     config_btn_row = QWidget()
     config_btn_layout = QHBoxLayout(config_btn_row)
+    save_btn = QPushButton("Use Selected Model")
     test_btn = QPushButton("Test Connection")
-    save_btn = QPushButton("Use These Settings")
-    pull_btn = QPushButton("Pull Model")
     unload_btn = QPushButton("Unload Model")
-    config_btn_layout.addWidget(test_btn)
     config_btn_layout.addWidget(save_btn)
-    config_btn_layout.addWidget(pull_btn)
+    config_btn_layout.addWidget(test_btn)
     config_btn_layout.addWidget(unload_btn)
+    pull_btn = QPushButton("Model Help")
+    config_btn_layout.addWidget(pull_btn)
     config_layout.addRow(config_btn_row)
     left_layout.addWidget(config_group)
 
@@ -336,29 +336,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
             title = str(record.get("title", "")).strip() or "Untitled Prompt"
             source = str(record.get("source", "built_in"))
             if record.get("pinned", False):
-                badge = '<span style="color:#fbbc05; font-weight:600;">[Pinned]</span>'
+                badge = "[Pinned]"
+                color = "#fbbc05"
             elif source == "saved":
-                badge = '<span style="color:#34a853; font-weight:600;">[Saved]</span>'
+                badge = "[Saved]"
+                color = "#34a853"
             elif source == "recent":
-                badge = '<span style="color:#4285f4; font-weight:600;">[Recent]</span>'
+                badge = "[Recent]"
+                color = "#4285f4"
             else:
-                badge = '<span style="color:#9aa0a6; font-weight:600;">[Built-in]</span>'
+                badge = "[Built-in]"
+                color = "#9aa0a6"
             short_title = title if len(title) <= 72 else f"{title[:69].rstrip()}..."
-            title_html = f'<span style="color:#e5eefc;"> {short_title}</span>'
-            label = f"{badge}{title_html}"
+            label = f"{badge} {short_title}"
             item = QListWidgetItem()
-            item.setText("")
+            item.setText(label)
             item.setData(Qt.UserRole, record)
+            item.setForeground(QColor(color))
             prompt_library_list.addItem(item)
-            widget = QLabel()
-            widget.setTextFormat(Qt.RichText)
-            widget.setWordWrap(False)
-            widget.setText(label)
-            widget.setStyleSheet("QLabel { padding: 0px; margin: 0px; }")
-            widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            widget.setFixedHeight(18)
-            item.setSizeHint(widget.sizeHint())
-            prompt_library_list.setItemWidget(item, widget)
 
     def persist_prompt_library():
         save_prompt_library(prompt_library_state)
@@ -516,60 +511,22 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def pull_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
         model_name = model_combo.currentText().strip()
-        if not base_url or not model_name:
-            set_status("Status: missing base URL or model name", ok=False)
-            append_log("Pull failed: missing base URL or model name.")
+        if not model_name:
+            set_status("Status: missing model name", ok=False)
+            append_log("Model help skipped: missing model name.")
             return
-
-        set_status(f"Status: pulling {model_name}...", ok=None)
-        append_log(f"Pulling model {model_name}")
-        set_model_controls_enabled(False)
-
-        @thread_worker(ignore_errors=True)
-        def run_pull():
-            for event in pull_ollama_model_events(base_url, model_name):
-                yield {"type": "progress", "event": event}
-            yield {"type": "done", "models": list_ollama_models(base_url), "model": model_name}
-
-        worker = run_pull()
-        active_workers.append(worker)
-        last_logged_progress = {"text": ""}
-
-        def finish():
-            set_model_controls_enabled(True)
-            if worker in active_workers:
-                active_workers.remove(worker)
-
-        def format_progress(event: dict) -> str:
-            status = str(event.get("status", "")).strip()
-            completed = event.get("completed")
-            total = event.get("total")
-            if isinstance(completed, int) and isinstance(total, int) and total > 0:
-                pct = int((completed / total) * 100)
-                return f"{status} ({pct}%)" if status else f"Pulling... ({pct}%)"
-            return status or "Pulling model..."
-
-        def on_yielded(payload):
-            payload = payload or {}
-            if payload.get("type") == "progress":
-                progress_text = format_progress(payload.get("event", {}))
-                set_status(f"Status: {progress_text}", ok=None)
-                if progress_text != last_logged_progress["text"]:
-                    append_log(progress_text)
-                    last_logged_progress["text"] = progress_text
-                return
-            if payload.get("type") == "done":
-                pulled_model = payload["model"]
-                refresh_model_choices(payload.get("models", []), preferred=pulled_model)
-                saved_settings["model"] = pulled_model
-                set_status(f"Status: pulled and ready: {pulled_model}", ok=True)
-                append_log(f"Pulled model {pulled_model} and refreshed local model list")
-                finish()
-
-        worker.yielded.connect(on_yielded)
-        worker.returned.connect(lambda _result: None)
-        worker.errored.connect(lambda *args: (set_status("Status: pull failed", ok=False), append_log(f"Pull failed: {format_worker_error(*args)}"), finish()))
-        worker.start()
+        host_text = base_url or "http://127.0.0.1:11434"
+        command = f"ollama pull {model_name}"
+        append_chat_message(
+            "assistant",
+            "To try a different local model:\n"
+            "1. Browse available tags at https://ollama.com/search\n"
+            "2. Type the model tag into the Model field if needed\n"
+            f"3. Pull it in a terminal with:\n{command}\n"
+            f"4. Then click Test Connection against {host_text}.",
+        )
+        append_log(f"Opened model help. Suggested terminal command: {command}")
+        set_status("Status: model help shown", ok=None)
 
     def unload_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
@@ -805,6 +762,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: sending prompt from library", ok=None)
         send_message()
 
+    def cleanup_workers(*_args):
+        for worker in list(active_workers):
+            cancel = getattr(worker, "_assistant_cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
+            try:
+                worker.quit()
+            except Exception:
+                pass
+        active_workers.clear()
+
     test_btn.clicked.connect(test_connection)
     save_btn.clicked.connect(save_settings)
     pull_btn.clicked.connect(pull_model)
@@ -819,6 +790,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     delete_prompt_btn.clicked.connect(delete_selected_prompt)
     prompt.sendRequested.connect(send_message)
     refresh_btn.clicked.connect(refresh_context)
+    root.destroyed.connect(cleanup_workers)
 
     refresh_context()
     set_pending_code()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib.error import HTTPError, URLError
 from urllib import request
 
@@ -40,7 +41,7 @@ def list_ollama_models(base_url: str) -> list[str]:
     return sorted({m.get("name", "") for m in tags.get("models", []) if m.get("name", "")})
 
 
-def pull_ollama_model_events(base_url: str, model_name: str):
+def pull_ollama_model_events(base_url: str, model_name: str, *, stop_event=None, response_holder: dict | None = None):
     req = request.Request(
         f"{base_url.rstrip('/')}/api/pull",
         data=json.dumps({"model": model_name}).encode("utf-8"),
@@ -50,7 +51,11 @@ def pull_ollama_model_events(base_url: str, model_name: str):
     last_event = {}
     try:
         with request.urlopen(req, timeout=3600) as resp:
+            if response_holder is not None:
+                response_holder["response"] = resp
             for raw_line in resp:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 line = raw_line.decode("utf-8").strip()
                 if not line:
                     continue
@@ -59,8 +64,17 @@ def pull_ollama_model_events(base_url: str, model_name: str):
                 except json.JSONDecodeError:
                     continue
                 yield last_event
+    except socket.timeout:
+        if stop_event is not None and stop_event.is_set():
+            return
+        raise RuntimeError(f"Ollama pull timed out for {base_url.rstrip('/')}/api/pull.")
     except (HTTPError, URLError) as exc:
+        if stop_event is not None and stop_event.is_set():
+            return
         raise _friendly_request_error(f"{base_url.rstrip('/')}/api/pull", exc) from exc
+    finally:
+        if response_holder is not None:
+            response_holder.pop("response", None)
 
 
 def unload_ollama_model(base_url: str, model_name: str) -> None:
