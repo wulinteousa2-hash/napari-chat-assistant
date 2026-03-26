@@ -1,5 +1,5 @@
 name: napari-chat-assistant
-schema_version: 0.2.1
+
 visibility: public
 contributions:
   commands:
