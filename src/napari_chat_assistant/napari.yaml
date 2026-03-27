@@ -1,5 +1,5 @@
 name: napari-chat-assistant
-
+display_name: Local Chat Assistant
 visibility: public
 contributions:
   commands:
