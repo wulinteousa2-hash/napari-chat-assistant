@@ -10,6 +10,7 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QTextCursor
 from qtpy.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QFormLayout,
@@ -27,18 +28,33 @@ from qtpy.QtWidgets import (
 )
 
 from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, unload_ollama_model
+from napari_chat_assistant.agent.code_validation import validate_generated_code
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
 from napari_chat_assistant.agent.logging_utils import APP_LOG_PATH, CRASH_LOG_PATH, enable_fault_logging, get_plugin_logger
 from napari_chat_assistant.agent.prompt_library import (
+    clear_prompt_library,
     load_prompt_library,
     merged_prompt_records,
     prompt_library_path,
-    remove_saved_prompt,
+    remove_prompt_record,
     save_prompt_library,
-    set_saved_prompt_pinned,
+    set_prompt_pinned,
     upsert_recent_prompt,
     upsert_saved_prompt,
+)
+from napari_chat_assistant.agent.session_memory import (
+    add_memory_item,
+    approve_items,
+    build_session_memory_payload,
+    load_session_memory,
+    make_viewer_fingerprint,
+    promote_from_user_turn,
+    reject_items,
+    save_session_memory,
+    session_memory_path,
+    set_active_dataset_focus,
+    update_session_goal,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
 
@@ -131,18 +147,23 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     prompt_library_group = QGroupBox("Prompt Library")
     prompt_library_layout = QVBoxLayout(prompt_library_group)
-    prompt_library_hint = QLabel("Click to load. Double-click to run.")
+    prompt_library_hint = QLabel(
+        "Click to load. Double-click to run. Saved keeps your own copy. Pinned only keeps a prompt at the top."
+    )
     prompt_library_hint.setWordWrap(True)
     prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
     prompt_library_list = QListWidget()
+    prompt_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
     save_prompt_btn = QPushButton("Save Current")
     pin_prompt_btn = QPushButton("Pin/Unpin")
-    delete_prompt_btn = QPushButton("Delete Saved")
+    delete_prompt_btn = QPushButton("Delete Selected")
+    clear_prompt_btn = QPushButton("Clear Non-Saved")
     prompt_library_btn_layout.addWidget(save_prompt_btn)
     prompt_library_btn_layout.addWidget(pin_prompt_btn)
     prompt_library_btn_layout.addWidget(delete_prompt_btn)
+    prompt_library_btn_layout.addWidget(clear_prompt_btn)
     prompt_library_layout.addWidget(prompt_library_hint)
     prompt_library_layout.addWidget(prompt_library_list)
     prompt_library_layout.addWidget(prompt_library_btn_row)
@@ -166,6 +187,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     code_btn_layout = QHBoxLayout(code_btn_row)
     pending_code_label = QLabel("Pending code: none")
     pending_code_label.setStyleSheet("QLabel { color: #c7d2fe; padding: 2px 0; }")
+    reject_memory_btn = QPushButton("Thumbs Down Last Answer")
+    reject_memory_btn.setEnabled(False)
     run_code_btn = QPushButton("Run Pending Code")
     copy_code_btn = QPushButton("Copy Pending Code")
     discard_code_btn = QPushButton("Discard Pending Code")
@@ -173,6 +196,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     copy_code_btn.setEnabled(False)
     discard_code_btn.setEnabled(False)
     code_btn_layout.addWidget(pending_code_label, 1)
+    code_btn_layout.addWidget(reject_memory_btn)
     code_btn_layout.addWidget(run_code_btn)
     code_btn_layout.addWidget(copy_code_btn)
     code_btn_layout.addWidget(discard_code_btn)
@@ -202,6 +226,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     active_workers: list[object] = []
     available_models: list[str] = []
     pending_code = {"code": "", "message": ""}
+    session_memory_state = load_session_memory()
+    last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     generation_defaults = {
         "temperature": 1.0,
@@ -246,11 +272,57 @@ def chat_widget(napari_viewer=None) -> QWidget:
         action_log.scrollToBottom()
         logger.info(message)
 
-    def selected_prompt_record() -> dict | None:
-        item = prompt_library_list.currentItem()
-        if item is None:
-            return None
-        return item.data(Qt.UserRole)
+    def persist_session_memory():
+        save_session_memory(session_memory_state)
+
+    def selected_layer_profile() -> dict | None:
+        payload = layer_context_json(viewer)
+        profile = payload.get("selected_layer_profile")
+        return profile if isinstance(profile, dict) else None
+
+    def set_last_memory_candidates(item_ids: list[str]):
+        nonlocal last_memory_candidate_ids
+        last_memory_candidate_ids = [item_id for item_id in item_ids if item_id]
+        reject_memory_btn.setEnabled(bool(last_memory_candidate_ids))
+
+    def remember_assistant_outcome(summary: str, *, target_type: str, target_profile: dict | None, state: str = "provisional"):
+        clean = " ".join(str(summary or "").split()).strip()
+        if not clean:
+            return
+        item_id = None
+        nonlocal session_memory_state
+        session_memory_state, item_id = add_memory_item(
+            session_memory_state,
+            target_type=target_type,
+            summary=clean,
+            target_layer="" if not isinstance(target_profile, dict) else str(target_profile.get("layer_name", "")).strip(),
+            viewer_fingerprint=make_viewer_fingerprint(target_profile),
+            state=state,
+        )
+        if item_id:
+            set_last_memory_candidates([item_id])
+            persist_session_memory()
+
+    def reject_last_memory(*_args):
+        nonlocal session_memory_state
+        if not last_memory_candidate_ids:
+            set_status("Status: no recent answer to reject", ok=False)
+            append_log("Reject feedback skipped: no recent assistant memory candidates.")
+            return
+        session_memory_state = reject_items(session_memory_state, last_memory_candidate_ids)
+        persist_session_memory()
+        append_chat_message("assistant", "Marked the last assistant outcome as rejected for this session memory.")
+        append_log("Rejected last assistant memory candidates.")
+        set_status("Status: last answer rejected from session memory", ok=None)
+        set_last_memory_candidates([])
+
+    def selected_prompt_records() -> list[dict]:
+        records: list[dict] = []
+        for item in prompt_library_list.selectedItems():
+            record = item.data(Qt.UserRole)
+            if isinstance(record, dict) and record.get("prompt"):
+                records.append(record)
+        return records
 
     def format_worker_error(*args) -> str:
         for value in args:
@@ -320,6 +392,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
         copy_code_btn.setEnabled(has_code)
         discard_code_btn.setEnabled(has_code)
 
+    def preflight_generated_code(code_text: str) -> list[str]:
+        return validate_generated_code(code_text)
+
     def refresh_model_choices(model_names: list[str], preferred: str | None = None):
         nonlocal available_models
         available_models = sorted({m for m in model_names if m})
@@ -375,38 +450,45 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log(f"Saved prompt to library: {prompt_text[:80]}")
 
     def toggle_pin_selected_prompt(*_args):
-        record = selected_prompt_record()
-        if not record:
+        records = selected_prompt_records()
+        if not records:
             set_status("Status: no prompt selected", ok=False)
             append_log("Pin prompt skipped: no prompt selected.")
             return
-        if record.get("source") == "built_in":
-            upsert_saved_prompt(prompt_library_state, record.get("prompt", ""), pin=True)
-            append_log("Pinned built-in prompt into saved library.")
-        else:
-            new_pinned = not bool(record.get("pinned", False))
-            upsert_saved_prompt(prompt_library_state, record.get("prompt", ""), pin=new_pinned)
-            set_saved_prompt_pinned(prompt_library_state, record.get("prompt", ""), new_pinned)
-            append_log(f"{'Pinned' if new_pinned else 'Unpinned'} saved prompt.")
+        should_pin = not all(bool(record.get("pinned", False)) for record in records)
+        for record in records:
+            set_prompt_pinned(prompt_library_state, record.get("prompt", ""), should_pin)
         persist_prompt_library()
         refresh_prompt_library()
         set_status("Status: prompt library updated", ok=True)
+        append_log(f"{'Pinned' if should_pin else 'Unpinned'} {len(records)} prompt(s).")
 
     def delete_selected_prompt(*_args):
-        record = selected_prompt_record()
-        if not record:
+        records = selected_prompt_records()
+        if not records:
             set_status("Status: no prompt selected", ok=False)
             append_log("Delete prompt skipped: no prompt selected.")
             return
-        if record.get("source") != "saved":
-            set_status("Status: only saved prompts can be deleted", ok=False)
-            append_log("Delete prompt skipped: selected prompt is not a saved prompt.")
-            return
-        remove_saved_prompt(prompt_library_state, record.get("prompt", ""))
+        deleted_counts = {"saved": 0, "recent": 0, "built_in": 0}
+        for record in records:
+            source = str(record.get("source", "built_in")).strip()
+            remove_prompt_record(prompt_library_state, record.get("prompt", ""), source=source)
+            if source in deleted_counts:
+                deleted_counts[source] += 1
         persist_prompt_library()
         refresh_prompt_library()
-        set_status("Status: saved prompt deleted", ok=True)
-        append_log("Deleted saved prompt from library.")
+        set_status(f"Status: deleted {len(records)} prompt(s)", ok=True)
+        append_log(
+            "Deleted prompt selection:"
+            f" saved={deleted_counts['saved']}, recent={deleted_counts['recent']}, built-in={deleted_counts['built_in']}."
+        )
+
+    def clear_non_saved_prompts(*_args):
+        clear_prompt_library(prompt_library_state, keep_saved=True, keep_pinned=True)
+        persist_prompt_library()
+        refresh_prompt_library()
+        set_status("Status: cleared unpinned recent and built-in prompts", ok=True)
+        append_log("Cleared prompt library down to saved and pinned prompts.")
 
     def model_is_available(requested_name: str, model_names: list[str]) -> bool:
         requested = str(requested_name or "").strip()
@@ -559,6 +641,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
         text = prompt.toPlainText().strip()
         if not text:
             return
+        nonlocal session_memory_state
+        current_profile = selected_layer_profile()
+        session_memory_state = update_session_goal(session_memory_state, text)
+        session_memory_state = set_active_dataset_focus(
+            session_memory_state,
+            "" if not isinstance(current_profile, dict) else str(current_profile.get("layer_name", "")).strip(),
+        )
+        session_memory_state, promoted_ids = promote_from_user_turn(session_memory_state, text, current_profile)
+        if promoted_ids:
+            append_log(f"Promoted {len(promoted_ids)} provisional memory item(s) from user follow-up.")
+        persist_session_memory()
         upsert_recent_prompt(prompt_library_state, text)
         persist_prompt_library()
         refresh_prompt_library()
@@ -579,11 +672,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
         @thread_worker(ignore_errors=True)
         def run_chat():
+            viewer_payload = layer_context_json(viewer)
             return chat_ollama(
                 base_url,
                 model_name,
                 system_prompt=assistant_system_prompt(),
-                user_payload={"viewer_context": layer_context_json(viewer), "user_message": text},
+                user_payload={
+                    "viewer_context": viewer_payload,
+                    "session_memory": build_session_memory_payload(session_memory_state, viewer_payload.get("selected_layer_profile")),
+                    "user_message": text,
+                },
                 options=dict(generation_defaults),
                 timeout=1800,
             )
@@ -625,6 +723,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     result_message = str(prepared.get("message", ""))
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    remember_assistant_outcome(
+                        tool_message or result_message,
+                        target_type="tool_result",
+                        target_profile=selected_layer_profile(),
+                    )
                     append_log(f"Tool executed: {tool_name}")
                     set_status(f"Status: connected to {model_name}", ok=True)
                     append_log(f"Received response from {model_name}")
@@ -649,9 +752,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     finish()
 
                 def tool_returned(tool_result):
+                    nonlocal session_memory_state
                     result_message = apply_tool_job_result(viewer, tool_result)
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
+                    persist_session_memory()
+                    remember_assistant_outcome(
+                        tool_message or result_message,
+                        target_type="tool_result",
+                        target_profile=selected_layer_profile(),
+                        state="approved",
+                    )
                     append_log(f"Tool executed: {tool_name}")
                     tool_finish()
 
@@ -673,14 +785,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if action == "code":
                 code_text = str(parsed.get("code", "")).strip()
                 code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Pending Code."
+                validation_errors = preflight_generated_code(code_text)
+                if validation_errors:
+                    set_pending_code()
+                    replace_last_assistant(
+                        "Generated code was rejected by local validation:\n"
+                        + "\n".join(f"- {error}" for error in validation_errors)
+                        + "\n\nPlease ask again or rephrase the request."
+                    )
+                    append_log("Rejected generated code after local validation.")
+                    set_status("Status: generated code rejected", ok=False)
+                    finish()
+                    return
                 set_pending_code(code_text, message=code_message)
                 replace_last_assistant(f"{code_message}\n{format_code_block(code_text)}")
+                remember_assistant_outcome(code_message, target_type="recommendation", target_profile=selected_layer_profile())
                 set_status("Status: code generated, awaiting approval", ok=None)
                 append_log("Generated pending napari code; waiting for approval.")
                 finish()
                 return
 
             replace_last_assistant(str(parsed.get("message", reply)).strip() or "[empty response]")
+            remember_assistant_outcome(
+                str(parsed.get("message", reply)).strip() or "[empty response]",
+                target_type="recommendation",
+                target_profile=selected_layer_profile(),
+            )
             set_status(f"Status: connected to {model_name}", ok=True)
             append_log(f"Received response from {model_name}")
             finish()
@@ -717,10 +847,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: pending code copied", ok=True)
 
     def run_pending_code(*_args):
+        nonlocal session_memory_state
         code_text = pending_code["code"]
         if not code_text:
             set_status("Status: no pending code to run", ok=False)
             append_log("Run code skipped: no pending code available.")
+            return
+        validation_errors = preflight_generated_code(code_text)
+        if validation_errors:
+            append_chat_message(
+                "assistant",
+                "Pending code failed local validation:\n" + "\n".join(f"- {error}" for error in validation_errors),
+            )
+            append_log("Run code blocked by local validation.")
+            set_status("Status: pending code blocked", ok=False)
             return
 
         set_status("Status: running approved code", ok=None)
@@ -760,6 +900,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message("assistant", result_message)
         append_log("Approved napari code executed successfully.")
         set_status("Status: approved code executed", ok=True)
+        session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
+        persist_session_memory()
+        remember_assistant_outcome(
+            pending_code.get("message") or "Approved napari code executed.",
+            target_type="code_result",
+            target_profile=selected_layer_profile(),
+            state="approved",
+        )
         set_pending_code()
 
     def load_library_prompt(item: QListWidgetItem):
@@ -802,11 +950,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_code_btn.clicked.connect(run_pending_code)
     copy_code_btn.clicked.connect(copy_pending_code)
     discard_code_btn.clicked.connect(discard_pending_code)
+    reject_memory_btn.clicked.connect(reject_last_memory)
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
     save_prompt_btn.clicked.connect(save_current_prompt)
     pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
     delete_prompt_btn.clicked.connect(delete_selected_prompt)
+    clear_prompt_btn.clicked.connect(clear_non_saved_prompts)
     prompt.sendRequested.connect(send_message)
     refresh_btn.clicked.connect(refresh_context)
     root.destroyed.connect(cleanup_workers)
@@ -818,5 +968,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     append_log(f"Assistant log: {APP_LOG_PATH}")
     append_log(f"Crash log: {CRASH_LOG_PATH}")
     append_log(f"Prompt library path: {prompt_library_path()}")
+    append_log(f"Session memory path: {session_memory_path()}")
     append_log("Assistant panel initialized.")
     return root

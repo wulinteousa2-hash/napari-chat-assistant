@@ -6,17 +6,24 @@ Local Ollama-powered assistant for napari image-analysis workflows.
 
 It is designed for local interactive work, repeatable workflows, and gradual automation rather than cloud chat or fully opaque “one-click AI”.
 
+The current direction is a deterministic, layer-aware assistant: the plugin profiles loaded napari layers first, then uses that structured context to guide tool choice and generated code.
+
 ## Overview
 
 Current capabilities include:
 - connect to a local Ollama server
 - discover and unload local models from the plugin UI
 - inspect layers and selected-layer properties
+- profile layers with a deterministic Phase 1 dataset profiler
 - apply built-in image tools from chat
 - automate batch actions across multiple layers
 - generate napari Python code when no built-in tool fits
 - copy or run generated code from the assistant UI
 - save, pin, and reuse prompts through a local Prompt Library
+- delete selected built-in, recent, or saved prompts from the Prompt Library
+- clear unpinned recent and built-in prompts while keeping saved and pinned items
+- keep bounded session memory from approved prior turns
+- reject the last assistant outcome from session memory with a thumbs-down control
 
 The current default model is:
 - `qwen3.5`
@@ -27,9 +34,11 @@ Most chat interfaces are detached from the actual napari session. This plugin ke
 - loaded layers
 - the selected layer
 - shape and dtype
+- semantic layer profiling
 - labels statistics
 - local tool execution
 - local Python code generation
+- bounded session memory
 
 ### Local-first by design
 
@@ -59,6 +68,15 @@ The assistant currently supports built-in tools for:
 - batch mask measurement
 - mask morphology operations
 
+Layer inspection is now backed by a deterministic profile object that includes:
+- `semantic_type`
+- `confidence`
+- `axes_detected`
+- `source_kind`
+- metadata flags such as multiscale, lazy/chunked, channel metadata, and wavelength metadata
+- recommended and discouraged operation classes
+- evidence buckets for debugging and future adapter work
+
 Supported mask operations:
 - `dilate`
 - `erode`
@@ -78,6 +96,22 @@ Generated code can be:
 
 This is useful when you want a reusable script, need to adjust code manually, or prefer explicit code over hidden automation.
 
+### Selective Session Memory
+
+The assistant now includes bounded session memory with three states:
+- `provisional`
+- `approved`
+- `rejected`
+
+Behavior:
+- new assistant outcomes start as provisional
+- successful follow-up actions can promote them to approved
+- only approved items are sent back to the model as `session_memory`
+- current viewer context and current layer profiles always override memory
+- `Thumbs Down Last Answer` rejects the most recent memory candidate for the current session
+
+This is intentionally not full transcript memory. The model is still grounded primarily in the current napari viewer state.
+
 ### Prompt Library
 
 The assistant includes a persistent Prompt Library for repeatable workflows:
@@ -89,6 +123,15 @@ The assistant includes a persistent Prompt Library for repeatable workflows:
 Interaction:
 - single click loads a prompt into the editor
 - double click sends it directly
+- multi-select supports Shift/Ctrl selection for batch actions
+- `Delete Selected` can remove saved prompts, recent prompts, or hide built-in prompts
+- `Clear Non-Saved` removes unpinned recent and built-in prompts while keeping saved and pinned items
+
+Logic:
+- `saved` means a user-managed prompt you want to keep as your own reusable entry
+- `pinned` means keep this prompt surfaced at the top of the library
+- a prompt can be pinned without being saved
+- built-in prompts are shipped examples; deleting them hides them from the current local library view
 
 This is designed for users who want repeatable automation without committing everything to full scripting.
 
@@ -167,6 +210,22 @@ Thresholding and masks:
 Code generation:
 - `write napari code to duplicate the selected layer`
 - `generate QtConsole code to print the selected layer shape`
+- `create a synthetic noisy image in the current viewer and generate napari code for it`
+- `create a docked histogram widget for the selected image and report mean, noise SD, and simple SNR`
+
+Profile-aware prompts:
+- `show every loaded layer with semantic type, confidence, axes, shape, and dtype`
+- `inspect the selected layer and explain what kind of dataset it is and why`
+- `tell me which operation classes are recommended or discouraged for the selected layer`
+- `decide if CLAHE is appropriate for the selected layer before using it`
+
+Demo and education prompts:
+- `create a synthetic noisy image in the current viewer for teaching image noise`
+- `generate a docked histogram and simple SNR widget for the selected image`
+- `create two synthetic images with low noise and high noise and compare their histograms`
+- `simulate low-SNR and high-SNR examples for teaching imaging quality`
+- `generate napari code that shows how noise level changes histogram width and simple SNR`
+- `create a demo image with bright spots on dark background and vary the noise step by step`
 
 ## UI Overview
 
@@ -185,8 +244,13 @@ Code generation:
 - recent prompts
 - saved prompts
 - pinned prompts
+- `saved` keeps your own reusable copy
+- `pinned` keeps a prompt at the top regardless of whether it is built-in, recent, or saved
 - single click to load
 - double click to send
+- Shift/Ctrl multi-select for batch actions
+- `Delete Selected` works on built-in, recent, and saved prompts
+- `Clear Non-Saved` keeps saved and pinned items and clears unpinned recent and built-in items
 
 ### Chat
 
@@ -197,6 +261,7 @@ Code generation:
 
 ### Code Actions
 
+- `Thumbs Down Last Answer`
 - `Run Pending Code`
 - `Copy Pending Code`
 - `Discard Pending Code`
@@ -204,6 +269,7 @@ Code generation:
 ### Current Context
 
 - current layer summary from the active napari viewer
+- per-layer semantic profile summaries
 
 ### Action Log
 
@@ -218,12 +284,15 @@ The assistant is designed to operate within constrained napari workflows rather 
 
 The current strategy is:
 1. collect structured napari viewer context
-2. send that context and the user request to a local Ollama model
-3. the model returns a structured JSON response that specifies either:
+2. build deterministic per-layer profile objects from the current viewer state
+3. add bounded approved session memory when available
+4. send that context and the user request to a local Ollama model
+5. the model returns a structured JSON response that specifies either:
    - a normal reply
    - a built-in tool call
    - generated Python code
-4. run the selected tool or expose the generated code through the UI
+6. run the selected tool or expose the generated code through the UI
+7. update session memory from explicit user feedback or successful follow-up behavior
 
 This keeps the assistant more grounded than a plain chat interface and makes common operations more reliable.
 
@@ -247,17 +316,28 @@ Memory note:
 
 ## Current Limitations
 
+- the dataset profiler is still Phase 1 and currently strongest on already-loaded napari layers rather than file-format-specific readers
+- TIFF vs OME-Zarr adapter behavior is not implemented yet
+- ND2 and Zeiss adapters are not implemented yet
+- session memory is selective and bounded; it is not full conversation memory
 - model output can still be inconsistent, especially for generated code
 - not all requests map cleanly to built-in tools yet
 - generated code can still fail if the model invents incorrect napari APIs
 - no multi-step task planning yet (complex workflows may require several prompts)
 - no image attachment or multimodal input pipeline yet
 - performance optimization for very large 2D/3D datasets is still in progress
+- hard native crashes in Qt/C-extension code may not be captured cleanly by the plugin crash log even when normal plugin errors are logged
 
 Most reliable current workflow:
 - use built-in tools for common layer inspection and mask/image actions
+- trust current viewer context and current layer profiles over any remembered prior turn
 - use the Prompt Library for repeated tasks
 - use generated code when you want explicit review and control
+
+For demo and education workflows:
+- ask for code that uses the current napari `viewer`
+- avoid prompts that create a second `napari.Viewer()` or call `napari.run()`
+- prefer docked widgets over unmanaged popup windows for histogram or SNR teaching tools
 
 ## Troubleshooting
 
