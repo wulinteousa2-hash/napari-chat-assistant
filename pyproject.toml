@@ -4,13 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-chat-assistant"
-version = "1.2.0"
+version = "1.2.1"
 description = "Local chat assistant scaffold for napari image-analysis workflows"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "Wulin Teo" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: napari",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
   "napari",
@@ -20,9 +33,15 @@ dependencies = [
   "scikit-image",
 ]
 
+[project.urls]
+Homepage = "https://github.com/wulinteousa2-hash/napari-chat-assistant"
+Repository = "https://github.com/wulinteousa2-hash/napari-chat-assistant"
+Issues = "https://github.com/wulinteousa2-hash/napari-chat-assistant/issues"
+
 [project.optional-dependencies]
 test = [
   "pytest",
+  "pytest-cov",
 ]
 
 [project.entry-points."napari.manifest"]

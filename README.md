@@ -1,5 +1,12 @@
 # napari-chat-assistant
 
+[![License MIT](https://img.shields.io/pypi/l/napari-chat-assistant.svg?color=green)](https://github.com/wulinteousa2-hash/napari-chat-assistant/raw/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/napari-chat-assistant.svg?color=green)](https://pypi.org/project/napari-chat-assistant)
+[![Python Version](https://img.shields.io/pypi/pyversions/napari-chat-assistant.svg?color=green)](https://python.org)
+[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-chat-assistant)](https://napari-hub.org/plugins/napari-chat-assistant)
+
+---
+
 Local Ollama-powered assistant for napari image-analysis workflows.
 
 `napari-chat-assistant` adds a dock widget inside napari that understands the active viewer session, runs built-in image-analysis actions, and generates executable napari Python code when a request goes beyond the current toolset.
@@ -178,6 +185,11 @@ git clone https://github.com/wulinteousa2-hash/napari-chat-assistant.git
 cd napari-chat-assistant
 pip install -e .
 ```
+
+## Release
+
+This package is published to PyPI so napari Hub can discover it.
+For maintainer release instructions and PyPI publishing setup, see [RELEASING.md](/home/wteox/Projects/napari/napari-chat-assistant/RELEASING.md).
 
 ## Usage
 
