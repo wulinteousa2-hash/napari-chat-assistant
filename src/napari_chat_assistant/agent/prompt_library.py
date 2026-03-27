@@ -6,10 +6,9 @@ from pathlib import Path
 
 
 DEFAULT_PROMPTS = [
-    "show me my layers",
     "inspect the selected layer",
     "apply CLAHE to the selected EM image with kernel_size 32, clip_limit 0.01, nbins 256",
-    "apply CLAHE to all open EM images with kernel_size 64, clip_limit 0.02, nbins 512",
+    "enerate napari code that creates a synthetic image in the current viewer for teaching image noise and SNR",
     "preview threshold for the selected image",
     "apply threshold for dim objects",
     "measure the current mask",
