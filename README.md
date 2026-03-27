@@ -189,7 +189,7 @@ pip install -e .
 ## Release
 
 This package is published to PyPI so napari Hub can discover it.
-For maintainer release instructions and PyPI publishing setup, see [RELEASING.md] (https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/RELEASING.md).
+For maintainer release instructions and PyPI publishing setup, see [RELEASING.md] (RELEASING.md).
 ## Usage
 
 1. Start napari.
