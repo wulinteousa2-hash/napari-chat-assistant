@@ -26,14 +26,14 @@ Complete these steps before the first PyPI release:
 1. Update the version in [`pyproject.toml`](/home/wteox/Projects/napari/napari-chat-assistant/pyproject.toml).
 2. Run local verification as needed.
 3. Commit the version change.
-4. Create a version tag such as `v1.2.1`.
+4. Create a version tag such as `v1.2.2`.
 5. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.2.1"
-git tag v1.2.1
+git commit -am "Release 1.2.2"
+git tag v1.2.2
 git push origin main --tags
 ```
 
@@ -41,18 +41,14 @@ After the tag is pushed, GitHub Actions runs the release workflow and publishes 
 
 ## Release Notes
 
-### 1.2.1
+### 1.2.2
 
-Release `1.2.1` updates package metadata and release automation for PyPI and napari Hub discovery.
+Release `1.2.2` refines the napari manifest metadata and aligns release documentation with the current package version.
 
 Changes:
-- add the `Framework :: napari` classifier for napari plugin discovery
-- add project URLs to package metadata
-- align package version metadata to `1.2.1`
-- add a `tox`-based test matrix for GitHub Actions
-- add a trusted-publishing PyPI deploy workflow
-- reorganize maintainer release documentation
-- improve the README header with PyPI and napari Hub badges
+- align package version metadata to `1.2.2`
+- refine `napari.yaml` manifest metadata for napari Hub indexing
+- refresh maintainer release examples to use `v1.2.2`
 
 ## Local Verification
 

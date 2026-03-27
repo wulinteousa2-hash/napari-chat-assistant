@@ -1,6 +1,9 @@
 name: napari-chat-assistant
 display_name: Local Chat Assistant
+description: Local chat assistant scaffold for napari image-analysis workflows
 visibility: public
+categories:
+  - Utilities
 contributions:
   commands:
     - id: napari-chat-assistant.chat_panel
