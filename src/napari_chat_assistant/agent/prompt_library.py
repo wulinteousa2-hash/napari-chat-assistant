@@ -11,6 +11,7 @@ DEFAULT_PROMPTS = [
     "enerate napari code that creates a synthetic image in the current viewer for teaching image noise and SNR",
     "preview threshold for the selected image",
     "apply threshold for dim objects",
+    "generate a docked histogram and simple SNR widget for the selected image using the current viewer",
     "measure the current mask",
     "give me QtConsole code to print the selected layer name and shape",
 ]
