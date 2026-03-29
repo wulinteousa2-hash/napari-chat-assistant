@@ -26,20 +26,33 @@ Complete these steps before the first PyPI release:
 1. Update the version in [`pyproject.toml`](/home/wteox/Projects/napari/napari-chat-assistant/pyproject.toml).
 2. Run local verification as needed.
 3. Commit the version change.
-4. Create a version tag such as `v1.2.3`.
+4. Create a version tag such as `v1.2.4`.
 5. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.2.3"
-git tag v1.2.3
+git commit -am "Release 1.2.4"
+git tag v1.2.4
 git push origin main --tags
 ```
 
 After the tag is pushed, GitHub Actions runs the release workflow and publishes the package to PyPI.
 
 ## Release Notes
+
+### 1.2.4
+
+Release `1.2.4` adds lightweight local telemetry for real model usage, improves generated-code safety and recovery, and updates the default model recommendation.
+
+Changes:
+- add append-only JSONL telemetry for turn start, completion, reject feedback, and approved code execution outcomes
+- record model name, prompt hash, latency, response type, and selected layer snapshot during normal use
+- document the local telemetry log in the README
+- strengthen generated-code validation for common NumPy dtype mistakes, unsupported napari imports, and unavailable `viewer.*` APIs before execution
+- keep validation-blocked code visible and copyable while disabling `Run Code`
+- improve routing guidance so threshold, mask, and image-to-label requests prefer built-in tools over generated code
+- switch the default recommended model to `nemotron-cascade-2:30b`
 
 ### 1.2.3
 

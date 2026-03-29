@@ -33,7 +33,7 @@ Current capabilities include:
 - reject the last assistant outcome from session memory with a thumbs-down control
 
 The current default model is:
-- `qwen3.5`
+- `nemotron-cascade-2:30b`
 
 ## Why This Plugin
 
@@ -146,7 +146,7 @@ This is designed for users who want repeatable automation without committing eve
 - Python 3.9+
 - napari
 - Ollama installed locally
-- a local Ollama model such as `qwen3.5`
+- a local Ollama model such as `nemotron-cascade-2:30b`
 
 Tested during development on an NVIDIA DGX Spark workstation.
 
@@ -165,14 +165,14 @@ ollama serve
 Pull a model before using the plugin:
 
 ```bash
-ollama pull qwen3.5
+ollama pull nemotron-cascade-2:30b
 ```
 
 Optional alternatives:
 
 ```bash
 ollama pull qwen3-coder-next:latest
-ollama pull qwen3.5:35b
+ollama pull qwen3.5
 ollama pull qwen2.5:7b
 ```
 
@@ -310,16 +310,16 @@ This keeps the assistant more grounded than a plain chat interface and makes com
 ## Recommended Models
 
 Good starting choices:
-- `qwen3.5`
+- `nemotron-cascade-2:30b`
 - `qwen3-coder-next:latest`
+- `qwen3.5`
 - `qwen2.5:7b`
-- `qwen3.5:35b`
 
 Selection guidance:
-- `qwen3.5` is the current default and a good general model for this workflow. The local install you tested is about 9.7B parameters.
+- `nemotron-cascade-2:30b` is the current default and a strong general model for this workflow.
 - `qwen3-coder-next:latest` is a better candidate for Python and napari code generation, but it is significantly heavier.
+- `qwen3.5` remains a useful alternative general model.
 - `qwen2.5:7b` is lighter and may fit smaller-memory systems more easily.
-- `qwen3.5:35b` is a larger general model that needs substantially more memory than `qwen3.5`.
 
 Memory note:
 - Larger tags require more RAM or VRAM.
@@ -374,7 +374,7 @@ To try a different model:
 - pull it in a terminal, for example:
 
 ```bash
-ollama pull qwen3.5
+ollama pull nemotron-cascade-2:30b
 ```
 
 Then use `Test Connection` to refresh the plugin state.
@@ -386,6 +386,23 @@ The plugin writes two local log files:
 - `~/.napari-chat-assistant/crash.log`
 
 Use these together with the terminal traceback when diagnosing crashes or unclear UI failures.
+
+### Local model telemetry
+
+The plugin also writes lightweight local telemetry to:
+- `~/.napari-chat-assistant/model_telemetry.jsonl`
+
+This records real usage events such as:
+- request start and completion
+- selected model and prompt hash
+- total latency
+- response type (`reply`, `tool`, `code`, or `error`)
+- reject feedback from `👎 Reject`
+- approved code execution success or failure
+
+The goal is passive model tracking during actual work rather than separate benchmarking runs.
+
+Generated code is also preflight-validated before execution for common dtype mistakes, unsupported napari imports, and unavailable `viewer.*` APIs. When validation blocks execution, the code remains visible and copyable for review or regeneration.
 
 ## Development
 

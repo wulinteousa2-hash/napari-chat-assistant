@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
+import time
+import uuid
 from contextlib import redirect_stdout
 
 import napari
@@ -31,7 +34,14 @@ from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, 
 from napari_chat_assistant.agent.code_validation import validate_generated_code
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
-from napari_chat_assistant.agent.logging_utils import APP_LOG_PATH, CRASH_LOG_PATH, enable_fault_logging, get_plugin_logger
+from napari_chat_assistant.agent.logging_utils import (
+    APP_LOG_PATH,
+    CRASH_LOG_PATH,
+    TELEMETRY_LOG_PATH,
+    append_telemetry_event,
+    enable_fault_logging,
+    get_plugin_logger,
+)
 from napari_chat_assistant.agent.prompt_library import (
     clear_prompt_library,
     load_prompt_library,
@@ -223,11 +233,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
     saved_settings = {
         "provider": "Local (Ollama-style)",
         "base_url": "http://127.0.0.1:11434",
-        "model": "qwen3.5",
+        "model": "nemotron-cascade-2:30b",
     }
     active_workers: list[object] = []
     available_models: list[str] = []
-    pending_code = {"code": "", "message": ""}
+    pending_code = {"code": "", "message": "", "turn_id": "", "model": "", "runnable": False}
+    last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
     session_memory_state = load_session_memory()
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
@@ -280,6 +291,45 @@ def chat_widget(napari_viewer=None) -> QWidget:
         action_log.addItem(message)
         action_log.scrollToBottom()
         logger.info(message)
+
+    def prompt_hash(text: str) -> str:
+        clean = str(text or "").strip().encode("utf-8")
+        return hashlib.sha256(clean).hexdigest()[:16] if clean else ""
+
+    def categorize_prompt(text: str) -> str:
+        source = " ".join(str(text or "").strip().lower().split())
+        if not source:
+            return "unknown"
+        if "clahe" in source:
+            return "clahe"
+        if "threshold" in source and "preview" in source:
+            return "threshold_preview"
+        if "threshold" in source:
+            return "threshold_apply"
+        if "mask" in source and any(word in source for word in ("measure", "area", "volume")):
+            return "mask_measurement"
+        if "mask" in source or "morpholog" in source:
+            return "mask_workflow"
+        if "inspect" in source or "layer" in source:
+            return "inspection"
+        if "code" in source or "python" in source:
+            return "code_generation"
+        return "general"
+
+    def selected_layer_snapshot() -> dict:
+        profile = selected_layer_profile()
+        if not isinstance(profile, dict):
+            return {"selected_layer_name": "", "selected_layer_type": ""}
+        return {
+            "selected_layer_name": str(profile.get("layer_name", "")).strip(),
+            "selected_layer_type": str(profile.get("layer_type", "")).strip(),
+        }
+
+    def record_telemetry(event_type: str, payload: dict):
+        try:
+            append_telemetry_event(event_type, payload)
+        except Exception:
+            logger.exception("Failed to append telemetry event: %s", event_type)
 
     def show_help_tips(*_args):
         append_chat_message(
@@ -353,6 +403,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
         session_memory_state = reject_items(session_memory_state, last_memory_candidate_ids)
         persist_session_memory()
         append_chat_message("assistant", "Marked the last assistant outcome as rejected for this session memory.")
+        record_telemetry(
+            "turn_feedback",
+            {
+                "turn_id": last_turn_metrics.get("turn_id", ""),
+                "model": last_turn_metrics.get("model", ""),
+                "feedback": "reject",
+                "response_action": last_turn_metrics.get("action", ""),
+                "prompt_hash": last_turn_metrics.get("prompt_hash", ""),
+            },
+        )
         append_log("Rejected last assistant memory candidates.")
         set_status("Status: last answer rejected from session memory", ok=None)
         set_last_memory_candidates([])
@@ -424,16 +484,21 @@ def chat_widget(napari_viewer=None) -> QWidget:
         for widget in (base_url_edit, model_combo, test_btn, save_btn, pull_btn, unload_btn, prompt, refresh_btn):
             widget.setEnabled(enabled)
 
-    def set_pending_code(code_text: str = "", *, message: str = ""):
+    def set_pending_code(code_text: str = "", *, message: str = "", runnable: bool = True, label: str | None = None):
         pending_code["code"] = str(code_text or "").strip()
         pending_code["message"] = str(message or "").strip()
+        pending_code["runnable"] = bool(runnable and pending_code["code"])
         has_code = bool(pending_code["code"])
-        pending_code_label.setText("Pending code: ready to run" if has_code else "Pending code: none")
-        run_code_btn.setEnabled(has_code)
+        if not has_code:
+            pending_code["turn_id"] = ""
+            pending_code["model"] = ""
+            pending_code["runnable"] = False
+        pending_code_label.setText(label or ("Pending code: ready to run" if has_code else "Pending code: none"))
+        run_code_btn.setEnabled(bool(has_code and pending_code["runnable"]))
         copy_code_btn.setEnabled(has_code)
 
     def preflight_generated_code(code_text: str) -> list[str]:
-        return validate_generated_code(code_text)
+        return validate_generated_code(code_text, viewer=viewer)
 
     def refresh_model_choices(model_names: list[str], preferred: str | None = None):
         nonlocal available_models
@@ -636,23 +701,23 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "How to change models:\n"
             "1. Review available tags at https://ollama.com/search\n"
             "2. Enter a tag in the Model field, for example:\n"
-            "   qwen3.5\n"
+            "   nemotron-cascade-2:30b\n"
             "   qwen3-coder-next:latest\n"
-            "   qwen3.5:35b\n"
+            "   qwen3.5\n"
             "   qwen2.5:7b\n"
             f"3. Pull the selected tag in a terminal if needed:\n{command}\n"
             f"4. Then click Test Connection against {host_text}.\n\n"
             "Model selection guidance:\n"
-            "- qwen3.5 is the current default for general assistant use in this plugin. Your local qwen3.5 install is about 9.7B parameters.\n"
+            "- nemotron-cascade-2:30b is the current default for general assistant use in this plugin.\n"
             "- qwen3-coder-next:latest is a stronger choice when you want better Python or napari code generation.\n"
-            "- qwen3.5:35b is a larger general model and may improve quality, but it requires much more memory than qwen3.5.\n"
-            "- qwen2.5:7b is a lighter option for smaller-memory systems, but it is usually less capable than qwen3.5.\n\n"
+            "- qwen3.5 remains a useful alternative general model.\n"
+            "- qwen2.5:7b is a lighter option for smaller-memory systems.\n\n"
             "Memory guidance:\n"
             "- Larger tags generally require more RAM or VRAM.\n"
             "- In this environment, qwen3-coder-next:latest may require roughly 100 GB of available memory to run comfortably.\n"
             "- If a model is too large for the workstation, use a smaller tag first and confirm it loads reliably before moving to a larger one.\n\n"
             "Tip:\n"
-            "- The Model field accepts explicit tags such as qwen3-coder-next:latest, qwen3.5:35b, or qwen2.5:7b, so you can switch models without changing the Base URL.",
+            "- The Model field accepts explicit tags such as nemotron-cascade-2:30b, qwen3-coder-next:latest, qwen3.5, or qwen2.5:7b, so you can switch models without changing the Base URL.",
         )
         append_log(f"Opened model help. Suggested terminal command: {command}")
         set_status("Status: model help shown", ok=None)
@@ -682,6 +747,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if not text:
             return
         nonlocal session_memory_state
+        turn_id = uuid.uuid4().hex
+        request_started_at = time.perf_counter()
         current_profile = selected_layer_profile()
         session_memory_state = update_session_goal(session_memory_state, text)
         session_memory_state = set_active_dataset_focus(
@@ -706,6 +773,21 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         saved_settings["base_url"] = base_url
         saved_settings["model"] = model_name
+        turn_prompt_hash = prompt_hash(text)
+        turn_prompt_category = categorize_prompt(text)
+        turn_layer_snapshot = selected_layer_snapshot()
+        record_telemetry(
+            "turn_started",
+            {
+                "turn_id": turn_id,
+                "model": model_name,
+                "base_url": base_url,
+                "prompt_hash": turn_prompt_hash,
+                "prompt_chars": len(text),
+                "prompt_category": turn_prompt_category,
+                **turn_layer_snapshot,
+            },
+        )
 
         append_chat_message("assistant", "...")
         set_status(f"Status: sending to {model_name}", ok=None)
@@ -755,6 +837,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     result_message = str(prepared.get("message", ""))
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+                    last_turn_metrics.update(
+                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    )
+                    record_telemetry(
+                        "turn_completed",
+                        {
+                            "turn_id": turn_id,
+                            "model": model_name,
+                            "base_url": base_url,
+                            "prompt_hash": turn_prompt_hash,
+                            "prompt_category": turn_prompt_category,
+                            "response_action": "tool",
+                            "tool_name": tool_name,
+                            "tool_success": True,
+                            "latency_ms": latency_ms,
+                            **turn_layer_snapshot,
+                        },
+                    )
                     remember_assistant_outcome(
                         tool_message or result_message,
                         target_type="tool_result",
@@ -788,6 +889,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     result_message = apply_tool_job_result(viewer, tool_result)
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+                    last_turn_metrics.update(
+                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    )
+                    record_telemetry(
+                        "turn_completed",
+                        {
+                            "turn_id": turn_id,
+                            "model": model_name,
+                            "base_url": base_url,
+                            "prompt_hash": turn_prompt_hash,
+                            "prompt_category": turn_prompt_category,
+                            "response_action": "tool",
+                            "tool_name": tool_name,
+                            "tool_success": True,
+                            "latency_ms": latency_ms,
+                            **turn_layer_snapshot,
+                        },
+                    )
                     session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
                     persist_session_memory()
                     remember_assistant_outcome(
@@ -803,6 +923,26 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     error_text = format_worker_error(*args)
                     logger.exception("Tool execution failed: %s | %s", tool_name, error_text)
                     replace_last_assistant(f"Tool execution failed: {error_text}")
+                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+                    last_turn_metrics.update(
+                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    )
+                    record_telemetry(
+                        "turn_completed",
+                        {
+                            "turn_id": turn_id,
+                            "model": model_name,
+                            "base_url": base_url,
+                            "prompt_hash": turn_prompt_hash,
+                            "prompt_category": turn_prompt_category,
+                            "response_action": "tool",
+                            "tool_name": tool_name,
+                            "tool_success": False,
+                            "latency_ms": latency_ms,
+                            "error": error_text,
+                            **turn_layer_snapshot,
+                        },
+                    )
                     append_log(f"Tool execution failed: {tool_name} | {error_text}")
                     set_status("Status: tool execution failed", ok=False)
                     if tool_worker in active_workers:
@@ -819,18 +959,46 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Code."
                 validation_errors = preflight_generated_code(code_text)
                 if validation_errors:
-                    set_pending_code()
+                    set_pending_code(
+                        code_text,
+                        message=code_message,
+                        runnable=False,
+                        label="Pending code: blocked by validation",
+                    )
+                    pending_code["turn_id"] = turn_id
+                    pending_code["model"] = model_name
                     replace_last_assistant(
                         "Generated code was rejected by local validation:\n"
                         + "\n".join(f"- {error}" for error in validation_errors)
-                        + "\n\nPlease ask again or rephrase the request."
+                        + "\n\nReview or copy the generated code below, then ask the assistant to regenerate or fix it.\n\n"
+                        + format_code_block(code_text)
                     )
                     append_log("Rejected generated code after local validation.")
                     set_status("Status: generated code rejected", ok=False)
                     finish()
                     return
                 set_pending_code(code_text, message=code_message)
+                pending_code["turn_id"] = turn_id
+                pending_code["model"] = model_name
                 replace_last_assistant(f"{code_message}\n{format_code_block(code_text)}")
+                latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+                last_turn_metrics.update(
+                    {"turn_id": turn_id, "model": model_name, "action": "code", "prompt_hash": turn_prompt_hash}
+                )
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": model_name,
+                        "base_url": base_url,
+                        "prompt_hash": turn_prompt_hash,
+                        "prompt_category": turn_prompt_category,
+                        "response_action": "code",
+                        "pending_code_generated": True,
+                        "latency_ms": latency_ms,
+                        **turn_layer_snapshot,
+                    },
+                )
                 remember_assistant_outcome(code_message, target_type="recommendation", target_profile=selected_layer_profile())
                 set_status("Status: code generated, awaiting approval", ok=None)
                 append_log("Generated pending napari code; waiting for approval.")
@@ -839,6 +1007,23 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
             message_text = str(parsed.get("message", reply)).strip() or "[empty response]"
             replace_last_assistant(message_text)
+            latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+            last_turn_metrics.update(
+                {"turn_id": turn_id, "model": model_name, "action": "reply", "prompt_hash": turn_prompt_hash}
+            )
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": model_name,
+                    "base_url": base_url,
+                    "prompt_hash": turn_prompt_hash,
+                    "prompt_category": turn_prompt_category,
+                    "response_action": "reply",
+                    "latency_ms": latency_ms,
+                    **turn_layer_snapshot,
+                },
+            )
             remember_assistant_outcome(
                 message_text,
                 target_type="recommendation",
@@ -854,6 +1039,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
             error_text = format_worker_error(*args)
             logger.exception("Chat request failed: %s", error_text)
             replace_last_assistant(f"Request failed: {error_text}")
+            latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+            last_turn_metrics.update(
+                {"turn_id": turn_id, "model": model_name, "action": "error", "prompt_hash": turn_prompt_hash}
+            )
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": model_name,
+                    "base_url": base_url,
+                    "prompt_hash": turn_prompt_hash,
+                    "prompt_category": turn_prompt_category,
+                    "response_action": "error",
+                    "latency_ms": latency_ms,
+                    "error": error_text,
+                    **turn_layer_snapshot,
+                },
+            )
             set_status("Status: request failed", ok=False)
             append_log(f"Chat request failed: {error_text}")
             finish()
@@ -908,6 +1111,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
             logger.exception("Approved code failed during execution.")
             error_text = str(exc)
             append_chat_message("assistant", f"Approved code failed:\n{error_text}")
+            record_telemetry(
+                "code_execution",
+                {
+                    "turn_id": pending_code.get("turn_id", ""),
+                    "model": pending_code.get("model", ""),
+                    "success": False,
+                    "error": error_text,
+                },
+            )
             append_log(f"Approved code failed: {error_text}")
             set_status("Status: approved code failed", ok=False)
             if pending_code["code"]:
@@ -921,6 +1133,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if stdout_text:
             result_message = f"{result_message}\nOutput:\n{stdout_text}"
         append_chat_message("assistant", result_message)
+        record_telemetry(
+            "code_execution",
+            {
+                "turn_id": pending_code.get("turn_id", ""),
+                "model": pending_code.get("model", ""),
+                "success": True,
+                "stdout_chars": len(stdout_text),
+            },
+        )
         append_log("Approved napari code executed successfully.")
         set_status("Status: approved code executed", ok=True)
         session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
@@ -990,6 +1211,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     refresh_prompt_library()
     append_log(f"Assistant log: {APP_LOG_PATH}")
     append_log(f"Crash log: {CRASH_LOG_PATH}")
+    append_log(f"Telemetry log: {TELEMETRY_LOG_PATH}")
     append_log(f"Prompt library path: {prompt_library_path()}")
     append_log(f"Session memory path: {session_memory_path()}")
     append_log("Assistant panel initialized.")
