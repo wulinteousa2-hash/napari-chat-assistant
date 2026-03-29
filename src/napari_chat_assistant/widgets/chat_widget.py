@@ -57,6 +57,7 @@ from napari_chat_assistant.agent.session_memory import (
     update_session_goal,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
+from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 
 
 class ChatInput(QTextEdit):
@@ -187,19 +188,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
     code_btn_layout = QHBoxLayout(code_btn_row)
     pending_code_label = QLabel("Pending code: none")
     pending_code_label.setStyleSheet("QLabel { color: #c7d2fe; padding: 2px 0; }")
-    reject_memory_btn = QPushButton("Thumbs Down Last Answer")
+    reject_memory_btn = QPushButton("👎 Reject")
+    reject_memory_btn.setToolTip("Reject the last assistant outcome from session memory.")
     reject_memory_btn.setEnabled(False)
-    run_code_btn = QPushButton("Run Pending Code")
-    copy_code_btn = QPushButton("Copy Pending Code")
-    discard_code_btn = QPushButton("Discard Pending Code")
+    help_btn = QPushButton("Help")
+    help_btn.setToolTip("Show prompt-writing tips and example instruction patterns.")
+    run_code_btn = QPushButton("Run Code")
+    copy_code_btn = QPushButton("Copy Code")
     run_code_btn.setEnabled(False)
     copy_code_btn.setEnabled(False)
-    discard_code_btn.setEnabled(False)
     code_btn_layout.addWidget(pending_code_label, 1)
-    code_btn_layout.addWidget(reject_memory_btn)
     code_btn_layout.addWidget(run_code_btn)
     code_btn_layout.addWidget(copy_code_btn)
-    code_btn_layout.addWidget(discard_code_btn)
+    code_btn_layout.addWidget(reject_memory_btn)
+    code_btn_layout.addWidget(help_btn)
     transcript_layout.addWidget(code_btn_row)
 
     input_group = QGroupBox("Prompt")
@@ -240,25 +242,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
     model_combo.addItem(saved_settings["model"])
     model_combo.setCurrentText(saved_settings["model"])
 
-    def append_chat_message(role: str, message: str):
-        safe_message = (
-            str(message).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-        )
+    def append_chat_message(role: str, message: str, *, render_markdown: bool = True):
         if role == "user":
+            safe_message = render_user_message_html(message)
             html = (
                 '<table width="100%" cellspacing="0" cellpadding="0" style="margin: 8px 0;"><tr><td width="35%"></td>'
                 '<td align="right"><div style="display: inline-block; background: #1d2a44; color: #d7ecff; '
-                'border: 1px solid #3f5d87; padding: 10px 12px; border-radius: 10px; font-family: monospace; '
+                'border: 1px solid #3f5d87; padding: 10px 12px; border-radius: 10px; '
                 f'text-align: left; max-width: 100%;">{safe_message}</div></td></tr></table>'
             )
         else:
+            safe_message = render_assistant_message_html(message) if render_markdown else render_user_message_html(message)
             html = (
                 '<table width="100%" cellspacing="0" cellpadding="0" style="margin: 8px 0;"><tr>'
                 '<td align="left"><div style="display: inline-block; background: #111827; color: #d1fae5; '
-                'border: 1px solid #2f855a; padding: 10px 12px; border-radius: 10px; font-family: monospace; '
+                'border: 1px solid #2f855a; padding: 10px 12px; border-radius: 10px; '
                 f'text-align: left; max-width: 100%;">{safe_message}</div></td><td width="35%"></td></tr></table>'
             )
         transcript.append(html)
+
+    def replace_last_assistant(text_out: str, *, render_markdown: bool = True):
+        cursor = transcript.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.select(QTextCursor.BlockUnderCursor)
+        cursor.removeSelectedText()
+        cursor.deletePreviousChar()
+        append_chat_message("assistant", text_out, render_markdown=render_markdown)
 
     def refresh_context(*_args):
         context_label.setText(layer_summary(viewer))
@@ -271,6 +280,38 @@ def chat_widget(napari_viewer=None) -> QWidget:
         action_log.addItem(message)
         action_log.scrollToBottom()
         logger.info(message)
+
+    def show_help_tips(*_args):
+        append_chat_message(
+            "assistant",
+            "**Prompt Tips**\n"
+            "- Ask for the exact output style you want.\n"
+            "- Ask the assistant to improve your prompt first when the request is vague.\n"
+            "- If multiple layers are open, specify the layer name.\n"
+            "- Say whether you want a preview, an applied result, or just an explanation.\n\n"
+            "**Useful Phrases**\n"
+            "- `Use the selected layer`\n"
+            "- `Use layer: <layer_name>`\n"
+            "- `Preview threshold first`\n"
+            "- `Apply threshold now`\n"
+            "- `Inspect the selected layer first`\n"
+            "- `Use a built-in tool if possible; otherwise generate napari code`\n\n"
+            "**Format Requests**\n"
+            "- `Reply in markdown`\n"
+            "- `Use bullets and short sections`\n"
+            "- `Show a numbered workflow`\n"
+            "- `Explain first, then give runnable napari code`\n\n"
+            "**Language Tip**\n"
+            "- You can prompt in your preferred language.\n"
+            "- Results may vary by model and task.\n"
+            "- Ask for the final answer in your preferred language if needed.\n\n"
+            "**Example Meta-Prompts**\n"
+            "- `Improve my prompt first, then answer in markdown.`\n"
+            "- `Ask clarifying questions before solving this.`\n"
+            "- `Inspect the selected layer first, then recommend the next step.`\n"
+            "- `Rewrite my request so the result is more precise for napari.`",
+        )
+        append_log("Opened prompt-writing help.")
 
     def persist_session_memory():
         save_session_memory(session_memory_state)
@@ -390,7 +431,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
         pending_code_label.setText("Pending code: ready to run" if has_code else "Pending code: none")
         run_code_btn.setEnabled(has_code)
         copy_code_btn.setEnabled(has_code)
-        discard_code_btn.setEnabled(has_code)
 
     def preflight_generated_code(code_text: str) -> list[str]:
         return validate_generated_code(code_text)
@@ -693,14 +733,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if worker in active_workers:
                 active_workers.remove(worker)
 
-        def replace_last_assistant(text_out: str):
-            cursor = transcript.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.select(QTextCursor.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deletePreviousChar()
-            append_chat_message("assistant", text_out)
-
         def on_returned(reply):
             try:
                 parsed = normalize_model_response(reply)
@@ -784,7 +816,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
             if action == "code":
                 code_text = str(parsed.get("code", "")).strip()
-                code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Pending Code."
+                code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Code."
                 validation_errors = preflight_generated_code(code_text)
                 if validation_errors:
                     set_pending_code()
@@ -805,9 +837,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 finish()
                 return
 
-            replace_last_assistant(str(parsed.get("message", reply)).strip() or "[empty response]")
+            message_text = str(parsed.get("message", reply)).strip() or "[empty response]"
+            replace_last_assistant(message_text)
             remember_assistant_outcome(
-                str(parsed.get("message", reply)).strip() or "[empty response]",
+                message_text,
                 target_type="recommendation",
                 target_profile=selected_layer_profile(),
             )
@@ -827,14 +860,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
         worker.errored.connect(request_failed)
         worker.start()
-
-    def discard_pending_code(*_args):
-        if not pending_code["code"]:
-            return
-        set_pending_code()
-        append_chat_message("assistant", "Discarded pending napari code.")
-        append_log("Discarded pending napari code.")
-        set_status("Status: pending code discarded", ok=None)
 
     def copy_pending_code(*_args):
         code_text = pending_code["code"]
@@ -867,7 +892,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log("Running approved napari code.")
         run_code_btn.setEnabled(False)
         copy_code_btn.setEnabled(False)
-        discard_code_btn.setEnabled(False)
         stdout_buffer = io.StringIO()
         namespace = {
             "__builtins__": __builtins__,
@@ -889,7 +913,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if pending_code["code"]:
                 run_code_btn.setEnabled(True)
                 copy_code_btn.setEnabled(True)
-                discard_code_btn.setEnabled(True)
             return
 
         refresh_context()
@@ -949,8 +972,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     unload_btn.clicked.connect(unload_model)
     run_code_btn.clicked.connect(run_pending_code)
     copy_code_btn.clicked.connect(copy_pending_code)
-    discard_code_btn.clicked.connect(discard_pending_code)
     reject_memory_btn.clicked.connect(reject_last_memory)
+    help_btn.clicked.connect(show_help_tips)
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
     save_prompt_btn.clicked.connect(save_current_prompt)

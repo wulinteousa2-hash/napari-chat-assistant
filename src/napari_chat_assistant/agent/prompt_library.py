@@ -7,13 +7,18 @@ from pathlib import Path
 
 DEFAULT_PROMPTS = [
     "inspect the selected layer",
-    "apply CLAHE to the selected EM image with kernel_size 32, clip_limit 0.01, nbins 256",
-    "enerate napari code that creates a synthetic image in the current viewer for teaching image noise and SNR",
+    "inspect the selected layer first, then recommend the next step",
+    "use layer: <layer_name>. inspect it and report its properties and recommendations",
+    "apply CLAHE to the selected image with kernel_size 32, clip_limit 0.01, nbins 256",
     "preview threshold for the selected image",
+    "preview threshold first for the selected image, then explain whether I should apply it",
     "apply threshold for dim objects",
-    "generate a docked histogram and simple SNR widget for the selected image using the current viewer",
     "measure the current mask",
-    "give me QtConsole code to print the selected layer name and shape",
+    "use a built-in tool if possible; otherwise generate napari code",
+    "explain first, then give runnable napari code for the current viewer",
+    "generate a synthetic image in the current viewer with chosen dimensions, bit depth, and SNR",
+    "improve my prompt first, then answer in markdown with bullets and short sections",
+    "ask clarifying questions before solving this if the request is ambiguous",
 ]
 
 

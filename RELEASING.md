@@ -26,20 +26,30 @@ Complete these steps before the first PyPI release:
 1. Update the version in [`pyproject.toml`](/home/wteox/Projects/napari/napari-chat-assistant/pyproject.toml).
 2. Run local verification as needed.
 3. Commit the version change.
-4. Create a version tag such as `v1.2.2`.
+4. Create a version tag such as `v1.2.3`.
 5. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.2.2"
-git tag v1.2.2
+git commit -am "Release 1.2.3"
+git tag v1.2.3
 git push origin main --tags
 ```
 
 After the tag is pushed, GitHub Actions runs the release workflow and publishes the package to PyPI.
 
 ## Release Notes
+
+### 1.2.3
+
+Release `1.2.3` improves the in-plugin chat experience, refreshes prompt guidance, and updates the built-in prompt library to better match current workflows.
+
+Changes:
+- add assistant markdown subset rendering for bullets, numbered lists, inline code, links, and fenced code blocks
+- replace the temporary markdown preview control with a user-facing `Help` button and concise prompt-writing guidance
+- simplify the chat action row by shortening code actions and moving global actions to the right
+- refresh built-in default prompts to combine workflow examples, prompt-improvement examples, CLAHE, and synthetic-image generation
 
 ### 1.2.2
 
