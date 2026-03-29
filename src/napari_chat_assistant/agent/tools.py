@@ -28,6 +28,9 @@ ASSISTANT_TOOL_NAMES = {
     "list_layers",
     "inspect_selected_layer",
     "inspect_layer",
+    "open_nd2_converter",
+    "open_spectral_viewer",
+    "open_spectral_analysis",
     "apply_clahe",
     "apply_clahe_batch",
     "preview_threshold",
@@ -124,6 +127,9 @@ def assistant_system_prompt() -> str:
         "- list_layers: {}\n"
         '- inspect_selected_layer: {}\n'
         '- inspect_layer: {"layer_name": string}\n'
+        '- open_nd2_converter: {}\n'
+        '- open_spectral_viewer: {}\n'
+        '- open_spectral_analysis: {}\n'
         '- apply_clahe: {"layer_name": optional string, "kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
         '- apply_clahe_batch: {"kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
         '- preview_threshold: {"layer_name": optional string, "polarity": "auto|bright|dim"}\n'
@@ -137,6 +143,10 @@ def assistant_system_prompt() -> str:
         "- If the user is asking what exists or what is selected, use list_layers.\n"
         "- If the user asks about the selected layer's kind, properties, dimensions, dtype, or statistics, use inspect_selected_layer.\n"
         "- If the user asks about a specific named layer's kind, properties, dimensions, dtype, or statistics, use inspect_layer.\n"
+        "- If the user asks to convert ND2, Nikon microscopy files, Nikon proprietary files, or Nikon spectral files to OME-Zarr, use open_nd2_converter.\n"
+        "- If the user asks to open the ND2 converter, ND2 exporter, batch exporter, or OME-Zarr converter, use open_nd2_converter.\n"
+        "- If the user asks for a spectral viewer, spectral rendering, pseudocolor viewer, or visible/truecolor spectral display, use open_spectral_viewer.\n"
+        "- If the user asks for PCA, spectral ratio analysis, Welch t-test, ANOVA, or spectral statistics, use open_spectral_analysis.\n"
         "- The viewer_context includes deterministic per-layer dataset profiles with semantic_type, confidence, axes_detected, and recommendation classes. Use those fields instead of guessing from the prompt.\n"
         "- The payload may include session_memory with approved prior decisions. Use it only as secondary context. If session_memory conflicts with the current selected_layer_profile or viewer_context, follow the current viewer data.\n"
         "- If the user asks for CLAHE, adaptive histogram equalization, local contrast enhancement, or EM contrast enhancement, use apply_clahe or apply_clahe_batch.\n"

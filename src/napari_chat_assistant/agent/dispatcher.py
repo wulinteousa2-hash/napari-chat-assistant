@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 import napari
 import numpy as np
 
@@ -26,6 +28,32 @@ from .tools import (
 )
 
 
+_ND2_INTEGRATION_MESSAGE = (
+    "ND2 conversion and spectral-analysis integration is not available in this environment.\n\n"
+    "To enable Nikon ND2 to OME-Zarr workflows, install `napari-nd2-spectral-ome-zarr`.\n\n"
+    "GitHub:\n"
+    "https://github.com/wulinteousa2-hash/napari-nd2-spectral-ome-zarr\n\n"
+    "napari Hub:\n"
+    "https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html"
+)
+
+
+def _load_optional_widget(module_name: str, class_name: str):
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return None
+    return getattr(module, class_name, None)
+
+
+def _dock_optional_widget(viewer: napari.Viewer, widget_cls, display_name: str) -> str:
+    if widget_cls is None:
+        return _ND2_INTEGRATION_MESSAGE
+    widget = widget_cls(viewer)
+    viewer.window.add_dock_widget(widget, name=display_name)
+    return f"Opened [{display_name}] from napari-nd2-spectral-ome-zarr."
+
+
 def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> dict:
     args = arguments or {}
     if tool_name == "list_layers":
@@ -40,6 +68,18 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
         if layer is None:
             return {"mode": "immediate", "message": f"No layer found with name [{args.get('layer_name', '')}]."}
         return {"mode": "immediate", "message": layer_detail_summary(layer)}
+
+    if tool_name == "open_nd2_converter":
+        widget_cls = _load_optional_widget("napari_nd2_spectral_ome_zarr._widget", "Nd2SpectralWidget")
+        return {"mode": "immediate", "message": _dock_optional_widget(viewer, widget_cls, "ND2 Spectral Export")}
+
+    if tool_name == "open_spectral_viewer":
+        widget_cls = _load_optional_widget("napari_nd2_spectral_ome_zarr._spectral_viewer", "SpectralViewerWidget")
+        return {"mode": "immediate", "message": _dock_optional_widget(viewer, widget_cls, "Spectral Viewer")}
+
+    if tool_name == "open_spectral_analysis":
+        widget_cls = _load_optional_widget("napari_nd2_spectral_ome_zarr._spectral_analysis", "SpectralAnalysisWidget")
+        return {"mode": "immediate", "message": _dock_optional_widget(viewer, widget_cls, "Spectral Analysis")}
 
     if tool_name == "apply_clahe":
         image_layer = find_image_layer(viewer, args.get("layer_name"))

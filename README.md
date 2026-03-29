@@ -31,6 +31,7 @@ Current capabilities include:
 - clear unpinned recent and built-in prompts while keeping saved and pinned items
 - keep bounded session memory from approved prior turns
 - reject the last assistant outcome from session memory with a thumbs-down control
+- optionally open ND2 conversion, spectral viewer, and spectral analysis widgets from `napari-nd2-spectral-ome-zarr`
 
 The current default model is:
 - `nemotron-cascade-2:30b`
@@ -102,6 +103,19 @@ Generated code can be:
 - executed from the plugin after user review
 
 This is useful when you want a reusable script, need to adjust code manually, or prefer explicit code over hidden automation.
+
+### Optional ND2 and spectral integration
+
+If `napari-nd2-spectral-ome-zarr` is installed, the assistant can open:
+- the ND2-to-OME-Zarr export widget
+- the Spectral Viewer widget
+- the Spectral Analysis widget
+
+This lets chat act as an entry point for Nikon ND2 conversion and spectral workflows without rebuilding those UIs inside this plugin.
+
+Install links:
+- GitHub: `https://github.com/wulinteousa2-hash/napari-nd2-spectral-ome-zarr`
+- napari Hub: `https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html`
 
 ### Selective Session Memory
 

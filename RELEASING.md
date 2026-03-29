@@ -26,20 +26,30 @@ Complete these steps before the first PyPI release:
 1. Update the version in [`pyproject.toml`](/home/wteox/Projects/napari/napari-chat-assistant/pyproject.toml).
 2. Run local verification as needed.
 3. Commit the version change.
-4. Create a version tag such as `v1.2.4`.
+4. Create a version tag such as `v1.2.5`.
 5. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.2.4"
-git tag v1.2.4
+git commit -am "Release 1.2.5"
+git tag v1.2.5
 git push origin main --tags
 ```
 
 After the tag is pushed, GitHub Actions runs the release workflow and publishes the package to PyPI.
 
 ## Release Notes
+
+### 1.2.5
+
+Release `1.2.5` adds optional integration hooks for ND2 conversion and spectral workflows through `napari-nd2-spectral-ome-zarr`.
+
+Changes:
+- add optional integration hooks to open ND2 conversion, spectral viewer, and spectral analysis widgets from `napari-nd2-spectral-ome-zarr`
+- route Nikon microscopy file, ND2 conversion, spectral viewer, and spectral analysis requests to those widgets when the integration is available
+- show GitHub and napari Hub install guidance when the optional ND2 integration is not installed
+- document the optional ND2 and spectral integration in the README
 
 ### 1.2.4
 
