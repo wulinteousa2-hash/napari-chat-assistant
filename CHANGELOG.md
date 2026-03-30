@@ -2,6 +2,16 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.3.1
+
+- Renamed `Prompt Library` to `Library`.
+- Added a `Code` tab alongside `Prompts` for reusable runnable snippets.
+- Added built-in background-execution demo code snippets to the Code tab.
+- Added right-click rename and tag editing for prompt and code items.
+- Reorganized session information into `Activity`, `Telemetry`, and `Diagnostics` tabs.
+- Shortened several UI button labels and moved detail into tooltips to reduce layout pressure.
+- Added `run_in_background(...)` to the code runtime for heavy work that should not block the napari UI.
+
 ## 1.3.0
 
 - Added `Run My Code` so you can paste Python into the Prompt box and run it directly without opening QtConsole.

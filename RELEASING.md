@@ -28,20 +28,33 @@ Complete these steps before the first PyPI release:
 3. Refresh user-facing docs as needed, especially [`README.md`](/home/wteox/Projects/napari/napari-chat-assistant/README.md) and this file when the release adds visible workflow changes.
 4. Run local verification as needed.
 5. Commit the release changes.
-6. Create a version tag such as `v1.3.0`.
+6. Create a version tag such as `v1.3.1`.
 7. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.3.0"
-git tag v1.3.0
+git commit -am "Release 1.3.1"
+git tag v1.3.1
 git push origin main --tags
 ```
 
 After the tag is pushed, GitHub Actions runs the release workflow and publishes the package to PyPI.
 
 ## Release Notes
+
+### 1.3.1
+
+Release `1.3.1` reorganizes the reusable-assets UI into a broader Library model, adds built-in code demos, and improves session organization for everyday and advanced users.
+
+Changes:
+- rename `Prompt Library` to `Library`
+- add a `Code` tab alongside `Prompts`
+- add built-in background-execution demo snippets to the Code tab
+- add right-click rename and tag editing for prompt and code items
+- add `run_in_background(...)` to the code runtime for heavy compute that should not block the napari UI
+- split session information into `Activity`, `Telemetry`, and `Diagnostics` tabs
+- shorten several button labels and move detail into tooltips to keep the UI compact
 
 ### 1.3.0
 

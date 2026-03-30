@@ -27,9 +27,10 @@ Current capabilities include:
 - generate napari Python code when no built-in tool fits
 - copy or run generated code from the assistant UI
 - paste and run your own Python directly from the Prompt box with `Run My Code`, without opening QtConsole
-- save, pin, and reuse prompts through a local Prompt Library
-- delete selected built-in, recent, or saved prompts from the Prompt Library
-- clear unpinned recent and built-in prompts while keeping saved and pinned items
+- save, pin, tag, and reuse prompts through the local Library
+- save, tag, rename, and run reusable code through the Library `Code` tab
+- delete selected built-in, recent, or saved items from the Library
+- clear unpinned recent prompt or code items while keeping saved and pinned items
 - keep bounded session memory from approved prior turns
 - reject the last assistant outcome from session memory with a thumbs-down control
 - optionally open ND2 conversion, spectral viewer, and spectral analysis widgets from `napari-nd2-spectral-ome-zarr`
@@ -136,26 +137,29 @@ Behavior:
 
 This is intentionally not full transcript memory. The model is still grounded primarily in the current napari viewer state.
 
-### Prompt Library
+### Library
 
-The assistant includes a persistent Prompt Library for repeatable workflows:
+The assistant includes a persistent Library for repeatable workflows and reusable code:
 - built-in starter prompts
 - recent prompts captured automatically
 - saved prompts for reusable tasks
 - pinned prompts for high-frequency workflows
+- reusable code snippets in a separate `Code` tab
 
 Interaction:
-- single click loads a prompt into the editor
-- double click sends it directly
+- single click loads a prompt or code snippet into the editor
+- double click sends a prompt directly or runs a code snippet
+- right click can rename or edit tags for saved and recent prompt/code items
 - multi-select supports Shift/Ctrl selection for batch actions
-- `Delete Selected` can remove saved prompts, recent prompts, or hide built-in prompts
-- `Clear Non-Saved` removes unpinned recent and built-in prompts while keeping saved and pinned items
+- `Delete` can remove saved prompts, recent prompts, code snippets, or hide built-in prompts
+- `Clear` removes unpinned recent prompt/code items while keeping saved and pinned items
 
 Logic:
 - `saved` means a user-managed prompt you want to keep as your own reusable entry
 - `pinned` means keep this prompt surfaced at the top of the library
 - a prompt can be pinned without being saved
 - built-in prompts are shipped examples; deleting them hides them from the current local library view
+- code snippets can be tagged and renamed so they are easier to reference later in workflows
 
 This is designed for users who want repeatable automation without committing everything to full scripting.
 
@@ -214,7 +218,7 @@ For maintainer release instructions and PyPI publishing setup, see [RELEASING.md
 3. Leave `Base URL` as `http://127.0.0.1:11434` unless your Ollama server is elsewhere.
 4. Choose a model from the `Model` dropdown or type a model tag manually.
 5. Click `Test`.
-6. Start chatting, or use the Prompt Library for repeatable tasks.
+6. Start chatting, or use the Library for repeatable tasks and reusable code.
 
 If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
 
@@ -263,25 +267,27 @@ Demo and education prompts:
 
 - local Ollama base URL
 - model picker with discovered local models
-- test connection
-- use selected model
+- `Test`
+- `Use`
 - `Setup` help with install, `ollama serve`, and model pull examples
-- unload model
+- `Unload`
 
-### Prompt Library
+### Library
 
 - built-in prompts
 - recent prompts
 - saved prompts
+- code snippets in a separate `Code` tab
 - pinned prompts
 - `saved` keeps your own reusable copy
 - `pinned` keeps a prompt at the top regardless of whether it is built-in, recent, or saved
 - single click to load
-- double click to send
+- double click to send from `Prompts` or run from `Code`
+- right click to rename or edit tags for saved/recent prompt and code items
 - Shift/Ctrl multi-select for batch actions
-- `Delete Selected` works on built-in, recent, and saved prompts
-- `Clear Non-Saved` keeps saved and pinned items and clears unpinned recent and built-in items
-- `A-` and `A+` adjust prompt-library font size in small steps
+- `Delete` works on built-in, recent, saved, and code items
+- `Clear` keeps saved and pinned items and clears unpinned recent items
+- `A-` and `A+` adjust library font size in small steps
 
 ### Chat
 
@@ -307,15 +313,14 @@ Demo and education prompts:
 - current layer summary from the active napari viewer
 - shortened layer names and a compact per-layer summary to avoid over-stretching the left column
 
-### Action Log
+### Session
 
-- local status updates
-- model connection messages
-- tool execution messages
-- code execution and copy actions
+- `Activity` tab shows local status updates, model connection messages, tool execution messages, and code execution/copy actions
+- `Telemetry` tab contains the optional telemetry controls
+- `Diagnostics` tab provides access to the app log and crash log
 - color-highlighted path entries for assistant log, crash log, telemetry log, prompt library, and session memory
 - `Enable Telemetry` switch for advanced users
-- `Performance Summary`, `Telemetry Log`, and `Reset Log` only when telemetry is enabled
+- `Summary`, `Log`, and `Reset` only when telemetry is enabled
 
 ## How It Works
 
@@ -370,7 +375,7 @@ Memory note:
 Most reliable current workflow:
 - use built-in tools for common layer inspection and mask/image actions
 - trust current viewer context and current layer profiles over any remembered prior turn
-- use the Prompt Library for repeated tasks
+- use the Library for repeated prompts and reusable code
 - use generated code when you want explicit review and control
 - use `Run My Code` when you already have working Python and want to test it directly inside napari
 
@@ -429,14 +434,14 @@ This records real usage events such as:
 - reject feedback from `👎 Reject`
 - approved code execution success or failure
 
-Telemetry is now opt-in from the Action Log through `Enable Telemetry`.
+Telemetry is now opt-in from the `Session -> Telemetry` tab through `Enable Telemetry`.
 
 The goal is passive model tracking during actual work rather than separate benchmarking runs.
 
-For advanced users, the Action Log includes:
-- `Performance Summary` to generate a quick in-app summary of recent model speed and behavior
-- `Telemetry Log` to inspect the latest raw JSONL records together with the summary
-- `Reset Log` to clear the local telemetry file and start fresh from the next request
+For advanced users, the `Session -> Telemetry` tab includes:
+- `Summary` to generate a quick in-app summary of recent model speed and behavior
+- `Log` to inspect the latest raw JSONL records together with the summary
+- `Reset` to clear the local telemetry file and start fresh from the next request
 
 This keeps the append-only log intact while making it easier to review without leaving napari.
 
