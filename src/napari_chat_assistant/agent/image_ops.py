@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage as ndi
+from scipy import stats
 from skimage import exposure
 from skimage.filters import threshold_otsu
 from skimage.morphology import ball, disk, remove_small_objects
@@ -36,6 +37,64 @@ def mask_statistics(data) -> dict:
         "foreground_pixels": int(mask.sum()),
         "object_count": int(object_count),
         "largest_object": largest,
+    }
+
+
+def _finite_values(data) -> np.ndarray:
+    arr = np.asarray(data, dtype=np.float64).ravel()
+    return arr[np.isfinite(arr)]
+
+
+def intensity_statistics(data) -> dict:
+    values = _finite_values(data)
+    if values.size == 0:
+        raise ValueError("Image has no finite intensity values.")
+    if values.size == 1:
+        std_value = 0.0
+    else:
+        std_value = float(np.std(values, ddof=1))
+    return {
+        "count": int(values.size),
+        "mean": float(np.mean(values)),
+        "std": std_value,
+        "median": float(np.median(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+    }
+
+
+def intensity_histogram(data, bins: int = 64) -> dict:
+    values = _finite_values(data)
+    if values.size == 0:
+        raise ValueError("Image has no finite intensity values.")
+    safe_bins = max(2, int(bins))
+    counts, bin_edges = np.histogram(values, bins=safe_bins)
+    return {
+        "bins": safe_bins,
+        "counts": counts.astype(np.int64, copy=False),
+        "bin_edges": bin_edges.astype(np.float64, copy=False),
+        "stats": intensity_statistics(values),
+    }
+
+
+def compare_intensity_populations(data_a, data_b, *, equal_var: bool = True) -> dict:
+    values_a = _finite_values(data_a)
+    values_b = _finite_values(data_b)
+    if values_a.size < 2 or values_b.size < 2:
+        raise ValueError("Each population must contain at least 2 finite values for a t-test.")
+    test = stats.ttest_ind(values_a, values_b, equal_var=bool(equal_var), nan_policy="omit")
+    return {
+        "test_name": "Student t-test" if equal_var else "Welch t-test",
+        "equal_var": bool(equal_var),
+        "statistic": float(test.statistic),
+        "pvalue": float(test.pvalue),
+        "count_a": int(values_a.size),
+        "count_b": int(values_b.size),
+        "mean_a": float(np.mean(values_a)),
+        "mean_b": float(np.mean(values_b)),
+        "std_a": float(np.std(values_a, ddof=1)) if values_a.size > 1 else 0.0,
+        "std_b": float(np.std(values_b, ddof=1)) if values_b.size > 1 else 0.0,
+        "delta_mean": float(np.mean(values_a) - np.mean(values_b)),
     }
 
 

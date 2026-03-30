@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 
 
 DISALLOWED_IMPORT_TEXT = (
@@ -21,6 +22,11 @@ def validate_generated_code(code_text: str, *, viewer=None) -> list[str]:
         errors.append("Generated code appears to contain JSON instead of pure Python.")
     if any(token in code for token in DISALLOWED_IMPORT_TEXT):
         errors.append("Generated code uses an unsupported napari API import.")
+    if "equalize_adap_hist" in code:
+        errors.append(
+            "Generated code uses the wrong scikit-image CLAHE function name [equalize_adap_hist]. "
+            "Use [skimage.exposure.equalize_adapthist] instead."
+        )
 
     try:
         tree = ast.parse(code, mode="exec")
@@ -37,9 +43,13 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
     errors: list[str] = []
     uint8_arrays: set[str] = set()
     unsafe_int_arrays: set[str] = set()
+    stat_value_names: set[str] = set()
+    histogram_axes_names: set[str] = set()
 
     for node in getattr(tree, "body", []):
         _track_assignment_state(node, uint8_arrays, unsafe_int_arrays)
+        _track_statistical_values(node, stat_value_names)
+        _track_histogram_axes(node, histogram_axes_names)
         error = _detect_unsafe_uint8_augassign(node, uint8_arrays, unsafe_int_arrays)
         if error:
             errors.append(error)
@@ -64,6 +74,9 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
             viewer_error = _validate_viewer_call(node, viewer)
             if viewer_error:
                 errors.append(viewer_error)
+            stats_error = _validate_statistical_coordinate_misuse(node, stat_value_names, histogram_axes_names)
+            if stats_error:
+                errors.append(stats_error)
     return errors
 
 
@@ -168,8 +181,6 @@ def _validate_import_from_symbol(module_name: str, symbol_name: str) -> str | No
 
 
 def _validate_viewer_call(node: ast.Call, viewer) -> str | None:
-    if viewer is None:
-        return None
     func = node.func
     if not isinstance(func, ast.Attribute):
         return None
@@ -178,6 +189,130 @@ def _validate_viewer_call(node: ast.Call, viewer) -> str | None:
     method_name = str(func.attr or "").strip()
     if not method_name:
         return None
+    keyword_error = _validate_viewer_keywords(method_name, node, viewer)
+    if keyword_error:
+        return keyword_error
+    if viewer is None:
+        return None
     if not hasattr(viewer, method_name):
         return f"Unsupported viewer API: [viewer.{method_name}] is not available on the current napari viewer."
+    return None
+
+
+def _validate_viewer_keywords(method_name: str, node: ast.Call, viewer) -> str | None:
+    keywords = [kw.arg for kw in node.keywords if kw.arg]
+    if method_name == "add_shapes" and "shape" in keywords:
+        return "Invalid napari API: [viewer.add_shapes] does not accept keyword [shape]. Use [data] and [shape_type] instead."
+    if viewer is None or not hasattr(viewer, method_name):
+        return None
+    try:
+        signature = inspect.signature(getattr(viewer, method_name))
+    except Exception:
+        return None
+    accepts_var_keyword = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    if accepts_var_keyword:
+        return None
+    valid_keywords = {
+        name
+        for name, param in signature.parameters.items()
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    for keyword in keywords:
+        if keyword not in valid_keywords:
+            return (
+                f"Invalid viewer keyword: [viewer.{method_name}] does not accept keyword [{keyword}] "
+                "on the current napari viewer."
+            )
+    return None
+
+
+def _track_statistical_values(node: ast.stmt, stat_value_names: set[str]) -> None:
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return
+    target = node.targets[0]
+    if not isinstance(target, ast.Name):
+        return
+    if _is_statistical_value_expr(node.value):
+        stat_value_names.add(target.id)
+
+
+def _track_histogram_axes(node: ast.stmt, histogram_axes_names: set[str]) -> None:
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return
+    target = node.targets[0]
+    if not isinstance(target, ast.Tuple):
+        return
+    if not isinstance(node.value, ast.Call):
+        return
+    func = node.value.func
+    if not isinstance(func, ast.Attribute):
+        return
+    if not isinstance(func.value, ast.Name) or func.value.id != "plt":
+        return
+    if func.attr != "subplots":
+        return
+    for elt in target.elts[1:]:
+        if isinstance(elt, ast.Name):
+            histogram_axes_names.add(elt.id)
+
+
+def _is_statistical_value_expr(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    return func.attr in {"mean", "std", "median", "var", "min", "max"}
+
+
+def _validate_statistical_coordinate_misuse(
+    node: ast.Call,
+    stat_value_names: set[str],
+    histogram_axes_names: set[str],
+) -> str | None:
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if isinstance(func.value, ast.Name) and func.value.id == "viewer" and func.attr == "add_shapes":
+        for keyword in node.keywords:
+            if keyword.arg == "data":
+                name = _find_statistical_name_in_expr(keyword.value, stat_value_names)
+                if name:
+                    return (
+                        f"Statistical value [{name}] looks like an intensity-domain quantity, not a spatial coordinate. "
+                        "Do not use image statistics directly in napari shape coordinates."
+                    )
+        for arg in node.args:
+            name = _find_statistical_name_in_expr(arg, stat_value_names)
+            if name:
+                return (
+                    f"Statistical value [{name}] looks like an intensity-domain quantity, not a spatial coordinate. "
+                    "Do not use image statistics directly in napari shape coordinates."
+                )
+    if (
+        isinstance(func.value, ast.Name)
+        and func.value.id in histogram_axes_names
+        and func.attr in {"axhline", "hlines"}
+    ):
+        stat_name = None
+        if node.args:
+            stat_name = _find_statistical_name_in_expr(node.args[0], stat_value_names)
+        if stat_name is None:
+            for keyword in node.keywords:
+                if keyword.arg in {"y", "ymin", "ymax"}:
+                    stat_name = _find_statistical_name_in_expr(keyword.value, stat_value_names)
+                    if stat_name:
+                        break
+        if stat_name:
+            return (
+                f"Histogram annotation misuse: statistical value [{stat_name}] is usually an intensity-axis quantity. "
+                "On a standard intensity histogram, use a vertical guide line instead of axhline/hlines."
+            )
+    return None
+
+
+def _find_statistical_name_in_expr(node: ast.AST, stat_value_names: set[str]) -> str | None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in stat_value_names:
+            return child.id
     return None

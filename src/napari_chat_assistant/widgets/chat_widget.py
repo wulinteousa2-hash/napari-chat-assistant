@@ -10,11 +10,12 @@ from contextlib import redirect_stdout
 import napari
 import numpy as np
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, Signal, QTimer
 from qtpy.QtGui import QColor, QTextCursor
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -75,6 +76,7 @@ from napari_chat_assistant.agent.telemetry_summary import (
     summarize_telemetry_events,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
+from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 
 
@@ -95,6 +97,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     viewer = get_viewer(napari_viewer)
     logger = get_plugin_logger()
     enable_fault_logging()
+    ui_state = load_ui_state()
 
     root = QWidget()
     layout = QVBoxLayout(root)
@@ -126,6 +129,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     model_combo = QComboBox()
     model_combo.setEditable(True)
+    model_combo.setMinimumContentsLength(18)
+    model_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    model_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
     config_layout.addRow("Model:", model_combo)
 
     model_hint = QLabel("Type an Ollama model tag or pick one already installed locally.")
@@ -134,6 +140,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     config_layout.addRow(model_hint)
 
     connection_status = QLabel("Status: not connected")
+    connection_status.setWordWrap(True)
+    connection_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     connection_status.setStyleSheet("QLabel { background: #243447; color: #f5f7fa; padding: 6px; }")
     config_layout.addRow(connection_status)
 
@@ -205,6 +213,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
     log_layout = QVBoxLayout(log_group)
     log_btn_row = QWidget()
     log_btn_layout = QHBoxLayout(log_btn_row)
+    telemetry_toggle = QCheckBox("Enable Telemetry")
+    telemetry_toggle.setChecked(bool(ui_state.get("telemetry_enabled", False)))
+    telemetry_toggle.setToolTip("Turn on performance telemetry and advanced telemetry tools only when you want them.")
     telemetry_summary_btn = QPushButton("Performance Summary")
     telemetry_summary_btn.setToolTip(
         "Show a quick model-performance summary built from local telemetry such as latency, reply type, rejects, and code-run results."
@@ -217,6 +228,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     telemetry_reset_btn.setToolTip(
         "Clear the local telemetry log so Performance Summary starts fresh from the next request."
     )
+    log_btn_layout.addWidget(telemetry_toggle)
     log_btn_layout.addWidget(telemetry_summary_btn)
     log_btn_layout.addWidget(telemetry_view_btn)
     log_btn_layout.addWidget(telemetry_reset_btn)
@@ -243,12 +255,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
     help_btn = QPushButton("Help")
     help_btn.setToolTip("Show prompt-writing tips and example instruction patterns.")
     run_code_btn = QPushButton("Run Code")
+    run_my_code_btn = QPushButton("Run My Code")
+    run_my_code_btn.setToolTip("Paste your own Python in the Prompt box and click to run it directly, without opening QtConsole.")
     copy_code_btn = QPushButton("Copy Code")
     run_code_btn.setEnabled(False)
     copy_code_btn.setEnabled(False)
     code_btn_layout.addWidget(pending_code_label, 1)
     code_btn_layout.addWidget(run_code_btn)
     code_btn_layout.addWidget(copy_code_btn)
+    code_btn_layout.addWidget(run_my_code_btn)
     code_btn_layout.addWidget(reject_memory_btn)
     code_btn_layout.addWidget(help_btn)
     transcript_layout.addWidget(code_btn_row)
@@ -261,8 +276,43 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt.setStyleSheet("QTextEdit { background: #10182b; color: #d6deeb; border: 1px solid #30415f; padding: 8px; }")
     input_group_layout.addWidget(prompt)
 
+    analysis_group = QGroupBox("Analysis")
+    analysis_layout = QFormLayout(analysis_group)
+    analysis_hint = QLabel(
+        "Use built-in image-layer analysis tools for summary stats, histogram popups, and two-layer t-tests."
+    )
+    analysis_hint.setWordWrap(True)
+    analysis_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    analysis_layout.addRow(analysis_hint)
+
+    analysis_layer_combo = QComboBox()
+    analysis_layout.addRow("Layer:", analysis_layer_combo)
+
+    histogram_bins_edit = QLineEdit("64")
+    analysis_layout.addRow("Bins:", histogram_bins_edit)
+
+    analysis_btn_row = QWidget()
+    analysis_btn_layout = QHBoxLayout(analysis_btn_row)
+    summary_stats_btn = QPushButton("Summary Stats")
+    histogram_btn = QPushButton("Histogram")
+    analysis_btn_layout.addWidget(summary_stats_btn)
+    analysis_btn_layout.addWidget(histogram_btn)
+    analysis_layout.addRow(analysis_btn_row)
+
+    compare_layer_a_combo = QComboBox()
+    compare_layer_b_combo = QComboBox()
+    compare_test_combo = QComboBox()
+    compare_test_combo.addItems(["Student t-test", "Welch t-test"])
+    analysis_layout.addRow("Compare A:", compare_layer_a_combo)
+    analysis_layout.addRow("Compare B:", compare_layer_b_combo)
+    analysis_layout.addRow("Test:", compare_test_combo)
+
+    compare_btn = QPushButton("Compare Layers")
+    analysis_layout.addRow(compare_btn)
+
     right_layout.addWidget(transcript_group, 4)
     right_layout.addWidget(input_group, 1)
+    analysis_group.hide()
 
     splitter.addWidget(left_panel)
     splitter.addWidget(right_panel)
@@ -287,6 +337,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
         "top_p": 0.95,
         "repeat_penalty": 1.5,
     }
+    wait_indicator = {
+        "active": False,
+        "started_at": 0.0,
+        "phase": "thinking",
+        "style": "QLabel { background: #24472f; color: #f5fff7; padding: 6px; }",
+    }
+    wait_timer = QTimer(root)
+    wait_timer.setInterval(250)
 
     base_url_edit.setText(saved_settings["base_url"])
     model_combo.addItem(saved_settings["model"])
@@ -319,8 +377,117 @@ def chat_widget(napari_viewer=None) -> QWidget:
         cursor.deletePreviousChar()
         append_chat_message("assistant", text_out, render_markdown=render_markdown)
 
+    def wait_indicator_text() -> str:
+        frames = (".", "..", "...")
+        elapsed = max(0.0, time.perf_counter() - float(wait_indicator["started_at"]))
+        frame = frames[int(elapsed * 4) % len(frames)]
+        return f"Status: {wait_indicator['phase']} {frame}"
+
+    def start_wait_indicator(*, phase: str = "thinking"):
+        wait_indicator["active"] = True
+        wait_indicator["started_at"] = time.perf_counter()
+        wait_indicator["phase"] = str(phase or "thinking").strip() or "thinking"
+        connection_status.setStyleSheet(wait_indicator["style"])
+        connection_status.setText(wait_indicator_text())
+        wait_timer.start()
+
+    def stop_wait_indicator():
+        wait_indicator["active"] = False
+        wait_timer.stop()
+
+    def tick_wait_indicator():
+        if not wait_indicator["active"]:
+            return
+        connection_status.setText(wait_indicator_text())
+
+    def widget_is_alive(widget: QWidget | None) -> bool:
+        if widget is None:
+            return False
+        try:
+            widget.objectName()
+        except RuntimeError:
+            return False
+        return True
+
     def refresh_context(*_args):
-        context_label.setText(layer_summary(viewer))
+        if widget_is_alive(context_label):
+            context_label.setText(layer_summary(viewer))
+        refresh_analysis_controls()
+
+    def image_layer_names() -> list[str]:
+        if viewer is None:
+            return []
+        return [layer.name for layer in viewer.layers if isinstance(layer, napari.layers.Image)]
+
+    def refresh_analysis_controls():
+        names = image_layer_names()
+        combo_defaults = (
+            (analysis_layer_combo, ""),
+            (compare_layer_a_combo, ""),
+            (compare_layer_b_combo, ""),
+        )
+        for combo, fallback in combo_defaults:
+            if not widget_is_alive(combo):
+                continue
+            current = combo.currentText().strip()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(names)
+            if current in names:
+                combo.setCurrentText(current)
+            elif fallback and fallback in names:
+                combo.setCurrentText(fallback)
+            combo.blockSignals(False)
+        if not all(widget_is_alive(combo) for combo, _fallback in combo_defaults):
+            return
+        if len(names) >= 2:
+            if not compare_layer_a_combo.currentText().strip():
+                compare_layer_a_combo.setCurrentText(names[0])
+            if not compare_layer_b_combo.currentText().strip() or compare_layer_b_combo.currentText() == compare_layer_a_combo.currentText():
+                compare_layer_b_combo.setCurrentText(names[1])
+        elif len(names) == 1:
+            compare_layer_a_combo.setCurrentText(names[0])
+            compare_layer_b_combo.setCurrentText(names[0])
+
+    def run_prepared_tool_request(prepared: dict, *, tool_name: str, tool_message: str = ""):
+        nonlocal session_memory_state
+        if prepared.get("mode") == "immediate":
+            result_message = str(prepared.get("message", ""))
+            refresh_context()
+            append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
+            append_log(f"Tool executed from Analysis panel: {tool_name}")
+            set_status(f"Status: {tool_name} completed", ok=True)
+            remember_assistant_outcome(
+                tool_message or result_message,
+                target_type="tool_result",
+                target_profile=selected_layer_profile(),
+                state="approved",
+            )
+            return
+        if prepared.get("mode") != "worker":
+            set_status("Status: unsupported tool response", ok=False)
+            append_log(f"Analysis panel received unsupported tool response for {tool_name}.")
+            return
+        try:
+            set_status(f"Status: running {tool_name}", ok=None)
+            result = run_tool_job(prepared["job"])
+            result_message = apply_tool_job_result(viewer, result)
+        except Exception as exc:
+            logger.exception("Analysis panel tool failed: %s", tool_name)
+            append_chat_message("assistant", f"{tool_name} failed:\n{exc}")
+            append_log(f"Analysis panel tool failed: {tool_name} | {exc}")
+            set_status(f"Status: {tool_name} failed", ok=False)
+            return
+        refresh_context()
+        append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
+        append_log(f"Tool executed from Analysis panel: {tool_name}")
+        set_status(f"Status: {tool_name} completed", ok=True)
+        remember_assistant_outcome(
+            tool_message or result_message,
+            target_type="tool_result",
+            target_profile=selected_layer_profile(),
+            state="approved",
+        )
 
     def adjust_prompt_library_font(delta: int):
         font = prompt_library_list.font()
@@ -333,6 +500,29 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def format_code_block(code_text: str) -> str:
         stripped = str(code_text or "").strip()
         return f"```python\n{stripped}\n```" if stripped else "```python\n# empty\n```"
+
+    def strip_code_fences(code_text: str) -> str:
+        source = str(code_text or "").strip()
+        if not source.startswith("```"):
+            return source
+        lines = source.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    def extract_manual_code_submission(text: str) -> str:
+        source = str(text or "").strip()
+        if not source:
+            return ""
+        lowered = source.lower()
+        triggers = ("/code", "!code", "run code", "paste code")
+        matched = next((trigger for trigger in triggers if lowered.startswith(trigger)), "")
+        if not matched:
+            return ""
+        payload = source[len(matched):].lstrip(" :\n\t")
+        return strip_code_fences(payload)
 
     def append_log(message: str):
         item = QListWidgetItem(message)
@@ -444,6 +634,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return "mask_measurement"
         if "mask" in source or "morpholog" in source:
             return "mask_workflow"
+        if "histogram" in source or "distribution" in source:
+            return "histogram"
+        if "t-test" in source or "ttest" in source or "welch" in source:
+            return "statistical_test"
+        if "mean" in source or "median" in source or "std" in source or "standard deviation" in source:
+            return "intensity_summary"
         if "inspect" in source or "layer" in source:
             return "inspection"
         if "code" in source or "python" in source:
@@ -460,10 +656,29 @@ def chat_widget(napari_viewer=None) -> QWidget:
         }
 
     def record_telemetry(event_type: str, payload: dict):
+        if not bool(ui_state.get("telemetry_enabled", False)):
+            return
         try:
             append_telemetry_event(event_type, payload)
         except Exception:
             logger.exception("Failed to append telemetry event: %s", event_type)
+
+    def refresh_telemetry_controls():
+        enabled = bool(ui_state.get("telemetry_enabled", False))
+        telemetry_summary_btn.setVisible(enabled)
+        telemetry_view_btn.setVisible(enabled)
+        telemetry_reset_btn.setVisible(enabled)
+
+    def toggle_telemetry(enabled: bool):
+        ui_state["telemetry_enabled"] = bool(enabled)
+        save_ui_state(ui_state)
+        refresh_telemetry_controls()
+        if enabled:
+            append_log("Telemetry enabled.")
+            set_status("Status: telemetry enabled", ok=True)
+        else:
+            append_log("Telemetry disabled.")
+            set_status("Status: telemetry disabled", ok=None)
 
     def show_help_tips(*_args):
         append_chat_message(
@@ -478,6 +693,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- `Use layer: <layer_name>`\n"
             "- `Preview threshold first`\n"
             "- `Apply threshold now`\n"
+            "- `Run My Code` executes Python pasted into the Prompt box\n"
             "- `Inspect the selected layer first`\n"
             "- `Use a built-in tool if possible; otherwise generate napari code`\n\n"
             "**Format Requests**\n"
@@ -566,6 +782,30 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if value:
                 return str(value)
         return "Unknown worker error."
+
+    def format_code_execution_error(exc: Exception) -> str:
+        error_text = str(exc).strip() or exc.__class__.__name__
+        lowered = error_text.lower()
+        if "equalize_adap_hist" in lowered and "skimage.exposure" in lowered:
+            return (
+                "Approved code failed because it used the wrong CLAHE function name from scikit-image.\n"
+                "Use `skimage.exposure.equalize_adapthist(...)` instead of `skimage.exposure.equalize_adap_hist(...)`.\n"
+                "This is usually a code-generation typo, not a missing package."
+            )
+        if "no module named 'skimage'" in lowered or 'no module named "skimage"' in lowered:
+            return (
+                "Approved code failed because `scikit-image` is not installed in the napari Python environment.\n"
+                "Install it in the same environment that launches napari, then try again.\n"
+                "Suggested command: `python -m pip install scikit-image`"
+            )
+        if "skimage." in lowered and "no attribute" in lowered:
+            return (
+                "Approved code failed because the requested scikit-image function is not available in the current napari Python environment.\n"
+                "This usually means either the function name is wrong or the installed `scikit-image` version does not provide it.\n"
+                "If the intent was CLAHE, use `skimage.exposure.equalize_adapthist(...)`.\n"
+                f"Original error: {error_text}"
+            )
+        return error_text
 
     def extract_json_objects(text: str) -> list[dict]:
         decoder = json.JSONDecoder()
@@ -877,6 +1117,39 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status(f"Status: unloaded {model_name}", ok=True)
         append_log(f"Unloaded model {model_name}")
 
+    def run_summary_stats(*_args):
+        layer_name = analysis_layer_combo.currentText().strip()
+        prepared = prepare_tool_job(viewer, "summarize_intensity", {"layer_name": layer_name})
+        run_prepared_tool_request(prepared, tool_name="summarize_intensity")
+
+    def run_histogram(*_args):
+        layer_name = analysis_layer_combo.currentText().strip()
+        prepared = prepare_tool_job(
+            viewer,
+            "plot_histogram",
+            {"layer_name": layer_name, "bins": histogram_bins_edit.text().strip() or "64"},
+        )
+        run_prepared_tool_request(prepared, tool_name="plot_histogram")
+
+    def run_layer_comparison(*_args):
+        layer_name_a = compare_layer_a_combo.currentText().strip()
+        layer_name_b = compare_layer_b_combo.currentText().strip()
+        if layer_name_a and layer_name_b and layer_name_a == layer_name_b:
+            set_status("Status: choose 2 different image layers", ok=False)
+            append_log("Analysis panel comparison skipped: identical image layers selected.")
+            return
+        equal_var = compare_test_combo.currentText().strip() != "Welch t-test"
+        prepared = prepare_tool_job(
+            viewer,
+            "compare_image_layers_ttest",
+            {
+                "layer_name_a": layer_name_a,
+                "layer_name_b": layer_name_b,
+                "equal_var": equal_var,
+            },
+        )
+        run_prepared_tool_request(prepared, tool_name="compare_image_layers_ttest")
+
     def send_message():
         text = prompt.toPlainText().strip()
         if not text:
@@ -900,6 +1173,60 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message("user", text)
         prompt.clear()
         append_log(f"Queued message: {text}")
+        manual_code = extract_manual_code_submission(text)
+        if manual_code:
+            validation_errors = preflight_generated_code(manual_code)
+            code_message = "Manual code captured from the prompt. Review it, then click Run Code."
+            if validation_errors:
+                set_pending_code(
+                    manual_code,
+                    message=code_message,
+                    runnable=False,
+                    label="Pending code: blocked by validation",
+                )
+                append_chat_message(
+                    "assistant",
+                    "Pasted code was rejected by local validation:\n"
+                    + "\n".join(f"- {error}" for error in validation_errors)
+                    + "\n\nFix the code in the prompt and send it again with `/code` or `run code`.\n\n"
+                    + format_code_block(manual_code),
+                )
+                append_log("Rejected pasted manual code after local validation.")
+                set_status("Status: pasted code rejected", ok=False)
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "manual_code",
+                        "response_action": "manual_code_blocked",
+                        "pending_code_generated": True,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
+            set_pending_code(manual_code, message=code_message)
+            pending_code["turn_id"] = turn_id
+            pending_code["model"] = "manual"
+            append_chat_message("assistant", f"{code_message}\n{format_code_block(manual_code)}")
+            append_log("Queued pasted manual code; waiting for Run Code approval.")
+            set_status("Status: manual code ready to run", ok=None)
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": "manual",
+                    "base_url": "",
+                    "prompt_hash": prompt_hash(text),
+                    "prompt_category": "manual_code",
+                    "response_action": "manual_code",
+                    "pending_code_generated": True,
+                    **selected_layer_snapshot(),
+                },
+            )
+            return
         base_url = base_url_edit.text().strip().rstrip("/") or str(saved_settings["base_url"]).rstrip("/")
         model_name = model_combo.currentText().strip() or str(saved_settings["model"]).strip()
         if not base_url or not model_name:
@@ -924,7 +1251,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             },
         )
 
-        append_chat_message("assistant", "...")
+        start_wait_indicator(phase="Thinking")
         set_status(f"Status: sending to {model_name}", ok=None)
 
         @thread_worker(ignore_errors=True)
@@ -947,6 +1274,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         active_workers.append(worker)
 
         def finish():
+            stop_wait_indicator()
             if worker in active_workers:
                 active_workers.remove(worker)
 
@@ -1216,20 +1544,47 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no pending code to run", ok=False)
             append_log("Run code skipped: no pending code available.")
             return
+        if not run_code_text(
+            code_text,
+            code_label="approved napari code",
+            turn_id=pending_code.get("turn_id", ""),
+            model_name=pending_code.get("model", ""),
+            disable_pending_buttons=True,
+        ):
+            return
+        session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
+        persist_session_memory()
+        remember_assistant_outcome(
+            pending_code.get("message") or "Approved napari code executed.",
+            target_type="code_result",
+            target_profile=selected_layer_profile(),
+            state="approved",
+        )
+        set_pending_code()
+
+    def run_code_text(
+        code_text: str,
+        *,
+        code_label: str,
+        turn_id: str = "",
+        model_name: str = "",
+        disable_pending_buttons: bool = False,
+    ) -> bool:
         validation_errors = preflight_generated_code(code_text)
         if validation_errors:
             append_chat_message(
                 "assistant",
-                "Pending code failed local validation:\n" + "\n".join(f"- {error}" for error in validation_errors),
+                f"{code_label.capitalize()} failed local validation:\n" + "\n".join(f"- {error}" for error in validation_errors),
             )
-            append_log("Run code blocked by local validation.")
-            set_status("Status: pending code blocked", ok=False)
-            return
+            append_log(f"{code_label.capitalize()} blocked by local validation.")
+            set_status(f"Status: {code_label} blocked", ok=False)
+            return False
 
-        set_status("Status: running approved code", ok=None)
-        append_log("Running approved napari code.")
-        run_code_btn.setEnabled(False)
-        copy_code_btn.setEnabled(False)
+        set_status(f"Status: running {code_label}", ok=None)
+        append_log(f"Running {code_label}.")
+        if disable_pending_buttons:
+            run_code_btn.setEnabled(False)
+            copy_code_btn.setEnabled(False)
         stdout_buffer = io.StringIO()
         namespace = {
             "__builtins__": __builtins__,
@@ -1243,51 +1598,53 @@ def chat_widget(napari_viewer=None) -> QWidget:
             with redirect_stdout(stdout_buffer):
                 exec(compile(code_text, "<napari-chat-assistant>", "exec"), namespace, namespace)
         except Exception as exc:
-            logger.exception("Approved code failed during execution.")
-            error_text = str(exc)
-            append_chat_message("assistant", f"Approved code failed:\n{error_text}")
+            logger.exception("%s failed during execution.", code_label.capitalize())
+            error_text = format_code_execution_error(exc)
+            append_chat_message("assistant", f"{code_label.capitalize()} failed:\n{error_text}")
             record_telemetry(
                 "code_execution",
                 {
-                    "turn_id": pending_code.get("turn_id", ""),
-                    "model": pending_code.get("model", ""),
+                    "turn_id": turn_id,
+                    "model": model_name,
                     "success": False,
                     "error": error_text,
                 },
             )
-            append_log(f"Approved code failed: {error_text}")
-            set_status("Status: approved code failed", ok=False)
-            if pending_code["code"]:
+            append_log(f"{code_label.capitalize()} failed: {error_text}")
+            set_status(f"Status: {code_label} failed", ok=False)
+            if disable_pending_buttons and pending_code["code"]:
                 run_code_btn.setEnabled(True)
                 copy_code_btn.setEnabled(True)
-            return
+            return False
 
         refresh_context()
         stdout_text = stdout_buffer.getvalue().strip()
-        result_message = "Approved napari code executed."
+        result_message = f"{code_label.capitalize()} executed."
         if stdout_text:
             result_message = f"{result_message}\nOutput:\n{stdout_text}"
         append_chat_message("assistant", result_message)
         record_telemetry(
             "code_execution",
             {
-                "turn_id": pending_code.get("turn_id", ""),
-                "model": pending_code.get("model", ""),
+                "turn_id": turn_id,
+                "model": model_name,
                 "success": True,
                 "stdout_chars": len(stdout_text),
             },
         )
-        append_log("Approved napari code executed successfully.")
-        set_status("Status: approved code executed", ok=True)
-        session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
-        persist_session_memory()
-        remember_assistant_outcome(
-            pending_code.get("message") or "Approved napari code executed.",
-            target_type="code_result",
-            target_profile=selected_layer_profile(),
-            state="approved",
-        )
-        set_pending_code()
+        append_log(f"{code_label.capitalize()} executed successfully.")
+        set_status(f"Status: {code_label} executed", ok=True)
+        return True
+
+    def run_prompt_code(*_args):
+        code_text = strip_code_fences(prompt.toPlainText())
+        if not code_text:
+            set_status("Status: no prompt code to run", ok=False)
+            append_log("Run My Code skipped: prompt box is empty.")
+            return
+        append_chat_message("user", f"/my-code\n{format_code_block(code_text)}")
+        prompt.clear()
+        run_code_text(code_text, code_label="your code", model_name="manual")
 
     def load_library_prompt(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}
@@ -1327,12 +1684,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     pull_btn.clicked.connect(pull_model)
     unload_btn.clicked.connect(unload_model)
     run_code_btn.clicked.connect(run_pending_code)
+    run_my_code_btn.clicked.connect(run_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
     reject_memory_btn.clicked.connect(reject_last_memory)
     help_btn.clicked.connect(show_help_tips)
     telemetry_summary_btn.clicked.connect(show_telemetry_summary)
     telemetry_view_btn.clicked.connect(show_telemetry_viewer)
     telemetry_reset_btn.clicked.connect(reset_telemetry_log)
+    telemetry_toggle.toggled.connect(toggle_telemetry)
+    summary_stats_btn.clicked.connect(run_summary_stats)
+    histogram_btn.clicked.connect(run_histogram)
+    compare_btn.clicked.connect(run_layer_comparison)
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
     save_prompt_btn.clicked.connect(save_current_prompt)
@@ -1343,16 +1705,35 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_font_up_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(1))
     prompt.sendRequested.connect(send_message)
     refresh_btn.clicked.connect(refresh_context)
+    wait_timer.timeout.connect(tick_wait_indicator)
     root.destroyed.connect(cleanup_workers)
 
+    refresh_telemetry_controls()
     refresh_context()
     set_pending_code()
     refresh_models()
     refresh_prompt_library()
     append_log(f"Assistant log: {APP_LOG_PATH}")
     append_log(f"Crash log: {CRASH_LOG_PATH}")
-    append_log(f"Telemetry log: {TELEMETRY_LOG_PATH}")
+    if ui_state.get("telemetry_enabled", False):
+        append_log(f"Telemetry log: {TELEMETRY_LOG_PATH}")
     append_log(f"Prompt library path: {prompt_library_path()}")
     append_log(f"Session memory path: {session_memory_path()}")
+    if not ui_state.get("welcome_dismissed", False):
+        append_chat_message(
+            "assistant",
+            "**Welcome**\n"
+            "👋 Welcome to Local Chat Assistant.\n"
+            "🤖 Connect a local model for chat, tool use, and generated napari code inside the viewer.\n"
+            "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it directly without opening QtConsole.\n"
+            "▶️ Use `Run Code` for assistant-generated code after review.\n"
+            "🧭 Current Context shows your open layers and the selected layer.\n"
+            "📚 Prompt Library keeps reusable prompts close to the workflow.\n"
+            "📝 Action Log tracks local actions. Telemetry is optional and stays off unless you enable it.\n\n"
+            "Ask about your selected layer, thresholding, CLAHE, measurements, histograms, comparisons, or code.\n\n"
+            "Follow for updates: https://x.com/viralvector",
+        )
+        ui_state["welcome_dismissed"] = True
+        save_ui_state(ui_state)
     append_log("Assistant panel initialized.")
     return root

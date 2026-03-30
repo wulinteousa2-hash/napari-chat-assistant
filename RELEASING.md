@@ -24,22 +24,38 @@ Complete these steps before the first PyPI release:
 ## Standard Release Process
 
 1. Update the version in [`pyproject.toml`](/home/wteox/Projects/napari/napari-chat-assistant/pyproject.toml).
-2. Run local verification as needed.
-3. Commit the version change.
-4. Create a version tag such as `v1.2.5`.
-5. Push `main` and the tag to GitHub.
+2. Update the version in [`src/napari_chat_assistant/__init__.py`](/home/wteox/Projects/napari/napari-chat-assistant/src/napari_chat_assistant/__init__.py).
+3. Refresh user-facing docs as needed, especially [`README.md`](/home/wteox/Projects/napari/napari-chat-assistant/README.md) and this file when the release adds visible workflow changes.
+4. Run local verification as needed.
+5. Commit the release changes.
+6. Create a version tag such as `v1.3.0`.
+7. Push `main` and the tag to GitHub.
 
 Example:
 
 ```bash
-git commit -am "Release 1.2.5"
-git tag v1.2.5
+git commit -am "Release 1.3.0"
+git tag v1.3.0
 git push origin main --tags
 ```
 
 After the tag is pushed, GitHub Actions runs the release workflow and publishes the package to PyPI.
 
 ## Release Notes
+
+### 1.3.0
+
+Release `1.3.0` adds direct in-plugin execution of user-pasted Python, improves readability and layout stability, and simplifies advanced telemetry for average users.
+
+Changes:
+- add `Run My Code` so users can paste Python into the Prompt box and run it directly without opening QtConsole
+- keep `Run Code` focused on assistant-generated code after review
+- add manual-code validation and clearer execution errors for common `scikit-image` issues such as the wrong CLAHE symbol
+- reformat intensity summary output into a more readable block
+- stabilize the left-column layout so long model and status text do not shift the panel width
+- change the waiting indicator to a simpler sequential dot animation
+- make telemetry opt-in with an `Enable Telemetry` switch and hide telemetry controls by default
+- update the welcome message and README to reflect the new code-execution workflow
 
 ### 1.2.5
 

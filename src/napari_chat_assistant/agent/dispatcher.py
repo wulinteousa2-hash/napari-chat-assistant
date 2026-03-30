@@ -16,6 +16,7 @@ from .context import (
     mask_measurement_summary,
 )
 from .image_ops import apply_clahe, auto_threshold_mask, mask_statistics
+from .image_ops import compare_intensity_populations, intensity_histogram, intensity_statistics
 from .tools import (
     TOOL_OPS,
     next_output_name,
@@ -36,6 +37,19 @@ _ND2_INTEGRATION_MESSAGE = (
     "napari Hub:\n"
     "https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html"
 )
+
+
+def _format_intensity_summary(layer_name: str, stats: dict) -> str:
+    return (
+        f"Intensity Summary\n"
+        f"Layer: [{layer_name}]\n"
+        f"Pixels: {stats['count']}\n"
+        f"Mean: {stats['mean']:.6g}\n"
+        f"Std Dev: {stats['std']:.6g}\n"
+        f"Median: {stats['median']:.6g}\n"
+        f"Min: {stats['min']:.6g}\n"
+        f"Max: {stats['max']:.6g}"
+    )
 
 
 def _load_optional_widget(module_name: str, class_name: str):
@@ -192,6 +206,53 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
             return {"mode": "immediate", "message": "No labels layers available for batch measurement."}
         return {"mode": "immediate", "message": "\n".join(mask_measurement_summary(layer) for layer in labels_layers)}
 
+    if tool_name == "summarize_intensity":
+        image_layer = find_image_layer(viewer, args.get("layer_name"))
+        if image_layer is None:
+            return {"mode": "immediate", "message": "No valid image layer available for intensity summary."}
+        stats = intensity_statistics(np.asarray(image_layer.data))
+        return {
+            "mode": "immediate",
+            "message": _format_intensity_summary(image_layer.name, stats),
+        }
+
+    if tool_name == "plot_histogram":
+        image_layer = find_image_layer(viewer, args.get("layer_name"))
+        if image_layer is None:
+            return {"mode": "immediate", "message": "No valid image layer available for histogram plotting."}
+        return {
+            "mode": "worker",
+            "job": {
+                "kind": "plot_histogram",
+                "layer_name": image_layer.name,
+                "bins": normalize_int(args.get("bins", 64), default=64, minimum=2, maximum=512),
+                "data": np.asarray(image_layer.data).copy(),
+            },
+        }
+
+    if tool_name == "compare_image_layers_ttest":
+        image_layers = find_all_image_layers(viewer)
+        if len(image_layers) < 2:
+            return {"mode": "immediate", "message": "At least 2 image layers are required for a t-test comparison."}
+        pair = _resolve_image_layer_pair(viewer, args)
+        if pair is None:
+            return {
+                "mode": "immediate",
+                "message": "Could not resolve 2 image layers for comparison. Specify layer_name_a and layer_name_b.",
+            }
+        layer_a, layer_b = pair
+        return {
+            "mode": "worker",
+            "job": {
+                "kind": "compare_image_layers_ttest",
+                "layer_name_a": layer_a.name,
+                "layer_name_b": layer_b.name,
+                "equal_var": bool(args.get("equal_var", True)),
+                "data_a": np.asarray(layer_a.data).copy(),
+                "data_b": np.asarray(layer_b.data).copy(),
+            },
+        }
+
     if tool_name == "run_mask_op":
         labels_layer = find_labels_layer(viewer, args.get("layer_name"))
         if labels_layer is None:
@@ -270,6 +331,14 @@ def run_tool_job(job: dict) -> dict:
     if kind in {"preview_threshold", "apply_threshold"}:
         threshold_value, labels = auto_threshold_mask(job["data"], polarity=job["polarity"])
         return {**job, "kind": kind, "threshold_value": threshold_value, "labels": labels, "stats": mask_statistics(labels)}
+
+    if kind == "plot_histogram":
+        histogram = intensity_histogram(job["data"], bins=job["bins"])
+        return {**job, "kind": kind, "histogram": histogram}
+
+    if kind == "compare_image_layers_ttest":
+        comparison = compare_intensity_populations(job["data_a"], job["data_b"], equal_var=job["equal_var"])
+        return {**job, "kind": kind, "comparison": comparison}
 
     if kind in {"preview_threshold_batch", "apply_threshold_batch"}:
         results = []
@@ -376,6 +445,24 @@ def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
             )
         return f"Applied threshold to {len(result['items'])} image layers with polarity={result['polarity']}.\n" + "\n".join(lines)
 
+    if kind == "plot_histogram":
+        histogram = result["histogram"]
+        _show_histogram_popup(result["layer_name"], histogram)
+        stats = histogram["stats"]
+        return (
+            f"Opened histogram for [{result['layer_name']}] with {histogram['bins']} bins. "
+            f"n={stats['count']} mean={stats['mean']:.6g} std={stats['std']:.6g}."
+        )
+
+    if kind == "compare_image_layers_ttest":
+        comparison = result["comparison"]
+        return (
+            f"{comparison['test_name']} for [{result['layer_name_a']}] vs [{result['layer_name_b']}]: "
+            f"t={comparison['statistic']:.6g} p={comparison['pvalue']:.6g} "
+            f"mean_a={comparison['mean_a']:.6g} mean_b={comparison['mean_b']:.6g} "
+            f"delta={comparison['delta_mean']:.6g} n_a={comparison['count_a']} n_b={comparison['count_b']}."
+        )
+
     if kind == "run_mask_op":
         labels_layer = find_labels_layer(viewer, result["layer_name"])
         if labels_layer is None:
@@ -407,3 +494,47 @@ def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
         return f"Applied {result['op_name']} to {applied} labels layers.\n" + "\n".join(lines)
 
     return f"Unsupported tool result: {kind}"
+
+
+def _resolve_image_layer_pair(viewer: napari.Viewer, args: dict):
+    name_a = str(args.get("layer_name_a") or "").strip()
+    name_b = str(args.get("layer_name_b") or "").strip()
+    layer_a = find_image_layer(viewer, name_a) if name_a else None
+    layer_b = find_image_layer(viewer, name_b) if name_b else None
+    if layer_a is not None and layer_b is not None and layer_a is not layer_b:
+        return layer_a, layer_b
+    image_layers = find_all_image_layers(viewer)
+    if len(image_layers) == 2:
+        return image_layers[0], image_layers[1]
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, napari.layers.Image):
+        others = [layer for layer in image_layers if layer is not selected]
+        if len(others) == 1:
+            return selected, others[0]
+    return None
+
+
+def _show_histogram_popup(layer_name: str, histogram: dict) -> None:
+    import matplotlib.pyplot as plt
+
+    counts = np.asarray(histogram["counts"])
+    bin_edges = np.asarray(histogram["bin_edges"])
+    stats = histogram["stats"]
+
+    fig, ax = plt.subplots()
+    ax.bar(
+        bin_edges[:-1],
+        counts,
+        width=np.diff(bin_edges),
+        align="edge",
+        color="steelblue",
+        edgecolor="black",
+    )
+    ax.axvline(stats["mean"], color="green", linestyle="--", linewidth=2, label="Mean")
+    ax.axvline(stats["median"], color="darkorange", linestyle=":", linewidth=2, label="Median")
+    ax.set_title(f"Intensity Histogram: {layer_name}")
+    ax.set_xlabel("Intensity")
+    ax.set_ylabel("Count")
+    ax.legend()
+    fig.tight_layout()
+    plt.show(block=False)

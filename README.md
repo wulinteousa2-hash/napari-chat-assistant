@@ -26,6 +26,7 @@ Current capabilities include:
 - automate batch actions across multiple layers
 - generate napari Python code when no built-in tool fits
 - copy or run generated code from the assistant UI
+- paste and run your own Python directly from the Prompt box with `Run My Code`, without opening QtConsole
 - save, pin, and reuse prompts through a local Prompt Library
 - delete selected built-in, recent, or saved prompts from the Prompt Library
 - clear unpinned recent and built-in prompts while keeping saved and pinned items
@@ -102,7 +103,9 @@ Generated code can be:
 - copied to the clipboard
 - executed from the plugin after user review
 
-This is useful when you want a reusable script, need to adjust code manually, or prefer explicit code over hidden automation.
+You can also paste your own Python directly into the Prompt box and run it from the plugin with `Run My Code`, without switching to QtConsole.
+
+This is useful when you want a reusable script, need to adjust code manually, test a small viewer-bound snippet quickly, or prefer explicit code over hidden automation.
 
 ### Optional ND2 and spectral integration
 
@@ -213,6 +216,8 @@ For maintainer release instructions and PyPI publishing setup, see [RELEASING.md
 5. Click `Test Connection`.
 6. Start chatting, or use the Prompt Library for repeatable tasks.
 
+If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
+
 The assistant works best when prompts describe a concrete action.
 
 Examples:
@@ -289,8 +294,13 @@ Demo and education prompts:
 
 - `Reject`
 - `Run Code`
+- `Run My Code`
 - `Copy Code`
 - `Help`
+
+`Run Code` is for assistant-generated code that has been staged in the chat.
+
+`Run My Code` is for your own pasted Python from the Prompt box when you want to test or iterate directly inside napari without opening QtConsole.
 
 ### Current Context
 
@@ -304,7 +314,8 @@ Demo and education prompts:
 - tool execution messages
 - code execution and copy actions
 - color-highlighted path entries for assistant log, crash log, telemetry log, prompt library, and session memory
-- `Performance Summary`, `Telemetry Log`, and `Reset Log`
+- `Enable Telemetry` switch for advanced users
+- `Performance Summary`, `Telemetry Log`, and `Reset Log` only when telemetry is enabled
 
 ## How It Works
 
@@ -361,6 +372,7 @@ Most reliable current workflow:
 - trust current viewer context and current layer profiles over any remembered prior turn
 - use the Prompt Library for repeated tasks
 - use generated code when you want explicit review and control
+- use `Run My Code` when you already have working Python and want to test it directly inside napari
 
 For demo and education workflows:
 - ask for code that uses the current napari `viewer`
@@ -416,6 +428,8 @@ This records real usage events such as:
 - response type (`reply`, `tool`, `code`, or `error`)
 - reject feedback from `👎 Reject`
 - approved code execution success or failure
+
+Telemetry is now opt-in from the Action Log through `Enable Telemetry`.
 
 The goal is passive model tracking during actual work rather than separate benchmarking runs.
 

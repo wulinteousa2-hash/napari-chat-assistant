@@ -39,6 +39,9 @@ ASSISTANT_TOOL_NAMES = {
     "apply_threshold_batch",
     "measure_mask",
     "measure_mask_batch",
+    "summarize_intensity",
+    "plot_histogram",
+    "compare_image_layers_ttest",
     "run_mask_op",
     "run_mask_op_batch",
 }
@@ -138,6 +141,9 @@ def assistant_system_prompt() -> str:
         '- apply_threshold_batch: {"polarity": "auto|bright|dim"}\n'
         '- measure_mask: {"layer_name": optional string}\n'
         '- measure_mask_batch: {}\n'
+        '- summarize_intensity: {"layer_name": optional string}\n'
+        '- plot_histogram: {"layer_name": optional string, "bins": optional int}\n'
+        '- compare_image_layers_ttest: {"layer_name_a": optional string, "layer_name_b": optional string, "equal_var": optional bool}\n'
         '- run_mask_op: {"layer_name": optional string, "op": "dilate|erode|open|close|fill_holes|remove_small|keep_largest", "radius": optional int, "min_size": optional int}\n'
         '- run_mask_op_batch: {"op": "dilate|erode|open|close|fill_holes|remove_small|keep_largest", "radius": optional int, "min_size": optional int}\n'
         "- If the user is asking what exists or what is selected, use list_layers.\n"
@@ -158,8 +164,20 @@ def assistant_system_prompt() -> str:
         "- If a profile indicates label_mask or probability_map, avoid treating that layer as a generic intensity image unless the user explicitly asks.\n"
         "- If a profile indicates rgb, avoid grayscale-only operations such as CLAHE unless the user asks for a conversion workflow.\n"
         "- If the user asks for measurement, area, volume, or object count on a mask, use measure_mask.\n"
+        "- If the user asks for intensity summary statistics such as mean, std, median, min, or max for an image layer, use summarize_intensity.\n"
+        "- If the user asks for a histogram or intensity distribution plot for an image layer, use plot_histogram instead of action=code.\n"
+        "- If the user asks to compare two image layers with a Student t-test or Welch t-test, use compare_image_layers_ttest when the populations are the image intensities from those layers.\n"
         "- Use action=code only when the request needs custom napari/python logic that is not covered by the built-in tools.\n"
-        "- Do not generate code for tasks already covered by built-in tools, especially threshold preview/apply, mask measurement, mask morphology, or CLAHE.\n"
+        "- Do not generate code for tasks already covered by built-in tools, especially threshold preview/apply, mask measurement, mask morphology, CLAHE, image histograms, intensity summaries, or built-in t-tests.\n"
+        "- Before generating custom code, classify the request as napari viewer/layer manipulation, napari overlay geometry, image statistics, matplotlib plotting, or Qt/UI work.\n"
+        "- Keep napari image-space overlays separate from intensity/statistics plotting. Do not mix image coordinates with histogram or summary-statistic values.\n"
+        "- Bind every derived quantity to its coordinate system before using it. Spatial overlays use image coordinates such as row/col or z/y/x. Statistics such as mean, std, median, min, max, thresholds, and histogram bins are intensity-domain values.\n"
+        "- Never use image-statistics values directly as napari shape coordinates unless the user explicitly asks for that coordinate mapping.\n"
+        "- For histogram plots where intensity is on the x-axis, annotate intensity statistics with vertical lines such as ax.axvline(...), not horizontal lines.\n"
+        "- For napari geometry code, verify the exact viewer or layer API signature before writing code. Use documented argument names such as data=... and shape_type=... for shapes layers; do not invent keyword arguments.\n"
+        "- Validate the structure of napari geometry arrays before returning code. Shapes coordinates must match the layer dimensionality and napari coordinate order.\n"
+        "- Prefer building custom code in phases: compute values, decide what belongs in napari, decide what belongs in matplotlib, then render with the proper API for each domain.\n"
+        "- If there is any API uncertainty, avoid guessing and choose action=reply or a built-in tool instead of emitting speculative code.\n"
         "- Generated code must assume it will be shown to the user for approval before execution.\n"
         "- Generated code must be pure Python only, with no Markdown fences, no JSON fragments, and no explanatory text outside Python comments.\n"
         "- Generated code must use the provided existing `viewer` object.\n"
