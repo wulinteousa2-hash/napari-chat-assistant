@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.4.0
+
+- Introduced a new tool-registry foundation and migrated the first built-in tools to registry-backed execution.
+- Added new built-in workflow tools including Gaussian denoising, mask cleanup, connected-component labeling, labels-table measurement, max-intensity projection, and bbox crop.
+- Added built-in demo packs for EM-style grayscale data, fluorescent RGB cell data, SNR sweeps, and messy mask cleanup tests.
+- Updated the Help panel and README with shorter natural-language guidance, demo-pack examples, and clearer workflow-oriented usage.
+- Improved Library behavior so built-in demo code entries remain visible with stable built-in titles even after use.
+
 ## 1.3.1
 
 - Renamed `Prompt Library` to `Library`.

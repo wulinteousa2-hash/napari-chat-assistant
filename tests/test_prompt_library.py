@@ -91,3 +91,25 @@ def test_merged_prompt_records_deduplicates_by_priority_and_applies_pins():
     assert merged[1]["source"] == "recent"
     assert merged[1]["pinned"] is True
     assert sum(item["prompt"] == built_in_prompt for item in merged) == 1
+
+
+def test_merged_code_records_keeps_built_in_demo_visible_when_recent_duplicate_exists():
+    built_in = lib.DEFAULT_CODE_SNIPPETS[0]
+    code = str(built_in["code"]).strip()
+    state = {
+        "code_saved": [],
+        "code_recent": [
+            {
+                "title": "Recent duplicate",
+                "code": code,
+                "source": "recent",
+                "updated_at": "2026-01-05T00:00:00+00:00",
+            }
+        ],
+        "pinned_codes": [],
+    }
+
+    merged = lib.merged_code_records(state)
+
+    assert any(item["source"] == "recent" and item["code"] == code for item in merged)
+    assert any(item["source"] == "built_in" and item["code"] == code and item["title"] == built_in["title"] for item in merged)

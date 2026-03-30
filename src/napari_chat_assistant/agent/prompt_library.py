@@ -24,196 +24,428 @@ DEFAULT_PROMPTS = [
 
 DEFAULT_CODE_SNIPPETS = [
     {
-        "title": "Demo: Background EM Volume",
+        "title": "Demo Pack: EM 2D SNR Sweep",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
 
-def generate_synthetic_em_3d(z=100, y=256, x=256, seed=7):
+def make_em_slice(y=512, x=512, n_objects=26, seed=7):
     rng = np.random.default_rng(seed)
-    vol = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(1.2, 4.0, 4.0))
-    vol = (vol - vol.min()) / (vol.max() - vol.min() + 1e-8)
-    return vol.astype(np.float32)
+    image = np.zeros((y, x), dtype=np.float32)
+    mask = np.zeros((y, x), dtype=np.uint8)
+
+    yy, xx = np.meshgrid(np.arange(y), np.arange(x), indexing="ij")
+
+    background = gaussian_filter(rng.random((y, x)).astype(np.float32), sigma=18.0)
+    background = (background - background.min()) / (background.max() - background.min() + 1e-8)
+    image += 0.20 * background
+
+    for _ in range(n_objects):
+        cy = rng.integers(32, y - 32)
+        cx = rng.integers(32, x - 32)
+        ry = rng.uniform(12.0, 42.0)
+        rx = rng.uniform(12.0, 42.0)
+        angle = rng.uniform(0, np.pi)
+
+        x_rot = (xx - cx) * np.cos(angle) + (yy - cy) * np.sin(angle)
+        y_rot = -(xx - cx) * np.sin(angle) + (yy - cy) * np.cos(angle)
+        dist = (x_rot / rx) ** 2 + (y_rot / ry) ** 2
+
+        obj = dist <= 1.0
+        shell = np.exp(-((np.sqrt(np.maximum(dist, 1e-8)) - 1.0) ** 2) / 0.03).astype(np.float32)
+        core = np.exp(-dist * rng.uniform(1.8, 3.2)).astype(np.float32)
+
+        image += 0.55 * shell + 0.25 * core
+        mask[obj] = 1
+
+    image = gaussian_filter(image, sigma=1.2)
+    image -= image.min()
+    image /= image.max() + 1e-8
+    return image.astype(np.float32), mask
+
+
+def add_noise_for_snr(image, snr_db, seed):
+    rng = np.random.default_rng(seed)
+    signal_std = float(np.std(image))
+    noise_std = signal_std / (10 ** (float(snr_db) / 20.0) + 1e-8)
+    noisy = image + rng.normal(0.0, noise_std, image.shape).astype(np.float32)
+    noisy = gaussian_filter(noisy, sigma=0.6)
+    noisy = np.clip(noisy, 0.0, None)
+    noisy -= noisy.min()
+    noisy /= noisy.max() + 1e-8
+    return noisy.astype(np.float32)
 
 
 def compute():
-    return generate_synthetic_em_3d()
+    base, mask = make_em_slice()
+    return {
+        "em_2d_snr_low": add_noise_for_snr(base, 4.0, 11),
+        "em_2d_snr_mid": add_noise_for_snr(base, 10.0, 12),
+        "em_2d_snr_high": add_noise_for_snr(base, 18.0, 13),
+        "em_2d_mask": mask,
+    }
 
 
-def apply_result(volume):
-    viewer.add_image(volume, name="demo_em_volume", colormap="gray")
+def apply_result(payload):
+    viewer.add_image(payload["em_2d_snr_low"], name="em_2d_snr_low", colormap="gray")
+    viewer.add_image(payload["em_2d_snr_mid"], name="em_2d_snr_mid", colormap="gray")
+    viewer.add_image(payload["em_2d_snr_high"], name="em_2d_snr_high", colormap="gray")
+    viewer.add_labels(payload["em_2d_mask"], name="em_2d_mask")
+    print("Added layers: em_2d_snr_low, em_2d_snr_mid, em_2d_snr_high, em_2d_mask")
 
 
-run_in_background(compute, apply_result, label="Generate demo EM volume")
+run_in_background(compute, apply_result, label="Generate EM 2D SNR sweep")
 """.strip(),
-        "tags": ["demo", "background", "3d"],
+        "tags": ["demo", "em", "grayscale", "2d", "snr", "labels"],
     },
     {
-        "title": "Demo: Background RGB Cells",
+        "title": "Demo Pack: EM 3D SNR Sweep",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
 
-def make_cells_rgb_volume(
-    z=100,
+def make_em_volume(
+    z=30,
     y=256,
     x=256,
-    n_cells=28,
+    n_objects=22,
     seed=7,
 ):
     rng = np.random.default_rng(seed)
+    volume = np.zeros((z, y, x), dtype=np.float32)
+    mask = np.zeros((z, y, x), dtype=np.uint8)
 
+    zz, yy, xx = np.meshgrid(np.arange(z), np.arange(y), np.arange(x), indexing="ij")
+    background = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(1.4, 10.0, 10.0))
+    background = (background - background.min()) / (background.max() - background.min() + 1e-8)
+    volume += 0.18 * background
+
+    for _ in range(n_objects):
+        cz = rng.integers(4, z - 4)
+        cy = rng.integers(20, y - 20)
+        cx = rng.integers(20, x - 20)
+        rz = rng.uniform(2.0, 5.0)
+        ry = rng.uniform(8.0, 20.0)
+        rx = rng.uniform(8.0, 20.0)
+
+        dist = ((zz - cz) / rz) ** 2 + ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2
+        obj = dist <= 1.0
+        shell = np.exp(-((np.sqrt(np.maximum(dist, 1e-8)) - 1.0) ** 2) / 0.02).astype(np.float32)
+        core = np.exp(-dist * rng.uniform(1.8, 3.0)).astype(np.float32)
+        volume += 0.60 * shell + 0.18 * core
+        mask[obj] = 1
+
+    volume = gaussian_filter(volume, sigma=(0.8, 1.1, 1.1))
+    volume -= volume.min()
+    volume /= volume.max() + 1e-8
+    return volume.astype(np.float32), mask
+
+
+def add_noise_for_snr(image, snr_db, seed):
+    rng = np.random.default_rng(seed)
+    signal_std = float(np.std(image))
+    noise_std = signal_std / (10 ** (float(snr_db) / 20.0) + 1e-8)
+    noisy = image + rng.normal(0.0, noise_std, image.shape).astype(np.float32)
+    noisy = np.clip(noisy, 0.0, None)
+    noisy -= noisy.min()
+    noisy /= noisy.max() + 1e-8
+    return noisy.astype(np.float32)
+
+
+def compute():
+    base, mask = make_em_volume()
+    return {
+        "em_3d_snr_low": add_noise_for_snr(base, 5.0, 21),
+        "em_3d_snr_mid": add_noise_for_snr(base, 11.0, 22),
+        "em_3d_snr_high": add_noise_for_snr(base, 18.0, 23),
+        "em_3d_mask": mask,
+    }
+
+
+def apply_result(payload):
+    viewer.add_image(payload["em_3d_snr_low"], name="em_3d_snr_low", colormap="gray")
+    viewer.add_image(payload["em_3d_snr_mid"], name="em_3d_snr_mid", colormap="gray")
+    viewer.add_image(payload["em_3d_snr_high"], name="em_3d_snr_high", colormap="gray")
+    viewer.add_labels(payload["em_3d_mask"], name="em_3d_mask")
+    print("Added layers: em_3d_snr_low, em_3d_snr_mid, em_3d_snr_high, em_3d_mask")
+
+
+run_in_background(compute, apply_result, label="Generate EM 3D SNR sweep")
+""".strip(),
+        "tags": ["demo", "em", "grayscale", "3d", "snr", "labels"],
+    },
+    {
+        "title": "Demo Pack: RGB Cells 2D SNR Sweep",
+        "code": """
+import numpy as np
+from scipy.ndimage import gaussian_filter
+
+
+def make_cells_rgb_2d(y=512, x=512, n_cells=20, seed=7):
+    rng = np.random.default_rng(seed)
+    rgb = np.zeros((y, x, 3), dtype=np.float32)
+    labels = np.zeros((y, x), dtype=np.int32)
+    yy, xx = np.meshgrid(np.arange(y), np.arange(x), indexing="ij")
+
+    for cell_id in range(1, n_cells + 1):
+        cy = rng.integers(36, y - 36)
+        cx = rng.integers(36, x - 36)
+        ry = rng.uniform(18.0, 34.0)
+        rx = rng.uniform(18.0, 34.0)
+        dist = ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2
+        cell = dist <= 1.0
+        membrane = np.exp(-((np.sqrt(np.maximum(dist, 1e-8)) - 1.0) ** 2) / 0.01).astype(np.float32)
+        cytoplasm = np.exp(-dist * 2.0).astype(np.float32)
+
+        ncy = cy + rng.uniform(-4.0, 4.0)
+        ncx = cx + rng.uniform(-4.0, 4.0)
+        nry = ry * rng.uniform(0.35, 0.55)
+        nrx = rx * rng.uniform(0.35, 0.55)
+        nuc_dist = ((yy - ncy) / nry) ** 2 + ((xx - ncx) / nrx) ** 2
+        nucleus = np.exp(-nuc_dist * 2.6).astype(np.float32)
+
+        puncta = np.zeros((y, x), dtype=np.float32)
+        for _ in range(rng.integers(12, 24)):
+            py = cy + rng.uniform(-ry * 0.7, ry * 0.7)
+            px = cx + rng.uniform(-rx * 0.7, rx * 0.7)
+            pry = rng.uniform(0.8, 2.0)
+            prx = rng.uniform(0.8, 2.0)
+            pd = ((yy - py) / pry) ** 2 + ((xx - px) / prx) ** 2
+            puncta += np.exp(-pd * rng.uniform(3.0, 7.0)).astype(np.float32)
+
+        rgb[..., 0] += 0.75 * membrane
+        rgb[..., 1] += 0.22 * cytoplasm + 0.18 * puncta * cell.astype(np.float32)
+        rgb[..., 2] += 0.88 * nucleus
+        labels[cell] = cell_id
+
+    for c in range(3):
+        rgb[..., c] = gaussian_filter(rgb[..., c], sigma=1.0)
+        rgb[..., c] -= rgb[..., c].min()
+        rgb[..., c] /= rgb[..., c].max() + 1e-8
+    return rgb.astype(np.float32), labels
+
+
+def add_noise_for_snr(rgb, snr_db, seed):
+    rng = np.random.default_rng(seed)
+    out = rgb.copy()
+    for c in range(3):
+        signal_std = float(np.std(out[..., c]))
+        noise_std = signal_std / (10 ** (float(snr_db) / 20.0) + 1e-8)
+        out[..., c] += rng.normal(0.0, noise_std, out[..., c].shape).astype(np.float32)
+        out[..., c] = np.clip(out[..., c], 0.0, None)
+        out[..., c] -= out[..., c].min()
+        out[..., c] /= out[..., c].max() + 1e-8
+    return out.astype(np.float32)
+
+
+def compute():
+    base, labels = make_cells_rgb_2d()
+    return {
+        "rgb_cells_2d_snr_low": add_noise_for_snr(base, 5.0, 31),
+        "rgb_cells_2d_snr_mid": add_noise_for_snr(base, 11.0, 32),
+        "rgb_cells_2d_snr_high": add_noise_for_snr(base, 18.0, 33),
+        "rgb_cells_2d_labels": labels,
+    }
+
+
+def apply_result(payload):
+    viewer.add_image(payload["rgb_cells_2d_snr_low"], name="rgb_cells_2d_snr_low", rgb=True)
+    viewer.add_image(payload["rgb_cells_2d_snr_mid"], name="rgb_cells_2d_snr_mid", rgb=True)
+    viewer.add_image(payload["rgb_cells_2d_snr_high"], name="rgb_cells_2d_snr_high", rgb=True)
+    viewer.add_labels(payload["rgb_cells_2d_labels"], name="rgb_cells_2d_labels")
+    print("Added layers: rgb_cells_2d_snr_low, rgb_cells_2d_snr_mid, rgb_cells_2d_snr_high, rgb_cells_2d_labels")
+
+
+run_in_background(compute, apply_result, label="Generate RGB cells 2D SNR sweep")
+""".strip(),
+        "tags": ["demo", "rgb", "fluorescent", "2d", "snr", "labels"],
+    },
+    {
+        "title": "Demo Pack: RGB Cells 3D SNR Sweep",
+        "code": """
+import numpy as np
+from scipy.ndimage import gaussian_filter
+
+
+def make_cells_rgb_volume(z=30, y=256, x=256, n_cells=18, seed=7):
+    rng = np.random.default_rng(seed)
     vol = np.zeros((z, y, x, 3), dtype=np.float32)
+    labels = np.zeros((z, y, x), dtype=np.int32)
+    zz, yy, xx = np.meshgrid(np.arange(z), np.arange(y), np.arange(x), indexing="ij")
 
-    zz, yy, xx = np.meshgrid(
-        np.arange(z),
-        np.arange(y),
-        np.arange(x),
-        indexing="ij",
-    )
-
-    bg_r = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.0, 12.0, 12.0))
-    bg_g = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.5, 10.0, 10.0))
-    bg_b = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.0, 14.0, 14.0))
-
-    vol[..., 0] += 0.015 * bg_r
-    vol[..., 1] += 0.020 * bg_g
-    vol[..., 2] += 0.015 * bg_b
-
-    for _ in range(n_cells):
-        cz = rng.integers(8, z - 8)
+    for cell_id in range(1, n_cells + 1):
+        cz = rng.integers(4, z - 4)
         cy = rng.integers(24, y - 24)
         cx = rng.integers(24, x - 24)
-
-        rz = rng.uniform(4.0, 9.0)
-        ry = rng.uniform(12.0, 24.0)
-        rx = rng.uniform(12.0, 24.0)
-
-        cell_dist = (
-            ((zz - cz) / rz) ** 2
-            + ((yy - cy) / ry) ** 2
-            + ((xx - cx) / rx) ** 2
-        )
-        cell_mask = cell_dist <= 1.0
-        cell_soft = np.exp(-cell_dist * 1.8).astype(np.float32)
-
-        membrane = np.exp(-((np.sqrt(cell_dist) - 1.0) ** 2) / 0.006).astype(np.float32)
-        membrane *= (cell_dist <= 1.2)
+        rz = rng.uniform(2.0, 5.0)
+        ry = rng.uniform(10.0, 20.0)
+        rx = rng.uniform(10.0, 20.0)
+        dist = ((zz - cz) / rz) ** 2 + ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2
+        cell = dist <= 1.0
+        membrane = np.exp(-((np.sqrt(np.maximum(dist, 1e-8)) - 1.0) ** 2) / 0.008).astype(np.float32)
+        cytoplasm = np.exp(-dist * 1.9).astype(np.float32)
 
         ncz = cz + rng.uniform(-1.0, 1.0)
         ncy = cy + rng.uniform(-3.0, 3.0)
         ncx = cx + rng.uniform(-3.0, 3.0)
-
         nrz = rz * rng.uniform(0.35, 0.55)
         nry = ry * rng.uniform(0.35, 0.55)
         nrx = rx * rng.uniform(0.35, 0.55)
-
-        nuc_dist = (
-            ((zz - ncz) / nrz) ** 2
-            + ((yy - ncy) / nry) ** 2
-            + ((xx - ncx) / nrx) ** 2
-        )
-        nuc_mask = nuc_dist <= 1.0
-        nuc_soft = np.exp(-nuc_dist * 2.8).astype(np.float32)
-
-        cyto_texture = gaussian_filter(
-            rng.random((z, y, x)).astype(np.float32),
-            sigma=(0.8, 2.0, 2.0),
-        )
-        cyto_texture = (cyto_texture - cyto_texture.min()) / (cyto_texture.max() - cyto_texture.min() + 1e-8)
+        nuc_dist = ((zz - ncz) / nrz) ** 2 + ((yy - ncy) / nry) ** 2 + ((xx - ncx) / nrx) ** 2
+        nucleus = np.exp(-nuc_dist * 2.7).astype(np.float32)
 
         puncta = np.zeros((z, y, x), dtype=np.float32)
-        n_puncta = rng.integers(15, 35)
-        for _ in range(n_puncta):
+        for _ in range(rng.integers(10, 20)):
             pz = cz + rng.uniform(-rz * 0.7, rz * 0.7)
             py = cy + rng.uniform(-ry * 0.7, ry * 0.7)
             px = cx + rng.uniform(-rx * 0.7, rx * 0.7)
+            prz = rng.uniform(0.4, 1.0)
+            pry = rng.uniform(0.8, 1.8)
+            prx = rng.uniform(0.8, 1.8)
+            pd = ((zz - pz) / prz) ** 2 + ((yy - py) / pry) ** 2 + ((xx - px) / prx) ** 2
+            puncta += np.exp(-pd * rng.uniform(3.0, 6.5)).astype(np.float32)
 
-            prz = rng.uniform(0.4, 1.2)
-            pry = rng.uniform(0.8, 2.0)
-            prx = rng.uniform(0.8, 2.0)
-
-            pdist = (
-                ((zz - pz) / prz) ** 2
-                + ((yy - py) / pry) ** 2
-                + ((xx - px) / prx) ** 2
-            )
-            puncta += np.exp(-pdist * rng.uniform(3.0, 7.0)).astype(np.float32)
-
-        puncta *= cell_mask.astype(np.float32)
-        cyto_only = cell_mask & (~nuc_mask)
-
-        vol[..., 0] += 0.70 * membrane
-
-        green_signal = (
-            0.18 * cell_soft
-            + 0.28 * cyto_texture * cell_soft
-            + 0.16 * puncta
-        )
-        vol[..., 1][cyto_only] += green_signal[cyto_only]
-
-        vol[..., 2] += 0.85 * nuc_soft
-        vol[..., 1] += 0.03 * nuc_soft
-        vol[..., 0] += 0.01 * nuc_soft
-
-        n_nucleoli = rng.integers(1, 4)
-        for _ in range(n_nucleoli):
-            lz = ncz + rng.uniform(-nrz * 0.25, nrz * 0.25)
-            ly = ncy + rng.uniform(-nry * 0.35, nry * 0.35)
-            lx = ncx + rng.uniform(-nrx * 0.35, nrx * 0.35)
-
-            lrz = max(0.35, nrz * rng.uniform(0.12, 0.22))
-            lry = max(0.8, nry * rng.uniform(0.12, 0.20))
-            lrx = max(0.8, nrx * rng.uniform(0.12, 0.20))
-
-            ldist = (
-                ((zz - lz) / lrz) ** 2
-                + ((yy - ly) / lry) ** 2
-                + ((xx - lx) / lrx) ** 2
-            )
-            nucleolus = np.exp(-ldist * 6.0).astype(np.float32)
-            vol[..., 2] += 0.25 * nucleolus
+        vol[..., 0] += 0.72 * membrane
+        vol[..., 1] += 0.18 * cytoplasm + 0.16 * puncta * cell.astype(np.float32)
+        vol[..., 2] += 0.86 * nucleus
+        labels[cell] = cell_id
 
     for c in range(3):
         vol[..., c] = gaussian_filter(vol[..., c], sigma=(0.7, 0.9, 0.9))
+        vol[..., c] -= vol[..., c].min()
+        vol[..., c] /= vol[..., c].max() + 1e-8
+    return vol.astype(np.float32), labels
 
-    vol += rng.normal(0, 0.02, vol.shape).astype(np.float32)
 
-    vol = np.clip(vol, 0, None)
+def add_noise_for_snr(rgb, snr_db, seed):
+    rng = np.random.default_rng(seed)
+    out = rgb.copy()
     for c in range(3):
-        ch = vol[..., c]
-        ch -= ch.min()
-        ch /= (ch.max() + 1e-8)
-        vol[..., c] = ch
-
-    return vol.astype(np.float32)
+        signal_std = float(np.std(out[..., c]))
+        noise_std = signal_std / (10 ** (float(snr_db) / 20.0) + 1e-8)
+        out[..., c] += rng.normal(0.0, noise_std, out[..., c].shape).astype(np.float32)
+        out[..., c] = np.clip(out[..., c], 0.0, None)
+        out[..., c] -= out[..., c].min()
+        out[..., c] /= out[..., c].max() + 1e-8
+    return out.astype(np.float32)
 
 
 def compute():
-    return make_cells_rgb_volume(
-        z=100,
-        y=256,
-        x=256,
-        n_cells=28,
-        seed=7,
-    )
+    base, labels = make_cells_rgb_volume()
+    return {
+        "rgb_cells_3d_snr_low": add_noise_for_snr(base, 5.0, 41),
+        "rgb_cells_3d_snr_mid": add_noise_for_snr(base, 11.0, 42),
+        "rgb_cells_3d_snr_high": add_noise_for_snr(base, 18.0, 43),
+        "rgb_cells_3d_labels": labels,
+    }
 
 
-def apply_result(rgb_cells):
-    viewer.add_image(
-        rgb_cells,
-        name="synthetic_cells_rgb_3d",
-        rgb=True,
-    )
-    print("Added layer: synthetic_cells_rgb_3d")
-    print("Shape:", rgb_cells.shape)
+def apply_result(payload):
+    viewer.add_image(payload["rgb_cells_3d_snr_low"], name="rgb_cells_3d_snr_low", rgb=True)
+    viewer.add_image(payload["rgb_cells_3d_snr_mid"], name="rgb_cells_3d_snr_mid", rgb=True)
+    viewer.add_image(payload["rgb_cells_3d_snr_high"], name="rgb_cells_3d_snr_high", rgb=True)
+    viewer.add_labels(payload["rgb_cells_3d_labels"], name="rgb_cells_3d_labels")
+    print("Added layers: rgb_cells_3d_snr_low, rgb_cells_3d_snr_mid, rgb_cells_3d_snr_high, rgb_cells_3d_labels")
 
 
-run_in_background(compute, apply_result, label="Generate RGB cells volume")
+run_in_background(compute, apply_result, label="Generate RGB cells 3D SNR sweep")
 """.strip(),
-        "tags": ["demo", "background", "rgb", "3d"],
+        "tags": ["demo", "rgb", "fluorescent", "3d", "snr", "labels"],
+    },
+    {
+        "title": "Demo Pack: Messy Masks 2D/3D",
+        "code": """
+import numpy as np
+from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, generate_binary_structure
+
+
+def make_clean_mask_2d(y=512, x=512, n_objects=10, seed=7):
+    rng = np.random.default_rng(seed)
+    yy, xx = np.meshgrid(np.arange(y), np.arange(x), indexing="ij")
+    mask = np.zeros((y, x), dtype=np.uint8)
+    for _ in range(n_objects):
+        cy = rng.integers(40, y - 40)
+        cx = rng.integers(40, x - 40)
+        ry = rng.uniform(18.0, 42.0)
+        rx = rng.uniform(18.0, 42.0)
+        dist = ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2
+        mask |= (dist <= 1.0).astype(np.uint8)
+    return mask
+
+
+def make_clean_mask_3d(z=30, y=256, x=256, n_objects=8, seed=11):
+    rng = np.random.default_rng(seed)
+    zz, yy, xx = np.meshgrid(np.arange(z), np.arange(y), np.arange(x), indexing="ij")
+    mask = np.zeros((z, y, x), dtype=np.uint8)
+    for _ in range(n_objects):
+        cz = rng.integers(4, z - 4)
+        cy = rng.integers(20, y - 20)
+        cx = rng.integers(20, x - 20)
+        rz = rng.uniform(2.0, 5.0)
+        ry = rng.uniform(10.0, 20.0)
+        rx = rng.uniform(10.0, 20.0)
+        dist = ((zz - cz) / rz) ** 2 + ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2
+        mask |= (dist <= 1.0).astype(np.uint8)
+    return mask
+
+
+def make_messy_mask(mask, seed):
+    rng = np.random.default_rng(seed)
+    ndim = mask.ndim
+    structure = generate_binary_structure(ndim, 1)
+    messy = mask.astype(bool)
+
+    messy = binary_dilation(messy, structure=structure, iterations=1)
+    messy = binary_erosion(messy, structure=structure, iterations=1)
+
+    foreground = np.argwhere(messy)
+    if len(foreground):
+        n_holes = max(4, len(foreground) // 3000)
+        picks = foreground[rng.choice(len(foreground), size=min(n_holes, len(foreground)), replace=False)]
+        for coord in picks:
+            messy[tuple(coord)] = False
+
+    noise = np.zeros_like(messy, dtype=bool)
+    n_speckles = max(40, messy.size // 4000)
+    coords = tuple(rng.integers(0, size, size=n_speckles) for size in messy.shape)
+    noise[coords] = True
+    messy |= noise
+
+    return messy.astype(np.uint8)
+
+
+def compute():
+    clean_2d = make_clean_mask_2d()
+    clean_3d = make_clean_mask_3d()
+    messy_2d = make_messy_mask(clean_2d, seed=21)
+    messy_3d = make_messy_mask(clean_3d, seed=22)
+    filled_2d = binary_fill_holes(messy_2d > 0).astype(np.uint8)
+    filled_3d = binary_fill_holes(messy_3d > 0).astype(np.uint8)
+    return {
+        "mask_clean_2d": clean_2d,
+        "mask_messy_2d": messy_2d,
+        "mask_filled_target_2d": filled_2d,
+        "mask_clean_3d": clean_3d,
+        "mask_messy_3d": messy_3d,
+        "mask_filled_target_3d": filled_3d,
+    }
+
+
+def apply_result(payload):
+    viewer.add_labels(payload["mask_clean_2d"], name="mask_clean_2d")
+    viewer.add_labels(payload["mask_messy_2d"], name="mask_messy_2d")
+    viewer.add_labels(payload["mask_filled_target_2d"], name="mask_filled_target_2d")
+    viewer.add_labels(payload["mask_clean_3d"], name="mask_clean_3d")
+    viewer.add_labels(payload["mask_messy_3d"], name="mask_messy_3d")
+    viewer.add_labels(payload["mask_filled_target_3d"], name="mask_filled_target_3d")
+    print("Added layers: mask_clean_2d, mask_messy_2d, mask_filled_target_2d, mask_clean_3d, mask_messy_3d, mask_filled_target_3d")
+
+
+run_in_background(compute, apply_result, label="Generate messy masks demo pack")
+""".strip(),
+        "tags": ["demo", "labels", "cleanup", "2d", "3d", "mask"],
     },
 ]
 
@@ -638,11 +870,20 @@ def merged_code_records(data: dict) -> list[dict]:
 
     merged: list[dict] = []
     seen: set[str] = set()
-    for record in [*saved, *recent, *built_in]:
+    for record in [*saved, *recent]:
         code = str(record.get("code", "")).strip()
         if not code or code in seen:
             continue
         seen.add(code)
+        merged.append({**record, "pinned": code in pinned_codes})
+
+    # Keep built-in demo/readout entries visible even when the same code also
+    # appears in recent or saved history, so the built-in catalog remains
+    # stable after users load or run those snippets.
+    for record in built_in:
+        code = str(record.get("code", "")).strip()
+        if not code:
+            continue
         merged.append({**record, "pinned": code in pinned_codes})
 
     pinned = [item for item in merged if item.get("pinned", False)]

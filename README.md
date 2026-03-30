@@ -20,17 +20,19 @@ The current direction is a deterministic, layer-aware assistant: the plugin prof
 Current capabilities include:
 - connect to a local Ollama server
 - discover and unload local models from the plugin UI
-- inspect layers and selected-layer properties
-- profile layers with a deterministic Phase 1 dataset profiler
-- apply built-in image tools from chat
-- automate batch actions across multiple layers
-- generate napari Python code when no built-in tool fits
-- copy or run generated code from the assistant UI
+- inspect the selected layer or named layers with structured layer summaries
+- profile loaded layers with deterministic semantic and workflow-aware metadata
+- run built-in, registry-backed image-analysis tools from natural-language requests
+- support common microscopy workflows such as enhancement, thresholding, cleanup, measurement, projection, and cropping
+- automate batch actions across multiple layers when the request applies to all compatible inputs
+- generate napari Python code only when no built-in tool is a better fit
+- review, copy, validate, and run assistant-generated code from the plugin UI
 - paste and run your own Python directly from the Prompt box with `Run My Code`, without opening QtConsole
-- save, pin, tag, and reuse prompts through the local Library
+- reuse built-in demo packs for EM-style grayscale data, fluorescent RGB cell data, SNR sweeps, and messy mask cleanup tests
+- save, pin, tag, rename, and reuse prompts through the local Library
 - save, tag, rename, and run reusable code through the Library `Code` tab
-- delete selected built-in, recent, or saved items from the Library
-- clear unpinned recent prompt or code items while keeping saved and pinned items
+- keep built-in examples alongside recent and saved items in the Library
+- delete selected built-in, recent, saved, or code items from the Library and clear unpinned recent history while keeping saved and pinned items
 - keep bounded session memory from approved prior turns
 - reject the last assistant outcome from session memory with a thumbs-down control
 - optionally open ND2 conversion, spectral viewer, and spectral analysis widgets from `napari-nd2-spectral-ome-zarr`
@@ -40,15 +42,17 @@ The current default model is:
 
 ## Why This Plugin
 
-Most chat interfaces are detached from the actual napari session. This plugin keeps the assistant inside the viewer and grounds its responses in:
+Most chat interfaces are detached from the actual napari session. This plugin keeps the assistant inside the viewer and grounds its behavior in the live state of the current napari workspace:
 - loaded layers
 - the selected layer
-- shape and dtype
-- semantic layer profiling
-- labels statistics
-- local tool execution
-- local Python code generation
+- layer shape, dtype, and transforms
+- deterministic semantic layer profiling
+- labels and mask statistics
+- built-in local tool execution
+- local Python code generation when needed
 - bounded session memory
+
+The goal is not a generic chatbot inside napari. The goal is a layer-aware assistant that can grow into a practical microscopy workflow workbench.
 
 ### Local-first by design
 
@@ -59,7 +63,7 @@ The assistant runs on local open-weight models through Ollama:
 - no cloud services
 - no data leaves your workstation
 
-This makes it suitable for research workflows where the user wants interactive help, repeatable prompts, and local control over data and models.
+This makes it a better fit for research workflows where users want interactive help, repeatable analysis steps, reusable demo and prompt packs, and direct control over both data and models.
 
 ## Current Features
 
@@ -71,12 +75,18 @@ The assistant currently supports built-in tools for:
 - inspecting a specific named layer
 - CLAHE contrast enhancement for grayscale 2D and 3D images
 - batch CLAHE across multiple image layers
+- Gaussian denoising for grayscale image layers
 - threshold preview
 - threshold apply
 - batch threshold preview and apply
 - mask measurement
 - batch mask measurement
-- mask morphology operations
+- mask cleanup operations such as hole filling, small-object removal, and largest-component selection
+- connected-component labeling for binary masks
+- per-object measurement table summaries for labels layers
+- max-intensity projection for 3D grayscale images
+- cropping one layer to the bounding box of another layer
+- registry-backed tool execution as the foundation for future workflow and pipeline expansion
 
 Layer inspection is now backed by a deterministic profile object that includes:
 - `semantic_type`
@@ -96,17 +106,29 @@ Supported mask operations:
 - `remove_small`
 - `keep_largest`
 
+Additional built-in workflow tools currently exposed through chat include:
+- `gaussian_denoise`
+- `remove_small_objects`
+- `fill_mask_holes`
+- `keep_largest_component`
+- `label_connected_components`
+- `measure_labels_table`
+- `project_max_intensity`
+- `crop_to_layer_bbox`
+
 ### Code generation workflows
 
-When a request is not covered by a built-in tool, the assistant can return napari Python code instead of guessing.
+When a request is not covered by a built-in tool, the assistant can return napari Python code instead of guessing or forcing the wrong tool.
 
 Generated code can be:
 - copied to the clipboard
-- executed from the plugin after user review
+- reviewed and executed from the plugin
 
 You can also paste your own Python directly into the Prompt box and run it from the plugin with `Run My Code`, without switching to QtConsole.
 
-This is useful when you want a reusable script, need to adjust code manually, test a small viewer-bound snippet quickly, or prefer explicit code over hidden automation.
+Use assistant-generated code when you want a reusable script or need custom logic beyond the current built-in tools.
+
+Use `Run My Code` when you already have Python you want to test quickly inside the current napari session.
 
 ### Optional ND2 and spectral integration
 
@@ -141,10 +163,11 @@ This is intentionally not full transcript memory. The model is still grounded pr
 
 The assistant includes a persistent Library for repeatable workflows and reusable code:
 - built-in starter prompts
+- built-in demo packs and reusable code examples in the `Code` tab
 - recent prompts captured automatically
 - saved prompts for reusable tasks
 - pinned prompts for high-frequency workflows
-- reusable code snippets in a separate `Code` tab
+- recent and saved code snippets in a separate `Code` tab
 
 Interaction:
 - single click loads a prompt or code snippet into the editor
@@ -159,6 +182,8 @@ Logic:
 - `pinned` means keep this prompt surfaced at the top of the library
 - a prompt can be pinned without being saved
 - built-in prompts are shipped examples; deleting them hides them from the current local library view
+- built-in code entries include demo packs and starter `Run My Code` examples
+- built-in code entries remain visible even if the same snippet also appears in recent history
 - code snippets can be tagged and renamed so they are easier to reference later in workflows
 
 This is designed for users who want repeatable automation without committing everything to full scripting.
@@ -166,24 +191,32 @@ This is designed for users who want repeatable automation without committing eve
 ## Requirements
 - Python 3.9+
 - napari
-- Ollama installed locally
-- a local Ollama model such as `nemotron-cascade-2:30b`
+- Ollama installed locally and running on the same machine
+- at least one local Ollama model such as `nemotron-cascade-2:30b`
+
+Core Python dependencies used by the plugin are installed with the package itself.
+
+Optional:
+- `napari-nd2-spectral-ome-zarr` for ND2 export, spectral viewer, and spectral analysis integration
+
+Notes:
+- The plugin does not bundle the Ollama server or model weights.
+- Model memory requirements vary substantially by model tag.
+- Larger local models may require significant RAM or VRAM.
 
 Tested during development on an NVIDIA DGX Spark workstation.
-
-The plugin does not bundle the Ollama server or model weights.
 
 ## Installation
 
 ### 1. Install Ollama
 
-Install Ollama on the same machine that runs napari, then start the local server:
+Install Ollama on the same machine as napari, then start the local server:
 
 ```bash
 ollama serve
 ```
 
-Pull a model before using the plugin:
+Pull at least one model before using the plugin:
 
 ```bash
 ollama pull nemotron-cascade-2:30b
@@ -199,7 +232,13 @@ ollama pull qwen2.5:7b
 
 ### 2. Install the plugin
 
-Clone the repository and install it in editable mode:
+For normal use:
+
+```bash
+pip install napari-chat-assistant
+```
+
+For development:
 
 ```bash
 git clone https://github.com/wulinteousa2-hash/napari-chat-assistant.git
@@ -210,6 +249,7 @@ pip install -e .
 ## Release
 
 This package is published to PyPI so napari Hub can discover it.
+
 For maintainer release instructions and PyPI publishing setup, see [RELEASING.md](RELEASING.md)
 ## Usage
 
@@ -222,44 +262,41 @@ For maintainer release instructions and PyPI publishing setup, see [RELEASING.md
 
 If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
 
-The assistant works best when prompts describe a concrete action.
+The assistant works best when prompts describe a concrete action. Natural language is fine.
 
 Examples:
+- `Inspect the selected layer`
+- `Preview threshold on em_2d_snr_mid`
+- `Apply gaussian denoise to em_2d_snr_low with sigma 1.2`
+- `Fill holes in mask_messy_2d`
+- `Remove small objects from mask_messy_2d with min_size 64`
+- `Keep only the largest connected component in mask_messy_2d`
+- `Measure labels table for rgb_cells_2d_labels`
+- `Create a max intensity projection from em_3d_snr_mid along axis 0`
+- `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`
 
-Layer inspection:
-- `list all layers in the current viewer`
-- `inspect the selected layer properties`
-- `inspect layer LV-nerve and report its shape and dtype`
+### Demo Packs
 
-EM contrast enhancement:
-- `apply CLAHE to the selected EM image`
-- `apply CLAHE to the selected image with kernel_size 32, clip_limit 0.01, nbins 256`
-- `apply CLAHE to all open EM images with kernel_size 64, clip_limit 0.02, nbins 512`
+Use the Library `Code` tab to load built-in demo packs for repeatable testing.
 
-Thresholding and masks:
-- `preview a threshold mask for the selected image layer`
-- `apply a threshold optimized for dim objects on the selected image`
-- `measure connected components in the current mask layer`
+Current demo packs include:
+- EM 2D SNR sweep
+- EM 3D SNR sweep
+- RGB cells 2D SNR sweep
+- RGB cells 3D SNR sweep
+- messy masks 2D/3D
 
-Code generation:
-- `write napari code to duplicate the selected layer`
-- `generate QtConsole code to print the selected layer shape`
-- `create a synthetic noisy image in the current viewer and generate napari code for it`
-- `create a docked histogram widget for the selected image and report mean, noise SD, and simple SNR`
+These create named layers so you can test built-in tools quickly without hunting for sample data.
 
-Profile-aware prompts:
-- `show every loaded layer with semantic type, confidence, axes, shape, and dtype`
-- `inspect the selected layer and explain what kind of dataset it is and why`
-- `tell me which operation classes are recommended or discouraged for the selected layer`
-- `decide if CLAHE is appropriate for the selected layer before using it`
-
-Demo and education prompts:
-- `create a synthetic noisy image in the current viewer for teaching image noise`
-- `generate a docked histogram and simple SNR widget for the selected image`
-- `create two synthetic images with low noise and high noise and compare their histograms`
-- `simulate low-SNR and high-SNR examples for teaching imaging quality`
-- `generate napari code that shows how noise level changes histogram width and simple SNR`
-- `create a demo image with bright spots on dark background and vary the noise step by step`
+Example pipeline:
+1. Run the `EM 2D SNR Sweep` demo pack.
+2. `Apply gaussian denoise to em_2d_snr_low with sigma 1.0`
+3. `Preview threshold on em_2d_snr_low_gaussian`
+4. `Apply threshold now on em_2d_snr_low_gaussian`
+5. `Fill holes in em_2d_snr_low_gaussian_labels`
+6. `Remove small objects from em_2d_snr_low_gaussian_labels_filled with min_size 64`
+7. `Keep only the largest connected component in em_2d_snr_low_gaussian_labels_filled_clean`
+8. `Measure mask on em_2d_snr_low_gaussian_labels_filled_clean_largest`
 
 ## UI Overview
 
@@ -275,9 +312,10 @@ Demo and education prompts:
 ### Library
 
 - built-in prompts
+- built-in demo packs and starter code in the `Code` tab
 - recent prompts
 - saved prompts
-- code snippets in a separate `Code` tab
+- recent and saved code snippets in the `Code` tab
 - pinned prompts
 - `saved` keeps your own reusable copy
 - `pinned` keeps a prompt at the top regardless of whether it is built-in, recent, or saved
@@ -335,7 +373,7 @@ The current strategy is:
    - a normal reply
    - a built-in tool call
    - generated Python code
-6. run the selected tool or expose the generated code through the UI
+6. run the selected registry-backed tool or expose the generated code through the UI
 7. update session memory from explicit user feedback or successful follow-up behavior
 
 This keeps the assistant more grounded than a plain chat interface and makes common operations more reliable.
@@ -360,14 +398,15 @@ Memory note:
 
 ## Current Limitations
 
-- the dataset profiler is still Phase 1 and currently strongest on already-loaded napari layers rather than file-format-specific readers
+- the dataset profiler is still Phase 1 and remains strongest on already-loaded napari layers rather than reader- or file-format-specific workflows
 - TIFF vs OME-Zarr adapter behavior is not implemented yet
-- ND2 and Zeiss adapters are not implemented yet
+- ND2 and Zeiss reader-aware adapters are not implemented in this plugin
+- the tool registry is in progress; some tools are now registry-backed, but the migration is not complete yet
 - session memory is selective and bounded; it is not full conversation memory
-- model output can still be inconsistent, especially for generated code
-- not all requests map cleanly to built-in tools yet
-- generated code can still fail if the model invents incorrect napari APIs
-- no multi-step task planning yet (complex workflows may require several prompts)
+- model output can still be inconsistent, especially when falling back to generated code
+- some requests still miss built-in tools and fall through to code generation when a stronger built-in workflow would be preferable
+- generated code can still fail if the model invents incorrect napari APIs or unsupported imports
+- multi-step workflow planning and replay are not implemented yet
 - no image attachment or multimodal input pipeline yet
 - performance optimization for very large 2D/3D datasets is still in progress
 - hard native crashes in Qt/C-extension code may not be captured cleanly by the plugin crash log even when normal plugin errors are logged
@@ -375,7 +414,7 @@ Memory note:
 Most reliable current workflow:
 - use built-in tools for common layer inspection and mask/image actions
 - trust current viewer context and current layer profiles over any remembered prior turn
-- use the Library for repeated prompts and reusable code
+- use the Library for repeated prompts, demo packs, and reusable code
 - use generated code when you want explicit review and control
 - use `Run My Code` when you already have working Python and want to test it directly inside napari
 

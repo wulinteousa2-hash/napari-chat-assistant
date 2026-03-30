@@ -14,9 +14,12 @@ from .context import (
     layer_detail_summary,
     layer_summary,
     mask_measurement_summary,
+    layer_context_json,
 )
 from .image_ops import apply_clahe, auto_threshold_mask, mask_statistics
 from .image_ops import compare_intensity_populations, intensity_histogram, intensity_statistics
+from .tool_registry import TOOL_REGISTRY
+from .tool_types import PreparedJob, ToolContext, ToolResult
 from .tools import (
     TOOL_OPS,
     next_output_name,
@@ -27,6 +30,7 @@ from .tools import (
     normalize_polarity,
     save_mask_snapshot,
 )
+from .tools_builtin import builtin_tools
 
 
 _ND2_INTEGRATION_MESSAGE = (
@@ -37,6 +41,21 @@ _ND2_INTEGRATION_MESSAGE = (
     "napari Hub:\n"
     "https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html"
 )
+
+
+def _ensure_builtin_registry() -> None:
+    for tool in builtin_tools():
+        if TOOL_REGISTRY.get(tool.spec.name) is None:
+            TOOL_REGISTRY.register(tool)
+
+
+def _tool_context(viewer: napari.Viewer) -> ToolContext:
+    payload = layer_context_json(viewer)
+    return ToolContext(
+        viewer=viewer,
+        layer_context=payload,
+        selected_layer_profile=payload.get("selected_layer_profile"),
+    )
 
 
 def _format_intensity_summary(layer_name: str, stats: dict) -> str:
@@ -69,7 +88,15 @@ def _dock_optional_widget(viewer: napari.Viewer, widget_cls, display_name: str) 
 
 
 def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> dict:
+    _ensure_builtin_registry()
     args = arguments or {}
+    registry_tool = TOOL_REGISTRY.get(tool_name)
+    if registry_tool is not None:
+        prepared = registry_tool.prepare(_tool_context(viewer), args)
+        if isinstance(prepared, str):
+            return {"mode": "immediate", "message": prepared}
+        return {"mode": prepared.mode, "job": prepared.to_dict()}
+
     if tool_name == "list_layers":
         return {"mode": "immediate", "message": layer_summary(viewer)}
 
@@ -94,30 +121,6 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
     if tool_name == "open_spectral_analysis":
         widget_cls = _load_optional_widget("napari_nd2_spectral_ome_zarr._spectral_analysis", "SpectralAnalysisWidget")
         return {"mode": "immediate", "message": _dock_optional_widget(viewer, widget_cls, "Spectral Analysis")}
-
-    if tool_name == "apply_clahe":
-        image_layer = find_image_layer(viewer, args.get("layer_name"))
-        if image_layer is None:
-            return {"mode": "immediate", "message": "No valid image layer available for CLAHE."}
-        if getattr(image_layer, "rgb", False):
-            return {"mode": "immediate", "message": "CLAHE currently supports grayscale 2D/3D image layers, not RGB layers."}
-        safe_kernel = normalize_kernel_size(args.get("kernel_size", 32), ndim=np.asarray(image_layer.data).ndim)
-        safe_clip = normalize_float(args.get("clip_limit", 0.01), default=0.01, minimum=1e-6, maximum=10.0)
-        safe_nbins = normalize_int(args.get("nbins", 256), default=256, minimum=2, maximum=65536)
-        return {
-            "mode": "worker",
-            "job": {
-                "kind": "apply_clahe",
-                "layer_name": image_layer.name,
-                "output_name": next_output_name(viewer, f"{image_layer.name}_clahe"),
-                "kernel_size": safe_kernel,
-                "clip_limit": safe_clip,
-                "nbins": safe_nbins,
-                "data": np.asarray(image_layer.data).copy(),
-                "scale": tuple(image_layer.scale),
-                "translate": tuple(image_layer.translate),
-            },
-        }
 
     if tool_name == "apply_clahe_batch":
         image_layers = find_all_image_layers(viewer)
@@ -306,16 +309,13 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
 
 
 def run_tool_job(job: dict) -> dict:
-    kind = job["kind"]
-    if kind == "apply_clahe":
-        result = apply_clahe(
-            job["data"],
-            kernel_size=job["kernel_size"],
-            clip_limit=job["clip_limit"],
-            nbins=job["nbins"],
-        )
-        return {**job, "kind": kind, "result": result}
+    _ensure_builtin_registry()
+    registry_tool = TOOL_REGISTRY.get(job.get("tool_name", ""))
+    if registry_tool is not None:
+        prepared_job = PreparedJob.from_dict(job)
+        return registry_tool.execute(prepared_job).to_dict()
 
+    kind = job["kind"]
     if kind == "apply_clahe_batch":
         results = []
         for item in job["items"]:
@@ -364,19 +364,12 @@ def run_tool_job(job: dict) -> dict:
 
 
 def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
-    kind = result["kind"]
-    if kind == "apply_clahe":
-        viewer.add_image(
-            result["result"],
-            name=result["output_name"],
-            scale=result["scale"],
-            translate=result["translate"],
-        )
-        return (
-            f"Applied CLAHE to [{result['layer_name']}] as [{result['output_name']}]. "
-            f"kernel_size={result['kernel_size']} clip_limit={result['clip_limit']:.6g} nbins={result['nbins']}."
-        )
+    _ensure_builtin_registry()
+    registry_tool = TOOL_REGISTRY.get(result.get("tool_name", ""))
+    if registry_tool is not None:
+        return registry_tool.apply(_tool_context(viewer), ToolResult.from_dict(result))
 
+    kind = result["kind"]
     if kind == "apply_clahe_batch":
         lines = []
         for item in result["items"]:

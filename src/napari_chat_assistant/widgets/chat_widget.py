@@ -122,6 +122,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     left_panel = QWidget()
     left_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    left_panel.setMinimumWidth(600)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -383,6 +384,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     splitter.addWidget(right_panel)
     splitter.setStretchFactor(0, 2)
     splitter.setStretchFactor(1, 3)
+    splitter.setSizes([600, 600])
 
     saved_settings = {
         "provider": "Local (Ollama-style)",
@@ -807,35 +809,43 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message(
             "assistant",
             "**Prompt Tips**\n"
-            "- Ask for the exact output style you want.\n"
-            "- Ask the assistant to improve your prompt first when the request is vague.\n"
-            "- If multiple layers are open, specify the layer name.\n"
-            "- Say whether you want a preview, an applied result, or just an explanation.\n\n"
-            "**Useful Phrases**\n"
-            "- `Use the selected layer`\n"
-            "- `Use layer: <layer_name>`\n"
-            "- `Preview threshold first`\n"
-            "- `Apply threshold now`\n"
-            "- `Run My Code` executes Python pasted into the Prompt box\n"
-            "- `Inspect the selected layer first`\n"
-            "- `Use a built-in tool if possible; otherwise generate napari code`\n\n"
-            "**Format Requests**\n"
+            "- Ask for the result you want: preview, apply, explain, or code.\n"
+            "- If more than one layer is open, name the layer.\n"
+            "- Natural language is fine. The assistant will use the selected layer when it can.\n\n"
+            "**Try These**\n"
+            "- `Inspect the selected layer`\n"
+            "- `Preview threshold on em_2d_snr_mid`\n"
+            "- `Apply gaussian denoise to em_2d_snr_low with sigma 1.2`\n"
+            "- `Fill holes in mask_messy_2d`\n"
+            "- `Remove small objects from mask_messy_2d with min_size 64`\n"
+            "- `Keep only the largest connected component in mask_messy_2d`\n"
+            "- `Measure labels table for rgb_cells_2d_labels`\n"
+            "- `Create a max intensity projection from em_3d_snr_mid along axis 0`\n"
+            "- `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`\n\n"
+            "**Demo Data**\n"
+            "- Use the Library `Code` tab to load built-in demo packs for testing.\n"
+            "- Available demo packs include EM 2D/3D SNR sweeps, RGB cells 2D/3D SNR sweeps, and messy masks 2D/3D.\n"
+            "- These demos create named layers so you can test tools quickly and repeatably.\n\n"
+            "**Example Pipeline**\n"
+            "- `Run the EM 2D SNR Sweep demo pack.`\n"
+            "- `Apply gaussian denoise to em_2d_snr_low with sigma 1.0`\n"
+            "- `Preview threshold on em_2d_snr_low_gaussian`\n"
+            "- `Apply threshold now on em_2d_snr_low_gaussian`\n"
+            "- `Fill holes in em_2d_snr_low_gaussian_labels`\n"
+            "- `Remove small objects from em_2d_snr_low_gaussian_labels_filled with min_size 64`\n"
+            "- `Keep only the largest connected component in em_2d_snr_low_gaussian_labels_filled_clean`\n"
+            "- `Measure mask on em_2d_snr_low_gaussian_labels_filled_clean_largest`\n\n"
+            "**Run My Code Tip**\n"
+            "- Paste Python into the Prompt box and click `Run My Code` to execute it directly inside napari.\n"
+            "- For heavy compute, use `run_in_background(compute_fn, apply_fn, error_fn=None, label=\"...\")`.\n"
+            "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
+            "- Example: `Write Run My Code for a 3D RGB cell demo using run_in_background.`\n\n"
+            "**Formatting**\n"
             "- `Reply in markdown`\n"
             "- `Use bullets and short sections`\n"
-            "- `Show a numbered workflow`\n"
             "- `Explain first, then give runnable napari code`\n\n"
-            "**Language Tip**\n"
-            "- You can prompt in your preferred language.\n"
-            "- Results may vary by model and task.\n"
-            "- Ask for the final answer in your preferred language if needed.\n\n"
-            "**Example Meta-Prompts**\n"
-            "- `Improve my prompt first, then answer in markdown.`\n"
-            "- `Ask clarifying questions before solving this.`\n"
-            "- `Inspect the selected layer first, then recommend the next step.`\n\n"
-            "**Heavy Code Tip**\n"
-            "- For heavy compute, use `run_in_background(compute_fn, apply_fn, error_fn=None, label=\"...\")` in Run My Code.\n"
-            "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
-            "- `Rewrite my request so the result is more precise for napari.`",
+            "**Language**\n"
+            "- You can prompt in your preferred language.",
         )
         append_log("Opened prompt-writing help.")
 

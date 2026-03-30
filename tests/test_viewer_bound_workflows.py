@@ -30,6 +30,7 @@ def test_prepare_tool_job_prefers_selected_image_and_avoids_name_collisions(make
 
     assert prepared["mode"] == "worker"
     job = prepared["job"]
+    assert job["tool_name"] == "apply_clahe"
     assert job["layer_name"] == "image_b"
     assert job["output_name"] == "image_b_clahe_01"
     assert job["kernel_size"] == (4, 4)
@@ -105,3 +106,149 @@ def test_preview_threshold_batch_creates_named_preview_per_layer(make_napari_vie
     assert "__assistant_threshold_preview__::image_a" in viewer.layers
     assert "__assistant_threshold_preview__::image_b" in viewer.layers
     assert "Updated preview masks for 2 image layers with polarity=bright." in message
+
+
+def test_gaussian_denoise_adds_output_image_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.eye(7, dtype=np.float32), name="image_a", scale=(2.0, 3.0), translate=(4.0, 5.0))
+
+    result = run_tool_job(prepare_tool_job(viewer, "gaussian_denoise", {"sigma": 1.25})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "image_a_gaussian" in viewer.layers
+    layer = viewer.layers["image_a_gaussian"]
+    assert tuple(layer.scale) == (2.0, 3.0)
+    assert tuple(layer.translate) == (4.0, 5.0)
+    assert layer.data.shape == (7, 7)
+    assert "Applied Gaussian denoising to [image_a] as [image_a_gaussian]" in message
+
+
+def test_remove_small_objects_adds_cleaned_labels_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((8, 8), dtype=np.uint8)
+    data[1, 1] = 1
+    data[4:7, 4:7] = 1
+    viewer.add_labels(data, name="mask_a", scale=(1.5, 2.5), translate=(10.0, 20.0))
+
+    result = run_tool_job(prepare_tool_job(viewer, "remove_small_objects", {"min_size": 4})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_clean" in viewer.layers
+    layer = viewer.layers["mask_a_clean"]
+    assert tuple(layer.scale) == (1.5, 2.5)
+    assert tuple(layer.translate) == (10.0, 20.0)
+    assert int(np.count_nonzero(np.asarray(layer.data))) == 9
+    assert "Removed small objects from [mask_a] into [mask_a_clean]" in message
+
+
+def test_fill_mask_holes_adds_filled_labels_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.ones((5, 5), dtype=np.uint8)
+    data[2, 2] = 0
+    viewer.add_labels(data, name="mask_a")
+
+    result = run_tool_job(prepare_tool_job(viewer, "fill_mask_holes", {})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_filled" in viewer.layers
+    layer = viewer.layers["mask_a_filled"]
+    assert int(np.asarray(layer.data)[2, 2]) == 1
+    assert "Filled mask holes in [mask_a] into [mask_a_filled]" in message
+
+
+def test_project_max_intensity_drops_projected_axis_transform(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    viewer.add_image(data, name="volume_a", scale=(1.0, 2.0, 3.0), translate=(10.0, 20.0, 30.0))
+
+    result = run_tool_job(prepare_tool_job(viewer, "project_max_intensity", {"axis": 0})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "volume_a_mip" in viewer.layers
+    layer = viewer.layers["volume_a_mip"]
+    assert layer.data.shape == (3, 4)
+    assert tuple(layer.scale) == (2.0, 3.0)
+    assert tuple(layer.translate) == (20.0, 30.0)
+    assert "Created max-intensity projection for [volume_a] as [volume_a_mip] along axis=0." in message
+
+
+def test_keep_largest_component_adds_labels_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((8, 8), dtype=np.uint8)
+    data[1, 1] = 1
+    data[4:7, 4:7] = 1
+    viewer.add_labels(data, name="mask_a", scale=(1.5, 2.5), translate=(10.0, 20.0))
+
+    result = run_tool_job(prepare_tool_job(viewer, "keep_largest_component", {})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_largest" in viewer.layers
+    layer = viewer.layers["mask_a_largest"]
+    assert tuple(layer.scale) == (1.5, 2.5)
+    assert tuple(layer.translate) == (10.0, 20.0)
+    assert int(np.count_nonzero(np.asarray(layer.data))) == 9
+    assert "Kept the largest connected component from [mask_a] in [mask_a_largest]." in message
+
+
+def test_label_connected_components_adds_instance_labels(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((6, 6), dtype=np.uint8)
+    data[1:3, 1:3] = 1
+    data[4:6, 4:6] = 1
+    viewer.add_labels(data, name="mask_a")
+
+    result = run_tool_job(prepare_tool_job(viewer, "label_connected_components", {"connectivity": 1})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_instances" in viewer.layers
+    layer = viewer.layers["mask_a_instances"]
+    assert int(np.max(np.asarray(layer.data))) == 2
+    assert "objects=2." in message
+
+
+def test_measure_labels_table_returns_summary(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    labels = np.zeros((5, 5), dtype=np.uint8)
+    labels[1:3, 1:3] = 1
+    labels[3:5, 3:5] = 2
+    intensities = np.arange(25, dtype=np.float32).reshape(5, 5)
+    viewer.add_labels(labels, name="mask_a")
+    viewer.add_image(intensities, name="image_a")
+
+    result = run_tool_job(
+        prepare_tool_job(
+            viewer,
+            "measure_labels_table",
+            {"layer_name": "mask_a", "intensity_layer": "image_a", "properties": ["label", "area", "mean_intensity"]},
+        )["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "Measured 2 labeled object(s) in [mask_a]." in message
+    assert "label=1" in message
+    assert "mean_intensity=" in message
+
+
+def test_crop_to_layer_bbox_adds_cropped_image_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    mask = np.zeros((10, 10), dtype=np.uint8)
+    mask[2:6, 3:8] = 1
+    viewer.add_image(image, name="image_a", scale=(2.0, 3.0), translate=(10.0, 20.0))
+    viewer.add_labels(mask, name="mask_a")
+
+    result = run_tool_job(
+        prepare_tool_job(
+            viewer,
+            "crop_to_layer_bbox",
+            {"source_layer": "image_a", "reference_layer": "mask_a", "padding": 1},
+        )["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "image_a_crop" in viewer.layers
+    layer = viewer.layers["image_a_crop"]
+    assert layer.data.shape == (6, 7)
+    assert tuple(layer.scale) == (2.0, 3.0)
+    assert tuple(layer.translate) == (12.0, 26.0)
+    assert "Cropped [image_a] to the bounding box of [mask_a] as [image_a_crop]." in message
