@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,201 @@ DEFAULT_PROMPTS = [
     "ask clarifying questions before solving this if the request is ambiguous",
 ]
 
+DEFAULT_CODE_SNIPPETS = [
+    {
+        "title": "Demo: Background EM Volume",
+        "code": """
+import numpy as np
+from scipy.ndimage import gaussian_filter
+
+
+def generate_synthetic_em_3d(z=100, y=256, x=256, seed=7):
+    rng = np.random.default_rng(seed)
+    vol = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(1.2, 4.0, 4.0))
+    vol = (vol - vol.min()) / (vol.max() - vol.min() + 1e-8)
+    return vol.astype(np.float32)
+
+
+def compute():
+    return generate_synthetic_em_3d()
+
+
+def apply_result(volume):
+    viewer.add_image(volume, name="demo_em_volume", colormap="gray")
+
+
+run_in_background(compute, apply_result, label="Generate demo EM volume")
+""".strip(),
+        "tags": ["demo", "background", "3d"],
+    },
+    {
+        "title": "Demo: Background RGB Cells",
+        "code": """
+import numpy as np
+from scipy.ndimage import gaussian_filter
+
+
+def make_cells_rgb_volume(
+    z=100,
+    y=256,
+    x=256,
+    n_cells=28,
+    seed=7,
+):
+    rng = np.random.default_rng(seed)
+
+    vol = np.zeros((z, y, x, 3), dtype=np.float32)
+
+    zz, yy, xx = np.meshgrid(
+        np.arange(z),
+        np.arange(y),
+        np.arange(x),
+        indexing="ij",
+    )
+
+    bg_r = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.0, 12.0, 12.0))
+    bg_g = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.5, 10.0, 10.0))
+    bg_b = gaussian_filter(rng.random((z, y, x)).astype(np.float32), sigma=(2.0, 14.0, 14.0))
+
+    vol[..., 0] += 0.015 * bg_r
+    vol[..., 1] += 0.020 * bg_g
+    vol[..., 2] += 0.015 * bg_b
+
+    for _ in range(n_cells):
+        cz = rng.integers(8, z - 8)
+        cy = rng.integers(24, y - 24)
+        cx = rng.integers(24, x - 24)
+
+        rz = rng.uniform(4.0, 9.0)
+        ry = rng.uniform(12.0, 24.0)
+        rx = rng.uniform(12.0, 24.0)
+
+        cell_dist = (
+            ((zz - cz) / rz) ** 2
+            + ((yy - cy) / ry) ** 2
+            + ((xx - cx) / rx) ** 2
+        )
+        cell_mask = cell_dist <= 1.0
+        cell_soft = np.exp(-cell_dist * 1.8).astype(np.float32)
+
+        membrane = np.exp(-((np.sqrt(cell_dist) - 1.0) ** 2) / 0.006).astype(np.float32)
+        membrane *= (cell_dist <= 1.2)
+
+        ncz = cz + rng.uniform(-1.0, 1.0)
+        ncy = cy + rng.uniform(-3.0, 3.0)
+        ncx = cx + rng.uniform(-3.0, 3.0)
+
+        nrz = rz * rng.uniform(0.35, 0.55)
+        nry = ry * rng.uniform(0.35, 0.55)
+        nrx = rx * rng.uniform(0.35, 0.55)
+
+        nuc_dist = (
+            ((zz - ncz) / nrz) ** 2
+            + ((yy - ncy) / nry) ** 2
+            + ((xx - ncx) / nrx) ** 2
+        )
+        nuc_mask = nuc_dist <= 1.0
+        nuc_soft = np.exp(-nuc_dist * 2.8).astype(np.float32)
+
+        cyto_texture = gaussian_filter(
+            rng.random((z, y, x)).astype(np.float32),
+            sigma=(0.8, 2.0, 2.0),
+        )
+        cyto_texture = (cyto_texture - cyto_texture.min()) / (cyto_texture.max() - cyto_texture.min() + 1e-8)
+
+        puncta = np.zeros((z, y, x), dtype=np.float32)
+        n_puncta = rng.integers(15, 35)
+        for _ in range(n_puncta):
+            pz = cz + rng.uniform(-rz * 0.7, rz * 0.7)
+            py = cy + rng.uniform(-ry * 0.7, ry * 0.7)
+            px = cx + rng.uniform(-rx * 0.7, rx * 0.7)
+
+            prz = rng.uniform(0.4, 1.2)
+            pry = rng.uniform(0.8, 2.0)
+            prx = rng.uniform(0.8, 2.0)
+
+            pdist = (
+                ((zz - pz) / prz) ** 2
+                + ((yy - py) / pry) ** 2
+                + ((xx - px) / prx) ** 2
+            )
+            puncta += np.exp(-pdist * rng.uniform(3.0, 7.0)).astype(np.float32)
+
+        puncta *= cell_mask.astype(np.float32)
+        cyto_only = cell_mask & (~nuc_mask)
+
+        vol[..., 0] += 0.70 * membrane
+
+        green_signal = (
+            0.18 * cell_soft
+            + 0.28 * cyto_texture * cell_soft
+            + 0.16 * puncta
+        )
+        vol[..., 1][cyto_only] += green_signal[cyto_only]
+
+        vol[..., 2] += 0.85 * nuc_soft
+        vol[..., 1] += 0.03 * nuc_soft
+        vol[..., 0] += 0.01 * nuc_soft
+
+        n_nucleoli = rng.integers(1, 4)
+        for _ in range(n_nucleoli):
+            lz = ncz + rng.uniform(-nrz * 0.25, nrz * 0.25)
+            ly = ncy + rng.uniform(-nry * 0.35, nry * 0.35)
+            lx = ncx + rng.uniform(-nrx * 0.35, nrx * 0.35)
+
+            lrz = max(0.35, nrz * rng.uniform(0.12, 0.22))
+            lry = max(0.8, nry * rng.uniform(0.12, 0.20))
+            lrx = max(0.8, nrx * rng.uniform(0.12, 0.20))
+
+            ldist = (
+                ((zz - lz) / lrz) ** 2
+                + ((yy - ly) / lry) ** 2
+                + ((xx - lx) / lrx) ** 2
+            )
+            nucleolus = np.exp(-ldist * 6.0).astype(np.float32)
+            vol[..., 2] += 0.25 * nucleolus
+
+    for c in range(3):
+        vol[..., c] = gaussian_filter(vol[..., c], sigma=(0.7, 0.9, 0.9))
+
+    vol += rng.normal(0, 0.02, vol.shape).astype(np.float32)
+
+    vol = np.clip(vol, 0, None)
+    for c in range(3):
+        ch = vol[..., c]
+        ch -= ch.min()
+        ch /= (ch.max() + 1e-8)
+        vol[..., c] = ch
+
+    return vol.astype(np.float32)
+
+
+def compute():
+    return make_cells_rgb_volume(
+        z=100,
+        y=256,
+        x=256,
+        n_cells=28,
+        seed=7,
+    )
+
+
+def apply_result(rgb_cells):
+    viewer.add_image(
+        rgb_cells,
+        name="synthetic_cells_rgb_3d",
+        rgb=True,
+    )
+    print("Added layer: synthetic_cells_rgb_3d")
+    print("Shape:", rgb_cells.shape)
+
+
+run_in_background(compute, apply_result, label="Generate RGB cells volume")
+""".strip(),
+        "tags": ["demo", "background", "rgb", "3d"],
+    },
+]
+
 
 def prompt_library_path() -> Path:
     return Path.home() / ".napari-chat-assistant" / "prompt_library.json"
@@ -39,13 +235,51 @@ def prompt_title(prompt_text: str, max_length: int = 64) -> str:
     return text[: max_length - 3].rstrip() + "..."
 
 
+def stable_item_id(kind: str, content: str) -> str:
+    digest = hashlib.sha1(str(content or "").strip().encode("utf-8")).hexdigest()[:12]
+    return f"{kind}_{digest}"
+
+
+def normalize_tags(values) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    if isinstance(values, str):
+        values = [part.strip() for part in values.split(",")]
+    for value in values or []:
+        tag = " ".join(str(value or "").strip().split())
+        if not tag:
+            continue
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        tags.append(tag)
+    return tags
+
+
 def normalize_record(record: dict, *, source: str) -> dict:
     prompt = str(record.get("prompt", "")).strip()
     if not prompt:
         return {}
     return {
+        "id": str(record.get("id") or stable_item_id("prompt", prompt)).strip(),
         "title": str(record.get("title") or prompt_title(prompt)).strip(),
         "prompt": prompt,
+        "tags": normalize_tags(record.get("tags")),
+        "source": source,
+        "updated_at": str(record.get("updated_at") or utc_now_iso()),
+    }
+
+
+def normalize_code_record(record: dict, *, source: str) -> dict:
+    code = str(record.get("code", "")).strip()
+    if not code:
+        return {}
+    return {
+        "id": str(record.get("id") or stable_item_id("code", code)).strip(),
+        "title": str(record.get("title") or prompt_title(code)).strip(),
+        "code": code,
+        "tags": normalize_tags(record.get("tags")),
         "source": source,
         "updated_at": str(record.get("updated_at") or utc_now_iso()),
     }
@@ -66,8 +300,10 @@ def normalize_prompt_list(values: list[str] | tuple[str, ...] | set[str] | None)
 def default_prompt_records() -> list[dict]:
     return [
         {
+            "id": stable_item_id("prompt", text),
             "title": prompt_title(text),
             "prompt": text,
+            "tags": [],
             "source": "built_in",
             "updated_at": "",
         }
@@ -75,18 +311,52 @@ def default_prompt_records() -> list[dict]:
     ]
 
 
+def default_code_records() -> list[dict]:
+    return [
+        {
+            "id": stable_item_id("code", item["code"]),
+            "title": str(item.get("title") or prompt_title(item["code"])).strip(),
+            "code": str(item["code"]).strip(),
+            "tags": normalize_tags(item.get("tags")),
+            "source": "built_in",
+            "updated_at": "",
+        }
+        for item in DEFAULT_CODE_SNIPPETS
+        if str(item.get("code", "")).strip()
+    ]
+
+
 def load_prompt_library() -> dict:
     path = prompt_library_path()
     if not path.exists():
-        return {"saved": [], "recent": [], "pinned_prompts": [], "hidden_built_in": []}
+        return {
+            "saved": [],
+            "recent": [],
+            "pinned_prompts": [],
+            "hidden_built_in": [],
+            "code_saved": [],
+            "code_recent": [],
+            "pinned_codes": [],
+        }
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"saved": [], "recent": [], "pinned_prompts": [], "hidden_built_in": []}
+        return {
+            "saved": [],
+            "recent": [],
+            "pinned_prompts": [],
+            "hidden_built_in": [],
+            "code_saved": [],
+            "code_recent": [],
+            "pinned_codes": [],
+        }
     legacy_saved = payload.get("saved", [])
     saved = [normalize_record(item, source="saved") for item in payload.get("saved", [])]
     recent = [normalize_record(item, source="recent") for item in payload.get("recent", [])]
+    code_saved = [normalize_code_record(item, source="saved") for item in payload.get("code_saved", [])]
+    code_recent = [normalize_code_record(item, source="recent") for item in payload.get("code_recent", [])]
     pinned_prompts = normalize_prompt_list(payload.get("pinned_prompts"))
+    pinned_codes = normalize_prompt_list(payload.get("pinned_codes"))
     if not pinned_prompts:
         pinned_prompts = normalize_prompt_list(
             str(item.get("prompt", "")).strip() for item in legacy_saved if item.get("pinned", False)
@@ -96,6 +366,9 @@ def load_prompt_library() -> dict:
         "recent": [item for item in recent if item],
         "pinned_prompts": pinned_prompts,
         "hidden_built_in": normalize_prompt_list(payload.get("hidden_built_in")),
+        "code_saved": [item for item in code_saved if item],
+        "code_recent": [item for item in code_recent if item],
+        "pinned_codes": pinned_codes,
     }
 
 
@@ -106,7 +379,9 @@ def save_prompt_library(data: dict) -> None:
         "saved": [
             {
                 "title": item["title"],
+                "id": item.get("id") or stable_item_id("prompt", item["prompt"]),
                 "prompt": item["prompt"],
+                "tags": normalize_tags(item.get("tags")),
                 "updated_at": item.get("updated_at", utc_now_iso()),
             }
             for item in data.get("saved", [])
@@ -115,7 +390,9 @@ def save_prompt_library(data: dict) -> None:
         "recent": [
             {
                 "title": item["title"],
+                "id": item.get("id") or stable_item_id("prompt", item["prompt"]),
                 "prompt": item["prompt"],
+                "tags": normalize_tags(item.get("tags")),
                 "updated_at": item.get("updated_at", utc_now_iso()),
             }
             for item in data.get("recent", [])
@@ -123,6 +400,29 @@ def save_prompt_library(data: dict) -> None:
         ],
         "pinned_prompts": normalize_prompt_list(data.get("pinned_prompts")),
         "hidden_built_in": normalize_prompt_list(data.get("hidden_built_in")),
+        "code_saved": [
+            {
+                "title": item["title"],
+                "id": item.get("id") or stable_item_id("code", item["code"]),
+                "code": item["code"],
+                "tags": normalize_tags(item.get("tags")),
+                "updated_at": item.get("updated_at", utc_now_iso()),
+            }
+            for item in data.get("code_saved", [])
+            if item.get("code")
+        ],
+        "code_recent": [
+            {
+                "title": item["title"],
+                "id": item.get("id") or stable_item_id("code", item["code"]),
+                "code": item["code"],
+                "tags": normalize_tags(item.get("tags")),
+                "updated_at": item.get("updated_at", utc_now_iso()),
+            }
+            for item in data.get("code_recent", [])
+            if item.get("code")
+        ],
+        "pinned_codes": normalize_prompt_list(data.get("pinned_codes")),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -132,12 +432,15 @@ def upsert_recent_prompt(data: dict, prompt_text: str, limit: int = 20) -> dict:
     if not prompt:
         return data
     now = utc_now_iso()
+    existing = next((item for item in data.get("recent", []) if item.get("prompt") == prompt), None)
     recent = [item for item in data.get("recent", []) if item.get("prompt") != prompt]
     recent.insert(
         0,
         {
-            "title": prompt_title(prompt),
+            "id": stable_item_id("prompt", prompt),
+            "title": str((existing or {}).get("title") or prompt_title(prompt)).strip(),
             "prompt": prompt,
+            "tags": normalize_tags((existing or {}).get("tags")),
             "source": "recent",
             "updated_at": now,
         },
@@ -152,16 +455,17 @@ def upsert_saved_prompt(data: dict, prompt_text: str, *, pin: bool | None = None
         return data
     now = utc_now_iso()
     saved = list(data.get("saved", []))
-    existing = None
+    existing = next((item for item in saved if item.get("prompt") == prompt), None)
     remaining = []
     for item in saved:
-        if item.get("prompt") == prompt and existing is None:
-            existing = item
+        if item.get("prompt") == prompt:
             continue
         remaining.append(item)
     record = {
-        "title": prompt_title(prompt),
+        "id": stable_item_id("prompt", prompt),
+        "title": str((existing or {}).get("title") or prompt_title(prompt)).strip(),
         "prompt": prompt,
+        "tags": normalize_tags((existing or {}).get("tags")),
         "source": "saved",
         "updated_at": now,
     }
@@ -169,6 +473,51 @@ def upsert_saved_prompt(data: dict, prompt_text: str, *, pin: bool | None = None
     data["saved"] = remaining
     if pin is not None:
         set_prompt_pinned(data, prompt, bool(pin))
+    return data
+
+
+def upsert_recent_code(data: dict, code_text: str, limit: int = 20) -> dict:
+    code = str(code_text or "").strip()
+    if not code:
+        return data
+    now = utc_now_iso()
+    existing = next((item for item in data.get("code_recent", []) if item.get("code") == code), None)
+    recent = [item for item in data.get("code_recent", []) if item.get("code") != code]
+    recent.insert(
+        0,
+        {
+            "id": stable_item_id("code", code),
+            "title": str((existing or {}).get("title") or prompt_title(code)).strip(),
+            "code": code,
+            "tags": normalize_tags((existing or {}).get("tags")),
+            "source": "recent",
+            "updated_at": now,
+        },
+    )
+    data["code_recent"] = recent[:limit]
+    return data
+
+
+def upsert_saved_code(data: dict, code_text: str, *, pin: bool | None = None) -> dict:
+    code = str(code_text or "").strip()
+    if not code:
+        return data
+    now = utc_now_iso()
+    saved = list(data.get("code_saved", []))
+    existing = next((item for item in saved if item.get("code") == code), None)
+    remaining = [item for item in saved if item.get("code") != code]
+    record = {
+        "id": stable_item_id("code", code),
+        "title": str((existing or {}).get("title") or prompt_title(code)).strip(),
+        "code": code,
+        "tags": normalize_tags((existing or {}).get("tags")),
+        "source": "saved",
+        "updated_at": now,
+    }
+    remaining.insert(0, record)
+    data["code_saved"] = remaining
+    if pin is not None:
+        set_code_pinned(data, code, bool(pin))
     return data
 
 
@@ -185,6 +534,18 @@ def set_prompt_pinned(data: dict, prompt_text: str, pinned: bool) -> dict:
     else:
         pinned_prompts = [item for item in pinned_prompts if item != prompt]
     data["pinned_prompts"] = pinned_prompts
+    return data
+
+
+def set_code_pinned(data: dict, code_text: str, pinned: bool) -> dict:
+    code = str(code_text or "").strip()
+    pinned_codes = normalize_prompt_list(data.get("pinned_codes"))
+    if pinned:
+        if code and code not in pinned_codes:
+            pinned_codes.insert(0, code)
+    else:
+        pinned_codes = [item for item in pinned_codes if item != code]
+    data["pinned_codes"] = pinned_codes
     return data
 
 
@@ -210,6 +571,15 @@ def remove_prompt_record(data: dict, prompt_text: str, *, source: str) -> dict:
     return set_prompt_pinned(data, prompt, False)
 
 
+def remove_code_record(data: dict, code_text: str, *, source: str) -> dict:
+    code = str(code_text or "").strip()
+    if source == "saved":
+        data["code_saved"] = [item for item in data.get("code_saved", []) if item.get("code") != code]
+    elif source == "recent":
+        data["code_recent"] = [item for item in data.get("code_recent", []) if item.get("code") != code]
+    return set_code_pinned(data, code, False)
+
+
 def clear_prompt_library(data: dict, *, keep_saved: bool = True, keep_pinned: bool = True) -> dict:
     pinned_prompts = normalize_prompt_list(data.get("pinned_prompts")) if keep_pinned else []
     hidden_built_in = normalize_prompt_list(data.get("hidden_built_in"))
@@ -224,6 +594,16 @@ def clear_prompt_library(data: dict, *, keep_saved: bool = True, keep_pinned: bo
     data["saved"] = list(data.get("saved", [])) if keep_saved else []
     data["pinned_prompts"] = pinned_prompts
     data["hidden_built_in"] = hidden_built_in
+    return data
+
+
+def clear_code_library(data: dict, *, keep_saved: bool = True, keep_pinned: bool = True) -> dict:
+    pinned_codes = normalize_prompt_list(data.get("pinned_codes")) if keep_pinned else []
+    data["code_recent"] = []
+    data["code_saved"] = list(data.get("code_saved", [])) if keep_saved else []
+    if keep_pinned:
+        data["code_saved"] = [item for item in data["code_saved"] if item.get("code") in pinned_codes or keep_saved]
+    data["pinned_codes"] = pinned_codes
     return data
 
 
@@ -248,3 +628,51 @@ def merged_prompt_records(data: dict) -> list[dict]:
     unpinned_recent = [item for item in merged if item.get("source") == "recent" and not item.get("pinned", False)]
     unpinned_built_in = [item for item in merged if item.get("source") == "built_in" and not item.get("pinned", False)]
     return pinned + unpinned_saved + unpinned_recent + unpinned_built_in
+
+
+def merged_code_records(data: dict) -> list[dict]:
+    pinned_codes = set(normalize_prompt_list(data.get("pinned_codes")))
+    saved = sorted(data.get("code_saved", []), key=lambda item: item.get("updated_at", ""), reverse=True)
+    recent = sorted(data.get("code_recent", []), key=lambda item: item.get("updated_at", ""), reverse=True)
+    built_in = default_code_records()
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for record in [*saved, *recent, *built_in]:
+        code = str(record.get("code", "")).strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        merged.append({**record, "pinned": code in pinned_codes})
+
+    pinned = [item for item in merged if item.get("pinned", False)]
+    unpinned_saved = [item for item in merged if item.get("source") == "saved" and not item.get("pinned", False)]
+    unpinned_recent = [item for item in merged if item.get("source") == "recent" and not item.get("pinned", False)]
+    unpinned_built_in = [item for item in merged if item.get("source") == "built_in" and not item.get("pinned", False)]
+    return pinned + unpinned_saved + unpinned_recent + unpinned_built_in
+
+
+def update_record_title(data: dict, *, kind: str, item_id: str, title: str) -> dict:
+    clean_title = " ".join(str(title or "").strip().split())
+    if not clean_title or not item_id:
+        return data
+    keys = ("saved", "recent") if kind == "prompt" else ("code_saved", "code_recent")
+    for key in keys:
+        for item in data.get(key, []):
+            if str(item.get("id", "")).strip() == item_id:
+                item["title"] = clean_title
+                item["updated_at"] = utc_now_iso()
+    return data
+
+
+def update_record_tags(data: dict, *, kind: str, item_id: str, tags) -> dict:
+    if not item_id:
+        return data
+    clean_tags = normalize_tags(tags)
+    keys = ("saved", "recent") if kind == "prompt" else ("code_saved", "code_recent")
+    for key in keys:
+        for item in data.get(key, []):
+            if str(item.get("id", "")).strip() == item_id:
+                item["tags"] = clean_tags
+                item["updated_at"] = utc_now_iso()
+    return data

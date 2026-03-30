@@ -213,7 +213,7 @@ For maintainer release instructions and PyPI publishing setup, see [RELEASING.md
 2. Open `Plugins -> Chat Assistant`.
 3. Leave `Base URL` as `http://127.0.0.1:11434` unless your Ollama server is elsewhere.
 4. Choose a model from the `Model` dropdown or type a model tag manually.
-5. Click `Test Connection`.
+5. Click `Test`.
 6. Start chatting, or use the Prompt Library for repeatable tasks.
 
 If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
@@ -265,7 +265,7 @@ Demo and education prompts:
 - model picker with discovered local models
 - test connection
 - use selected model
-- `Ollama Setup` help with install, `ollama serve`, and model pull examples
+- `Setup` help with install, `ollama serve`, and model pull examples
 - unload model
 
 ### Prompt Library
@@ -383,7 +383,7 @@ For demo and education workflows:
 
 ### Ollama not running
 
-If `Test Connection` fails after restarting your computer, Ollama is usually not running yet.
+If `Test` fails after restarting your computer, Ollama is usually not running yet.
 
 Start it in a terminal:
 
@@ -391,7 +391,7 @@ Start it in a terminal:
 ollama serve
 ```
 
-Then return to the plugin and click `Test Connection` again.
+Then return to the plugin and click `Test` again.
 
 ### Pulling a model
 
@@ -406,7 +406,7 @@ To try a different model:
 ollama pull nemotron-cascade-2:30b
 ```
 
-Then use `Test Connection` to refresh the plugin state.
+Then use `Test` to refresh the plugin state.
 
 ### Logs and crash logs
 

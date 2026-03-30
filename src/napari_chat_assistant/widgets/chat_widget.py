@@ -21,13 +21,16 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
-    QPushButton,
     QListWidgetItem,
+    QMenu,
+    QPushButton,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -46,14 +49,23 @@ from napari_chat_assistant.agent.logging_utils import (
     get_plugin_logger,
 )
 from napari_chat_assistant.agent.prompt_library import (
+    clear_code_library,
     clear_prompt_library,
     load_prompt_library,
+    merged_code_records,
     merged_prompt_records,
+    prompt_title,
     prompt_library_path,
+    remove_code_record,
     remove_prompt_record,
     save_prompt_library,
+    set_code_pinned,
     set_prompt_pinned,
+    update_record_tags,
+    update_record_title,
+    upsert_recent_code,
     upsert_recent_prompt,
+    upsert_saved_code,
     upsert_saved_prompt,
 )
 from napari_chat_assistant.agent.session_memory import (
@@ -109,6 +121,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     layout.addWidget(splitter, 1)
 
     left_panel = QWidget()
+    left_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -147,14 +160,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     config_btn_row = QWidget()
     config_btn_layout = QHBoxLayout(config_btn_row)
-    save_btn = QPushButton("Use Selected Model")
-    test_btn = QPushButton("Test Connection")
-    unload_btn = QPushButton("Unload Model")
+    save_btn = QPushButton("Use")
+    save_btn.setToolTip("Use the current model selection for chat requests.")
+    test_btn = QPushButton("Test")
+    test_btn.setToolTip("Test the local Ollama connection and confirm the selected model is available.")
+    unload_btn = QPushButton("Unload")
+    unload_btn.setToolTip("Unload the selected model from Ollama to free local memory.")
     config_btn_layout.addWidget(save_btn)
     config_btn_layout.addWidget(test_btn)
     config_btn_layout.addWidget(unload_btn)
-    pull_btn = QPushButton("Ollama Setup")
-    pull_btn.setToolTip("Show the basic Ollama setup steps and a pull command for the selected model tag.")
+    pull_btn = QPushButton("Setup")
+    pull_btn.setToolTip("Show Ollama setup steps and a pull command for the selected model tag.")
     config_btn_layout.addWidget(pull_btn)
     config_layout.addRow(config_btn_row)
     left_layout.addWidget(config_group)
@@ -175,29 +191,45 @@ def chat_widget(napari_viewer=None) -> QWidget:
     context_layout.addWidget(context_btn_row)
     left_layout.addWidget(context_group, 1)
 
-    prompt_library_group = QGroupBox("Prompt Library")
+    prompt_library_group = QGroupBox("Library")
     prompt_library_layout = QVBoxLayout(prompt_library_group)
     prompt_library_hint = QLabel(
-        "Click to load. Double-click to run. Saved keeps your own copy. Pinned only keeps a prompt at the top."
+        "Click to load. Double-click to send or run. Right-click to rename or edit tags."
     )
     prompt_library_hint.setWordWrap(True)
+    prompt_library_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    library_tabs = QTabWidget()
+    library_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     prompt_library_list = QListWidget()
     prompt_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    prompt_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
+    prompt_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    prompt_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    prompt_library_list.setWordWrap(True)
+    code_library_list = QListWidget()
+    code_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    code_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
+    code_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    code_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    code_library_list.setWordWrap(True)
     prompt_library_font = prompt_library_list.font()
     if prompt_library_font.pointSize() > 0:
         prompt_library_font.setPointSize(prompt_library_font.pointSize() + 1)
         prompt_library_list.setFont(prompt_library_font)
+        code_library_list.setFont(prompt_library_font)
+    library_tabs.addTab(prompt_library_list, "Prompts")
+    library_tabs.addTab(code_library_list, "Code")
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
-    save_prompt_btn = QPushButton("Save Current")
-    pin_prompt_btn = QPushButton("Pin/Unpin")
-    delete_prompt_btn = QPushButton("Delete Selected")
-    clear_prompt_btn = QPushButton("Clear Non-Saved")
+    save_prompt_btn = QPushButton("Save")
+    pin_prompt_btn = QPushButton("Pin")
+    delete_prompt_btn = QPushButton("Delete")
+    clear_prompt_btn = QPushButton("Clear")
     prompt_font_down_btn = QPushButton("A-")
-    prompt_font_down_btn.setToolTip("Decrease prompt library font size slightly.")
+    prompt_font_down_btn.setToolTip("Decrease library font size.")
     prompt_font_up_btn = QPushButton("A+")
-    prompt_font_up_btn.setToolTip("Increase prompt library font size slightly.")
+    prompt_font_up_btn.setToolTip("Increase library font size.")
     prompt_library_btn_layout.addWidget(save_prompt_btn)
     prompt_library_btn_layout.addWidget(pin_prompt_btn)
     prompt_library_btn_layout.addWidget(delete_prompt_btn)
@@ -205,26 +237,34 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_btn_layout.addWidget(prompt_font_down_btn)
     prompt_library_btn_layout.addWidget(prompt_font_up_btn)
     prompt_library_layout.addWidget(prompt_library_hint)
-    prompt_library_layout.addWidget(prompt_library_list)
+    prompt_library_layout.addWidget(library_tabs)
     prompt_library_layout.addWidget(prompt_library_btn_row)
     left_layout.addWidget(prompt_library_group, 2)
 
-    log_group = QGroupBox("Action Log")
+    log_group = QGroupBox("Session")
     log_layout = QVBoxLayout(log_group)
+    log_tabs = QTabWidget()
+    log_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    activity_tab = QWidget()
+    activity_layout = QVBoxLayout(activity_tab)
+    action_log = QListWidget()
+    activity_layout.addWidget(action_log, 1)
+    telemetry_tab = QWidget()
+    telemetry_layout = QVBoxLayout(telemetry_tab)
     log_btn_row = QWidget()
     log_btn_layout = QHBoxLayout(log_btn_row)
     telemetry_toggle = QCheckBox("Enable Telemetry")
     telemetry_toggle.setChecked(bool(ui_state.get("telemetry_enabled", False)))
     telemetry_toggle.setToolTip("Turn on performance telemetry and advanced telemetry tools only when you want them.")
-    telemetry_summary_btn = QPushButton("Performance Summary")
+    telemetry_summary_btn = QPushButton("Summary")
     telemetry_summary_btn.setToolTip(
-        "Show a quick model-performance summary built from local telemetry such as latency, reply type, rejects, and code-run results."
+        "Show a quick performance summary from local telemetry only."
     )
-    telemetry_view_btn = QPushButton("Telemetry Log")
+    telemetry_view_btn = QPushButton("Log")
     telemetry_view_btn.setToolTip(
         "Open the local append-only telemetry log and summary for advanced inspection of raw usage records."
     )
-    telemetry_reset_btn = QPushButton("Reset Log")
+    telemetry_reset_btn = QPushButton("Reset")
     telemetry_reset_btn.setToolTip(
         "Clear the local telemetry log so Performance Summary starts fresh from the next request."
     )
@@ -232,9 +272,34 @@ def chat_widget(napari_viewer=None) -> QWidget:
     log_btn_layout.addWidget(telemetry_summary_btn)
     log_btn_layout.addWidget(telemetry_view_btn)
     log_btn_layout.addWidget(telemetry_reset_btn)
-    action_log = QListWidget()
-    log_layout.addWidget(log_btn_row)
-    log_layout.addWidget(action_log)
+    telemetry_hint = QLabel("Telemetry is optional. Enable it only when you want performance tracking and advanced diagnostics.")
+    telemetry_hint.setWordWrap(True)
+    telemetry_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    telemetry_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    telemetry_layout.addWidget(telemetry_hint)
+    telemetry_layout.addWidget(log_btn_row)
+    telemetry_layout.addStretch(1)
+    diagnostics_tab = QWidget()
+    diagnostics_layout = QVBoxLayout(diagnostics_tab)
+    diagnostics_hint = QLabel("Advanced local logs for troubleshooting plugin behavior and crashes.")
+    diagnostics_hint.setWordWrap(True)
+    diagnostics_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    diagnostics_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    diagnostics_btn_row = QWidget()
+    diagnostics_btn_layout = QHBoxLayout(diagnostics_btn_row)
+    app_log_btn = QPushButton("App Log")
+    app_log_btn.setToolTip("Open the local application log for detailed plugin activity.")
+    crash_log_btn = QPushButton("Crash Log")
+    crash_log_btn.setToolTip("Open the local crash log for faults and tracebacks captured by the plugin.")
+    diagnostics_btn_layout.addWidget(app_log_btn)
+    diagnostics_btn_layout.addWidget(crash_log_btn)
+    diagnostics_layout.addWidget(diagnostics_hint)
+    diagnostics_layout.addWidget(diagnostics_btn_row)
+    diagnostics_layout.addStretch(1)
+    log_tabs.addTab(activity_tab, "Activity")
+    log_tabs.addTab(telemetry_tab, "Telemetry")
+    log_tabs.addTab(diagnostics_tab, "Diagnostics")
+    log_layout.addWidget(log_tabs)
     left_layout.addWidget(log_group, 0)
 
     transcript_group = QGroupBox("Chat")
@@ -496,6 +561,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             current_size = 10
         font.setPointSize(max(9, min(16, current_size + int(delta))))
         prompt_library_list.setFont(font)
+        code_library_list.setFont(font)
 
     def format_code_block(code_text: str) -> str:
         stripped = str(code_text or "").strip()
@@ -546,6 +612,45 @@ def chat_widget(napari_viewer=None) -> QWidget:
         summary = summarize_telemetry_events(events, invalid_lines)
         return format_telemetry_summary(summary)
 
+    def show_text_log_dialog(*, title: str, path, empty_message: str, log_prefix: str, status_text: str):
+        dialog = QDialog(root)
+        dialog.setWindowTitle(title)
+        dialog.resize(900, 700)
+        dialog_layout = QVBoxLayout(dialog)
+
+        path_label = QLabel(f"{title}: {path}")
+        path_label.setTextInteractionFlags(path_label.textInteractionFlags())
+        path_label.setWordWrap(True)
+        dialog_layout.addWidget(path_label)
+
+        text_box = QTextEdit()
+        text_box.setReadOnly(True)
+        text_box.setStyleSheet(
+            "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 8px; }"
+        )
+        dialog_layout.addWidget(text_box, 1)
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        refresh_dialog_btn = QPushButton("Refresh")
+        close_dialog_btn = QPushButton("Close")
+        button_layout.addWidget(refresh_dialog_btn)
+        button_layout.addWidget(close_dialog_btn)
+        dialog_layout.addWidget(button_row)
+
+        def refresh_dialog():
+            try:
+                text_box.setPlainText(path.read_text(encoding="utf-8") or empty_message)
+            except Exception as exc:
+                text_box.setPlainText(f"Could not read log:\n{exc}")
+
+        refresh_dialog_btn.clicked.connect(refresh_dialog)
+        close_dialog_btn.clicked.connect(dialog.accept)
+        refresh_dialog()
+        append_log(log_prefix)
+        set_status(status_text, ok=None)
+        dialog.exec_()
+
     def show_telemetry_summary(*_args):
         append_chat_message("assistant", telemetry_summary_text())
         append_log("Displayed telemetry summary.")
@@ -595,6 +700,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log("Opened telemetry log.")
         set_status("Status: telemetry log opened", ok=None)
         dialog.exec_()
+
+    def show_app_log(*_args):
+        show_text_log_dialog(
+            title="App Log",
+            path=APP_LOG_PATH,
+            empty_message="[App log is empty]",
+            log_prefix="Opened app log.",
+            status_text="Status: app log opened",
+        )
+
+    def show_crash_log(*_args):
+        show_text_log_dialog(
+            title="Crash Log",
+            path=CRASH_LOG_PATH,
+            empty_message="[Crash log is empty]",
+            log_prefix="Opened crash log.",
+            status_text="Status: crash log opened",
+        )
 
     def reset_telemetry_log(*_args):
         try:
@@ -708,7 +831,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "**Example Meta-Prompts**\n"
             "- `Improve my prompt first, then answer in markdown.`\n"
             "- `Ask clarifying questions before solving this.`\n"
-            "- `Inspect the selected layer first, then recommend the next step.`\n"
+            "- `Inspect the selected layer first, then recommend the next step.`\n\n"
+            "**Heavy Code Tip**\n"
+            "- For heavy compute, use `run_in_background(compute_fn, apply_fn, error_fn=None, label=\"...\")` in Run My Code.\n"
+            "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
             "- `Rewrite my request so the result is more precise for napari.`",
         )
         append_log("Opened prompt-writing help.")
@@ -767,13 +893,44 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: last answer rejected from session memory", ok=None)
         set_last_memory_candidates([])
 
-    def selected_prompt_records() -> list[dict]:
+    def current_library_kind() -> str:
+        return "code" if library_tabs.currentWidget() is code_library_list else "prompt"
+
+    def current_library_list() -> QListWidget:
+        return code_library_list if current_library_kind() == "code" else prompt_library_list
+
+    def current_library_item_name() -> str:
+        return "code snippet" if current_library_kind() == "code" else "prompt"
+
+    def selected_library_records() -> list[dict]:
         records: list[dict] = []
-        for item in prompt_library_list.selectedItems():
+        for item in current_library_list().selectedItems():
             record = item.data(Qt.UserRole)
-            if isinstance(record, dict) and record.get("prompt"):
+            if isinstance(record, dict) and (record.get("prompt") or record.get("code")):
                 records.append(record)
         return records
+
+    def format_library_item_label(record: dict) -> tuple[str, str]:
+        title = str(record.get("title", "")).strip() or (
+            "Untitled Code" if record.get("code") else "Untitled Prompt"
+        )
+        source = str(record.get("source", "saved"))
+        tags = [str(tag).strip() for tag in record.get("tags", []) if str(tag).strip()]
+        if record.get("pinned", False):
+            badge = "[Pinned]"
+            color = "#fbbc05"
+        elif source == "saved":
+            badge = "[Saved]"
+            color = "#34a853"
+        elif source == "recent":
+            badge = "[Recent]"
+            color = "#4285f4"
+        else:
+            badge = "[Built-in]"
+            color = "#9aa0a6"
+        tag_suffix = f"  # {' | '.join(tags[:3])}" if tags else ""
+        short_title = title if len(title) <= 72 else f"{title[:69].rstrip()}..."
+        return f"{badge} {short_title}{tag_suffix}", color
 
     def format_worker_error(*args) -> str:
         for value in args:
@@ -888,30 +1045,50 @@ def chat_widget(napari_viewer=None) -> QWidget:
             model_combo.setCurrentText(current_text)
         model_combo.blockSignals(False)
 
+    def refresh_library_controls():
+        if current_library_kind() == "code":
+            save_prompt_btn.setText("Save")
+            pin_prompt_btn.setText("Pin")
+            delete_prompt_btn.setText("Delete")
+            clear_prompt_btn.setText("Clear")
+            save_prompt_btn.setToolTip("Save the current Prompt box content as a reusable code snippet.")
+            pin_prompt_btn.setToolTip("Pin or unpin the selected code snippet. Click again to toggle.")
+            delete_prompt_btn.setToolTip("Delete the selected code snippet from the Code tab.")
+            clear_prompt_btn.setToolTip("Clear recent unpinned code snippets while keeping saved and pinned code.")
+            prompt_library_hint.setText(
+                "Click to load. Double-click to run with Run My Code. Right-click to rename or edit tags."
+            )
+            return
+        save_prompt_btn.setText("Save")
+        pin_prompt_btn.setText("Pin")
+        delete_prompt_btn.setText("Delete")
+        clear_prompt_btn.setText("Clear")
+        save_prompt_btn.setToolTip("Save the current Prompt box content as a reusable prompt.")
+        pin_prompt_btn.setToolTip("Pin or unpin the selected prompt. Click again to toggle.")
+        delete_prompt_btn.setToolTip("Delete the selected prompt from the Prompts tab.")
+        clear_prompt_btn.setToolTip("Clear recent unpinned items in the Prompts tab while keeping saved and pinned prompts.")
+        prompt_library_hint.setText(
+            "Click to load. Double-click to send. Right-click to rename or edit tags."
+        )
+
     def refresh_prompt_library():
         prompt_library_list.clear()
         for record in merged_prompt_records(prompt_library_state):
-            title = str(record.get("title", "")).strip() or "Untitled Prompt"
-            source = str(record.get("source", "built_in"))
-            if record.get("pinned", False):
-                badge = "[Pinned]"
-                color = "#fbbc05"
-            elif source == "saved":
-                badge = "[Saved]"
-                color = "#34a853"
-            elif source == "recent":
-                badge = "[Recent]"
-                color = "#4285f4"
-            else:
-                badge = "[Built-in]"
-                color = "#9aa0a6"
-            short_title = title if len(title) <= 72 else f"{title[:69].rstrip()}..."
-            label = f"{badge} {short_title}"
+            label, color = format_library_item_label(record)
             item = QListWidgetItem()
             item.setText(label)
             item.setData(Qt.UserRole, record)
             item.setForeground(QColor(color))
             prompt_library_list.addItem(item)
+        code_library_list.clear()
+        for record in merged_code_records(prompt_library_state):
+            label, color = format_library_item_label(record)
+            item = QListWidgetItem()
+            item.setText(label)
+            item.setData(Qt.UserRole, record)
+            item.setForeground(QColor(color))
+            code_library_list.addItem(item)
+        refresh_library_controls()
 
     def persist_prompt_library():
         save_prompt_library(prompt_library_state)
@@ -919,8 +1096,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def save_current_prompt(*_args):
         prompt_text = prompt.toPlainText().strip()
         if not prompt_text:
-            set_status("Status: no prompt text to save", ok=False)
-            append_log("Save prompt skipped: prompt box is empty.")
+            set_status("Status: nothing to save", ok=False)
+            append_log("Save library item skipped: prompt box is empty.")
+            return
+        if current_library_kind() == "code":
+            code_text = strip_code_fences(prompt_text)
+            if not code_text:
+                set_status("Status: no code text to save", ok=False)
+                append_log("Save code skipped: prompt box does not contain code.")
+                return
+            upsert_saved_code(prompt_library_state, code_text)
+            persist_prompt_library()
+            refresh_prompt_library()
+            set_status("Status: code saved to library", ok=True)
+            append_log(f"Saved code to library: {prompt_title(code_text)}")
             return
         upsert_saved_prompt(prompt_library_state, prompt_text)
         persist_prompt_library()
@@ -929,40 +1118,58 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log(f"Saved prompt to library: {prompt_text[:80]}")
 
     def toggle_pin_selected_prompt(*_args):
-        records = selected_prompt_records()
+        records = selected_library_records()
         if not records:
-            set_status("Status: no prompt selected", ok=False)
-            append_log("Pin prompt skipped: no prompt selected.")
+            set_status("Status: no library item selected", ok=False)
+            append_log("Pin library item skipped: no selection.")
             return
         should_pin = not all(bool(record.get("pinned", False)) for record in records)
-        for record in records:
-            set_prompt_pinned(prompt_library_state, record.get("prompt", ""), should_pin)
+        if current_library_kind() == "code":
+            for record in records:
+                set_code_pinned(prompt_library_state, record.get("code", ""), should_pin)
+        else:
+            for record in records:
+                set_prompt_pinned(prompt_library_state, record.get("prompt", ""), should_pin)
         persist_prompt_library()
         refresh_prompt_library()
-        set_status("Status: prompt library updated", ok=True)
-        append_log(f"{'Pinned' if should_pin else 'Unpinned'} {len(records)} prompt(s).")
+        set_status("Status: library updated", ok=True)
+        append_log(f"{'Pinned' if should_pin else 'Unpinned'} {len(records)} {current_library_kind()} item(s).")
 
     def delete_selected_prompt(*_args):
-        records = selected_prompt_records()
+        records = selected_library_records()
         if not records:
-            set_status("Status: no prompt selected", ok=False)
-            append_log("Delete prompt skipped: no prompt selected.")
+            set_status("Status: no library item selected", ok=False)
+            append_log("Delete library item skipped: no selection.")
             return
         deleted_counts = {"saved": 0, "recent": 0, "built_in": 0}
-        for record in records:
-            source = str(record.get("source", "built_in")).strip()
-            remove_prompt_record(prompt_library_state, record.get("prompt", ""), source=source)
-            if source in deleted_counts:
-                deleted_counts[source] += 1
+        if current_library_kind() == "code":
+            for record in records:
+                source = str(record.get("source", "saved")).strip()
+                remove_code_record(prompt_library_state, record.get("code", ""), source=source)
+                if source in deleted_counts:
+                    deleted_counts[source] += 1
+        else:
+            for record in records:
+                source = str(record.get("source", "built_in")).strip()
+                remove_prompt_record(prompt_library_state, record.get("prompt", ""), source=source)
+                if source in deleted_counts:
+                    deleted_counts[source] += 1
         persist_prompt_library()
         refresh_prompt_library()
-        set_status(f"Status: deleted {len(records)} prompt(s)", ok=True)
+        set_status(f"Status: deleted {len(records)} {current_library_kind()} item(s)", ok=True)
         append_log(
-            "Deleted prompt selection:"
+            f"Deleted {current_library_kind()} selection:"
             f" saved={deleted_counts['saved']}, recent={deleted_counts['recent']}, built-in={deleted_counts['built_in']}."
         )
 
     def clear_non_saved_prompts(*_args):
+        if current_library_kind() == "code":
+            clear_code_library(prompt_library_state, keep_saved=True, keep_pinned=True)
+            persist_prompt_library()
+            refresh_prompt_library()
+            set_status("Status: cleared unpinned recent code", ok=True)
+            append_log("Cleared code library down to saved and pinned items.")
+            return
         clear_prompt_library(prompt_library_state, keep_saved=True, keep_pinned=True)
         persist_prompt_library()
         refresh_prompt_library()
@@ -1022,7 +1229,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "This usually means Ollama is not running, often after restarting the computer.\n\n"
                     "Start it in a terminal:\n"
                     "ollama serve\n\n"
-                    "Then click Test Connection again."
+                    "Then click Test again."
                 )
                 set_status("Status: Ollama is not running", ok=False)
                 append_chat_message("assistant", user_message)
@@ -1070,7 +1277,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         command = f"ollama pull {model_name}"
         append_chat_message(
             "assistant",
-            "Ollama Setup\n\n"
+            "Setup\n\n"
             "**Step 1.** Install Ollama from https://ollama.com\n\n"
             "**Step 2.** Start Ollama if it is not already running.\n"
             "Run:\n"
@@ -1082,7 +1289,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "```bash\n"
             "ollama pull nemotron-cascade-2:30b\n"
             "```\n"
-            f"**Step 4.** Enter the tag in the Model field and click Test Connection against {host_text}.\n\n"
+            f"**Step 4.** Enter the tag in the Model field and click Test against {host_text}.\n\n"
             "Examples you can use in the Model field:\n"
             "- nemotron-cascade-2:30b\n"
             "- qwen2.5:7b\n"
@@ -1167,13 +1374,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if promoted_ids:
             append_log(f"Promoted {len(promoted_ids)} provisional memory item(s) from user follow-up.")
         persist_session_memory()
-        upsert_recent_prompt(prompt_library_state, text)
+        manual_code = extract_manual_code_submission(text)
+        if manual_code:
+            upsert_recent_code(prompt_library_state, manual_code)
+        else:
+            upsert_recent_prompt(prompt_library_state, text)
         persist_prompt_library()
         refresh_prompt_library()
         append_chat_message("user", text)
         prompt.clear()
         append_log(f"Queued message: {text}")
-        manual_code = extract_manual_code_submission(text)
         if manual_code:
             validation_errors = preflight_generated_code(manual_code)
             code_message = "Manual code captured from the prompt. Review it, then click Run Code."
@@ -1549,6 +1759,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             code_label="approved napari code",
             turn_id=pending_code.get("turn_id", ""),
             model_name=pending_code.get("model", ""),
+            code_source="assistant",
             disable_pending_buttons=True,
         ):
             return
@@ -1568,6 +1779,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         code_label: str,
         turn_id: str = "",
         model_name: str = "",
+        code_source: str = "assistant",
         disable_pending_buttons: bool = False,
     ) -> bool:
         validation_errors = preflight_generated_code(code_text)
@@ -1586,6 +1798,66 @@ def chat_widget(napari_viewer=None) -> QWidget:
             run_code_btn.setEnabled(False)
             copy_code_btn.setEnabled(False)
         stdout_buffer = io.StringIO()
+        background_state = {"launched": False, "active_labels": []}
+
+        def run_in_background(compute_fn, apply_fn, error_fn=None, label: str = "Background job"):
+            job_label = " ".join(str(label or "Background job").split()).strip() or "Background job"
+            if not callable(compute_fn):
+                raise TypeError("run_in_background requires a callable compute_fn.")
+            if not callable(apply_fn):
+                raise TypeError("run_in_background requires a callable apply_fn.")
+
+            @thread_worker(ignore_errors=True)
+            def worker_job():
+                return compute_fn()
+
+            worker = worker_job()
+            active_workers.append(worker)
+            background_state["launched"] = True
+            background_state["active_labels"].append(job_label)
+            append_log(f"Started background job: {job_label}")
+            set_status(f"Status: running {job_label}", ok=None)
+
+            def worker_done():
+                if worker in active_workers:
+                    active_workers.remove(worker)
+
+            def worker_returned(result):
+                try:
+                    apply_fn(result)
+                except Exception as exc:
+                    logger.exception("Background apply failed: %s", job_label)
+                    error_text = format_code_execution_error(exc)
+                    append_chat_message("assistant", f"{job_label} apply step failed:\n{error_text}")
+                    append_log(f"Background apply failed: {job_label} | {error_text}")
+                    set_status(f"Status: {job_label} apply failed", ok=False)
+                    worker_done()
+                    return
+                append_log(f"Completed background job: {job_label}")
+                set_status(f"Status: {job_label} completed", ok=True)
+                worker_done()
+
+            def worker_error(*args):
+                error = next((value for value in args if isinstance(value, BaseException)), None)
+                error_text = format_worker_error(*args)
+                logger.exception("Background job failed: %s | %s", job_label, error_text)
+                if callable(error_fn):
+                    try:
+                        error_fn(error or RuntimeError(error_text))
+                    except Exception as exc:
+                        logger.exception("Background error handler failed: %s", job_label)
+                        append_chat_message("assistant", f"{job_label} error handler failed:\n{exc}")
+                else:
+                    append_chat_message("assistant", f"{job_label} failed:\n{error_text}")
+                append_log(f"Background job failed: {job_label} | {error_text}")
+                set_status(f"Status: {job_label} failed", ok=False)
+                worker_done()
+
+            worker.returned.connect(worker_returned)
+            worker.errored.connect(worker_error)
+            worker.start()
+            return worker
+
         namespace = {
             "__builtins__": __builtins__,
             "napari": napari,
@@ -1593,6 +1865,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "numpy": np,
             "viewer": viewer,
             "selected_layer": None if viewer is None else viewer.layers.selection.active,
+            "run_in_background": run_in_background,
         }
         try:
             with redirect_stdout(stdout_buffer):
@@ -1606,6 +1879,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 {
                     "turn_id": turn_id,
                     "model": model_name,
+                    "code_source": code_source,
                     "success": False,
                     "error": error_text,
                 },
@@ -1620,6 +1894,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
         refresh_context()
         stdout_text = stdout_buffer.getvalue().strip()
         result_message = f"{code_label.capitalize()} executed."
+        if background_state["launched"]:
+            labels = ", ".join(background_state["active_labels"])
+            result_message = f"{code_label.capitalize()} launched background job."
+            if labels:
+                result_message = f"{result_message}\nJob: {labels}"
         if stdout_text:
             result_message = f"{result_message}\nOutput:\n{stdout_text}"
         append_chat_message("assistant", result_message)
@@ -1628,6 +1907,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             {
                 "turn_id": turn_id,
                 "model": model_name,
+                "code_source": code_source,
                 "success": True,
                 "stdout_chars": len(stdout_text),
             },
@@ -1642,9 +1922,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no prompt code to run", ok=False)
             append_log("Run My Code skipped: prompt box is empty.")
             return
+        upsert_recent_code(prompt_library_state, code_text)
+        persist_prompt_library()
+        refresh_prompt_library()
         append_chat_message("user", f"/my-code\n{format_code_block(code_text)}")
         prompt.clear()
-        run_code_text(code_text, code_label="your code", model_name="manual")
+        run_code_text(code_text, code_label="your code", model_name="manual", code_source="user")
 
     def load_library_prompt(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}
@@ -1665,6 +1948,95 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: sending prompt from library", ok=None)
         send_message()
 
+    def load_library_code(item: QListWidgetItem):
+        record = item.data(Qt.UserRole) or {}
+        code_text = str(record.get("code", "")).strip()
+        prompt.setPlainText(code_text)
+        prompt.setFocus()
+        append_log(f"Loaded code from library: {record.get('title', 'Untitled Code')}")
+        set_status("Status: code loaded from library", ok=None)
+
+    def run_library_code(item: QListWidgetItem):
+        record = item.data(Qt.UserRole) or {}
+        code_text = str(record.get("code", "")).strip()
+        if not code_text:
+            set_status("Status: selected code is empty", ok=False)
+            append_log("Run code skipped: selected library code is empty.")
+            return
+        prompt.setPlainText(code_text)
+        append_log(f"Running code directly from library: {record.get('title', 'Untitled Code')}")
+        set_status("Status: running code from library", ok=None)
+        run_prompt_code()
+
+    def rename_library_item(record: dict):
+        item_id = str(record.get("id", "")).strip()
+        if not item_id:
+            set_status("Status: item cannot be renamed", ok=False)
+            append_log("Rename skipped: selected library item has no stable id.")
+            return
+        current_title = str(record.get("title", "")).strip() or (
+            "Untitled Code" if current_library_kind() == "code" else "Untitled Prompt"
+        )
+        title, accepted = QInputDialog.getText(
+            root,
+            "Rename Library Item",
+            f"New name for this {current_library_item_name()}:",
+            text=current_title,
+        )
+        if not accepted:
+            return
+        clean_title = " ".join(str(title or "").strip().split())
+        if not clean_title:
+            set_status("Status: title cannot be empty", ok=False)
+            append_log("Rename skipped: library item title was empty.")
+            return
+        update_record_title(prompt_library_state, kind=current_library_kind(), item_id=item_id, title=clean_title)
+        persist_prompt_library()
+        refresh_prompt_library()
+        append_log(f"Renamed {current_library_item_name()} to: {clean_title}")
+        set_status("Status: library item renamed", ok=True)
+
+    def edit_library_item_tags(record: dict):
+        item_id = str(record.get("id", "")).strip()
+        if not item_id:
+            set_status("Status: tags cannot be edited", ok=False)
+            append_log("Edit tags skipped: selected library item has no stable id.")
+            return
+        current_tags = ", ".join(str(tag).strip() for tag in record.get("tags", []) if str(tag).strip())
+        tags_text, accepted = QInputDialog.getText(
+            root,
+            "Edit Tags",
+            f"Comma-separated tags for this {current_library_item_name()}:",
+            text=current_tags,
+        )
+        if not accepted:
+            return
+        update_record_tags(prompt_library_state, kind=current_library_kind(), item_id=item_id, tags=tags_text)
+        persist_prompt_library()
+        refresh_prompt_library()
+        append_log(f"Updated tags for {current_library_item_name()}: {tags_text or '[none]'}")
+        set_status("Status: library item tags updated", ok=True)
+
+    def show_library_context_menu(position):
+        item = current_library_list().itemAt(position)
+        if item is None:
+            return
+        record = item.data(Qt.UserRole) or {}
+        if not isinstance(record, dict):
+            return
+        menu = QMenu(current_library_list())
+        if str(record.get("source", "")).strip() != "built_in":
+            rename_action = menu.addAction("Rename")
+            tags_action = menu.addAction("Edit Tags")
+        else:
+            rename_action = None
+            tags_action = None
+        chosen = menu.exec_(current_library_list().viewport().mapToGlobal(position))
+        if chosen is rename_action:
+            rename_library_item(record)
+        elif chosen is tags_action:
+            edit_library_item_tags(record)
+
     def cleanup_workers(*_args):
         for worker in list(active_workers):
             cancel = getattr(worker, "_assistant_cancel", None)
@@ -1683,6 +2055,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     save_btn.clicked.connect(save_settings)
     pull_btn.clicked.connect(pull_model)
     unload_btn.clicked.connect(unload_model)
+    app_log_btn.clicked.connect(show_app_log)
+    crash_log_btn.clicked.connect(show_crash_log)
     run_code_btn.clicked.connect(run_pending_code)
     run_my_code_btn.clicked.connect(run_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
@@ -1695,8 +2069,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
     summary_stats_btn.clicked.connect(run_summary_stats)
     histogram_btn.clicked.connect(run_histogram)
     compare_btn.clicked.connect(run_layer_comparison)
+    library_tabs.currentChanged.connect(lambda *_args: refresh_library_controls())
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
+    prompt_library_list.customContextMenuRequested.connect(show_library_context_menu)
+    code_library_list.itemClicked.connect(load_library_code)
+    code_library_list.itemDoubleClicked.connect(run_library_code)
+    code_library_list.customContextMenuRequested.connect(show_library_context_menu)
     save_prompt_btn.clicked.connect(save_current_prompt)
     pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
     delete_prompt_btn.clicked.connect(delete_selected_prompt)
@@ -1728,7 +2107,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it directly without opening QtConsole.\n"
             "▶️ Use `Run Code` for assistant-generated code after review.\n"
             "🧭 Current Context shows your open layers and the selected layer.\n"
-            "📚 Prompt Library keeps reusable prompts close to the workflow.\n"
+            "📚 Library tabs keep reusable prompts and code close to the workflow.\n"
             "📝 Action Log tracks local actions. Telemetry is optional and stays off unless you enable it.\n\n"
             "Ask about your selected layer, thresholding, CLAHE, measurements, histograms, comparisons, or code.\n\n"
             "Follow for updates: https://x.com/viralvector",
