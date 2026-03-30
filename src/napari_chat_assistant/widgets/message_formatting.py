@@ -95,11 +95,11 @@ def _restore_code_block(token: str, segments: list[tuple[str, str, str]]) -> str
     label = html.escape(language) if language else "text"
     escaped = html.escape(code)
     return (
-        '<div style="margin: 10px 0 12px 0; border: 1px solid #294060; border-radius: 8px; overflow: hidden;">'
+        '<div style="margin: 12px 0 14px 0; border: 1px solid #294060; border-radius: 8px; overflow: hidden;">'
         '<div style="background: #0f1b2d; color: #93c5fd; font-size: 11px; '
-        'padding: 4px 10px; letter-spacing: 0.08em; text-transform: uppercase;">'
+        'padding: 5px 10px 6px 10px; letter-spacing: 0.08em; line-height: 1.35; text-transform: uppercase;">'
         f"{label}</div>"
-        '<pre style="margin: 0; padding: 12px; background: #08111f; color: #e5eefc; '
+        '<pre style="margin: 0; padding: 14px 12px; background: #08111f; color: #e5eefc; line-height: 1.45; '
         'white-space: pre-wrap; font-family: monospace;">'
         f"<code>{escaped}</code></pre></div>"
     )

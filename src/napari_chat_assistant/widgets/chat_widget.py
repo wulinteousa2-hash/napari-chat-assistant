@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,6 +25,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QPushButton,
     QListWidgetItem,
+    QSizePolicy,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -65,6 +67,12 @@ from napari_chat_assistant.agent.session_memory import (
     session_memory_path,
     set_active_dataset_focus,
     update_session_goal,
+)
+from napari_chat_assistant.agent.telemetry_summary import (
+    format_telemetry_summary,
+    load_telemetry_events,
+    read_telemetry_tail,
+    summarize_telemetry_events,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
@@ -120,7 +128,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     model_combo.setEditable(True)
     config_layout.addRow("Model:", model_combo)
 
-    model_hint = QLabel("Pick from local Ollama models or type a model tag manually. Use Unload Model before switching if you want to free memory.")
+    model_hint = QLabel("Type an Ollama model tag or pick one already installed locally.")
     model_hint.setWordWrap(True)
     model_hint.setStyleSheet("QLabel { color: #9fb3c8; padding: 2px 0 6px 0; }")
     config_layout.addRow(model_hint)
@@ -137,7 +145,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     config_btn_layout.addWidget(save_btn)
     config_btn_layout.addWidget(test_btn)
     config_btn_layout.addWidget(unload_btn)
-    pull_btn = QPushButton("Model Help")
+    pull_btn = QPushButton("Ollama Setup")
+    pull_btn.setToolTip("Show the basic Ollama setup steps and a pull command for the selected model tag.")
     config_btn_layout.addWidget(pull_btn)
     config_layout.addRow(config_btn_row)
     left_layout.addWidget(config_group)
@@ -146,6 +155,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     context_layout = QVBoxLayout(context_group)
     context_label = QLabel()
     context_label.setTextInteractionFlags(context_label.textInteractionFlags())
+    context_label.setWordWrap(True)
+    context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     context_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
     context_layout.addWidget(context_label)
 
@@ -165,16 +176,26 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
     prompt_library_list = QListWidget()
     prompt_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    prompt_library_font = prompt_library_list.font()
+    if prompt_library_font.pointSize() > 0:
+        prompt_library_font.setPointSize(prompt_library_font.pointSize() + 1)
+        prompt_library_list.setFont(prompt_library_font)
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
     save_prompt_btn = QPushButton("Save Current")
     pin_prompt_btn = QPushButton("Pin/Unpin")
     delete_prompt_btn = QPushButton("Delete Selected")
     clear_prompt_btn = QPushButton("Clear Non-Saved")
+    prompt_font_down_btn = QPushButton("A-")
+    prompt_font_down_btn.setToolTip("Decrease prompt library font size slightly.")
+    prompt_font_up_btn = QPushButton("A+")
+    prompt_font_up_btn.setToolTip("Increase prompt library font size slightly.")
     prompt_library_btn_layout.addWidget(save_prompt_btn)
     prompt_library_btn_layout.addWidget(pin_prompt_btn)
     prompt_library_btn_layout.addWidget(delete_prompt_btn)
     prompt_library_btn_layout.addWidget(clear_prompt_btn)
+    prompt_library_btn_layout.addWidget(prompt_font_down_btn)
+    prompt_library_btn_layout.addWidget(prompt_font_up_btn)
     prompt_library_layout.addWidget(prompt_library_hint)
     prompt_library_layout.addWidget(prompt_library_list)
     prompt_library_layout.addWidget(prompt_library_btn_row)
@@ -182,7 +203,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     log_group = QGroupBox("Action Log")
     log_layout = QVBoxLayout(log_group)
+    log_btn_row = QWidget()
+    log_btn_layout = QHBoxLayout(log_btn_row)
+    telemetry_summary_btn = QPushButton("Performance Summary")
+    telemetry_summary_btn.setToolTip(
+        "Show a quick model-performance summary built from local telemetry such as latency, reply type, rejects, and code-run results."
+    )
+    telemetry_view_btn = QPushButton("Telemetry Log")
+    telemetry_view_btn.setToolTip(
+        "Open the local append-only telemetry log and summary for advanced inspection of raw usage records."
+    )
+    telemetry_reset_btn = QPushButton("Reset Log")
+    telemetry_reset_btn.setToolTip(
+        "Clear the local telemetry log so Performance Summary starts fresh from the next request."
+    )
+    log_btn_layout.addWidget(telemetry_summary_btn)
+    log_btn_layout.addWidget(telemetry_view_btn)
+    log_btn_layout.addWidget(telemetry_reset_btn)
     action_log = QListWidget()
+    log_layout.addWidget(log_btn_row)
     log_layout.addWidget(action_log)
     left_layout.addWidget(log_group, 0)
 
@@ -283,14 +322,109 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def refresh_context(*_args):
         context_label.setText(layer_summary(viewer))
 
+    def adjust_prompt_library_font(delta: int):
+        font = prompt_library_list.font()
+        current_size = font.pointSize()
+        if current_size <= 0:
+            current_size = 10
+        font.setPointSize(max(9, min(16, current_size + int(delta))))
+        prompt_library_list.setFont(font)
+
     def format_code_block(code_text: str) -> str:
         stripped = str(code_text or "").strip()
         return f"```python\n{stripped}\n```" if stripped else "```python\n# empty\n```"
 
     def append_log(message: str):
-        action_log.addItem(message)
+        item = QListWidgetItem(message)
+        color_rules = {
+            "Assistant log:": "#8ab4f8",
+            "Crash log:": "#f28b82",
+            "Telemetry log:": "#81c995",
+            "Prompt library path:": "#fbc02d",
+            "Session memory path:": "#c58af9",
+        }
+        for prefix, color in color_rules.items():
+            if str(message).startswith(prefix):
+                item.setForeground(QColor(color))
+                break
+        action_log.addItem(item)
         action_log.scrollToBottom()
         logger.info(message)
+
+    def telemetry_summary_text() -> str:
+        events, invalid_lines = load_telemetry_events()
+        summary = summarize_telemetry_events(events, invalid_lines)
+        return format_telemetry_summary(summary)
+
+    def show_telemetry_summary(*_args):
+        append_chat_message("assistant", telemetry_summary_text())
+        append_log("Displayed telemetry summary.")
+        set_status("Status: telemetry summary ready", ok=True)
+
+    def show_telemetry_viewer(*_args):
+        dialog = QDialog(root)
+        dialog.setWindowTitle("Telemetry Log")
+        dialog.resize(900, 700)
+        dialog_layout = QVBoxLayout(dialog)
+
+        path_label = QLabel(f"Telemetry log: {TELEMETRY_LOG_PATH}")
+        path_label.setTextInteractionFlags(path_label.textInteractionFlags())
+        path_label.setWordWrap(True)
+        dialog_layout.addWidget(path_label)
+
+        summary_box = QTextEdit()
+        summary_box.setReadOnly(True)
+        summary_box.setMinimumHeight(200)
+        summary_box.setStyleSheet(
+            "QTextEdit { background: #10182b; color: #d6deeb; border: 1px solid #30415f; padding: 8px; }"
+        )
+        dialog_layout.addWidget(summary_box)
+
+        raw_box = QTextEdit()
+        raw_box.setReadOnly(True)
+        raw_box.setStyleSheet(
+            "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 8px; }"
+        )
+        dialog_layout.addWidget(raw_box, 1)
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        refresh_dialog_btn = QPushButton("Refresh")
+        close_dialog_btn = QPushButton("Close")
+        button_layout.addWidget(refresh_dialog_btn)
+        button_layout.addWidget(close_dialog_btn)
+        dialog_layout.addWidget(button_row)
+
+        def refresh_dialog():
+            summary_box.setMarkdown(telemetry_summary_text())
+            raw_box.setPlainText(read_telemetry_tail(max_lines=250) or "[Telemetry log is empty]")
+
+        refresh_dialog_btn.clicked.connect(refresh_dialog)
+        close_dialog_btn.clicked.connect(dialog.accept)
+        refresh_dialog()
+        append_log("Opened telemetry log.")
+        set_status("Status: telemetry log opened", ok=None)
+        dialog.exec_()
+
+    def reset_telemetry_log(*_args):
+        try:
+            TELEMETRY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            TELEMETRY_LOG_PATH.write_text("", encoding="utf-8")
+        except Exception as exc:
+            logger.exception("Failed to reset telemetry log.")
+            append_chat_message("assistant", f"Could not reset the telemetry log:\n{exc}")
+            append_log(f"Telemetry log reset failed: {exc}")
+            set_status("Status: telemetry log reset failed", ok=False)
+            return
+        append_chat_message(
+            "assistant",
+            "**Performance Summary**\n"
+            "- Telemetry log cleared.\n"
+            "- New model usage will be recorded from the next request.\n"
+            f"- Path: `{TELEMETRY_LOG_PATH}`",
+        )
+        append_log("Reset telemetry log.")
+        set_status("Status: telemetry log reset", ok=True)
 
     def prompt_hash(text: str) -> str:
         clean = str(text or "").strip().encode("utf-8")
@@ -696,31 +830,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
         command = f"ollama pull {model_name}"
         append_chat_message(
             "assistant",
-            "Model Help\n\n"
-            "Use the Model field to choose or enter an Ollama model tag, then pull that tag in a terminal if it is not already installed locally.\n\n"
-            "How to change models:\n"
-            "1. Review available tags at https://ollama.com/search\n"
-            "2. Enter a tag in the Model field, for example:\n"
-            "   nemotron-cascade-2:30b\n"
-            "   qwen3-coder-next:latest\n"
-            "   qwen3.5\n"
-            "   qwen2.5:7b\n"
-            f"3. Pull the selected tag in a terminal if needed:\n{command}\n"
-            f"4. Then click Test Connection against {host_text}.\n\n"
-            "Model selection guidance:\n"
-            "- nemotron-cascade-2:30b is the current default for general assistant use in this plugin.\n"
-            "- qwen3-coder-next:latest is a stronger choice when you want better Python or napari code generation.\n"
-            "- qwen3.5 remains a useful alternative general model.\n"
-            "- qwen2.5:7b is a lighter option for smaller-memory systems.\n\n"
-            "Memory guidance:\n"
-            "- Larger tags generally require more RAM or VRAM.\n"
-            "- In this environment, qwen3-coder-next:latest may require roughly 100 GB of available memory to run comfortably.\n"
-            "- If a model is too large for the workstation, use a smaller tag first and confirm it loads reliably before moving to a larger one.\n\n"
-            "Tip:\n"
-            "- The Model field accepts explicit tags such as nemotron-cascade-2:30b, qwen3-coder-next:latest, qwen3.5, or qwen2.5:7b, so you can switch models without changing the Base URL.",
+            "Ollama Setup\n\n"
+            "**Step 1.** Install Ollama from https://ollama.com\n\n"
+            "**Step 2.** Start Ollama if it is not already running.\n"
+            "Run:\n"
+            "```bash\n"
+            "ollama serve\n"
+            "```\n"
+            "**Step 3.** Pull a model tag in a terminal.\n"
+            "Example:\n"
+            "```bash\n"
+            "ollama pull nemotron-cascade-2:30b\n"
+            "```\n"
+            f"**Step 4.** Enter the tag in the Model field and click Test Connection against {host_text}.\n\n"
+            "Examples you can use in the Model field:\n"
+            "- nemotron-cascade-2:30b\n"
+            "- qwen2.5:7b\n"
+            "- qwen3.5\n"
+            "- qwen3-coder-next:latest\n\n"
+            "Tips:\n"
+            "- Smaller models are usually faster.\n"
+            "- Larger models usually need more RAM or VRAM.\n"
+            "- Use Performance Summary to compare model speed and behavior from your own local usage.\n"
+            "- Use Telemetry Log if you want to inspect the raw advanced-user telemetry records.",
         )
-        append_log(f"Opened model help. Suggested terminal command: {command}")
-        set_status("Status: model help shown", ok=None)
+        append_log(f"Opened Ollama setup help. Suggested terminal command: {command}")
+        set_status("Status: Ollama setup help shown", ok=None)
 
     def unload_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
@@ -1195,12 +1330,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     copy_code_btn.clicked.connect(copy_pending_code)
     reject_memory_btn.clicked.connect(reject_last_memory)
     help_btn.clicked.connect(show_help_tips)
+    telemetry_summary_btn.clicked.connect(show_telemetry_summary)
+    telemetry_view_btn.clicked.connect(show_telemetry_viewer)
+    telemetry_reset_btn.clicked.connect(reset_telemetry_log)
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
     save_prompt_btn.clicked.connect(save_current_prompt)
     pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
     delete_prompt_btn.clicked.connect(delete_selected_prompt)
     clear_prompt_btn.clicked.connect(clear_non_saved_prompts)
+    prompt_font_down_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(-1))
+    prompt_font_up_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(1))
     prompt.sendRequested.connect(send_message)
     refresh_btn.clicked.connect(refresh_context)
     root.destroyed.connect(cleanup_workers)

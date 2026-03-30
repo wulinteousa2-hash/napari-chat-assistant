@@ -260,7 +260,7 @@ Demo and education prompts:
 - model picker with discovered local models
 - test connection
 - use selected model
-- model help with model-tag examples, memory guidance, and terminal pull instructions
+- `Ollama Setup` help with install, `ollama serve`, and model pull examples
 - unload model
 
 ### Prompt Library
@@ -276,6 +276,7 @@ Demo and education prompts:
 - Shift/Ctrl multi-select for batch actions
 - `Delete Selected` works on built-in, recent, and saved prompts
 - `Clear Non-Saved` keeps saved and pinned items and clears unpinned recent and built-in items
+- `A-` and `A+` adjust prompt-library font size in small steps
 
 ### Chat
 
@@ -286,15 +287,15 @@ Demo and education prompts:
 
 ### Code Actions
 
-- `Thumbs Down Last Answer`
-- `Run Pending Code`
-- `Copy Pending Code`
-- `Discard Pending Code`
+- `Reject`
+- `Run Code`
+- `Copy Code`
+- `Help`
 
 ### Current Context
 
 - current layer summary from the active napari viewer
-- per-layer semantic profile summaries
+- shortened layer names and a compact per-layer summary to avoid over-stretching the left column
 
 ### Action Log
 
@@ -302,6 +303,8 @@ Demo and education prompts:
 - model connection messages
 - tool execution messages
 - code execution and copy actions
+- color-highlighted path entries for assistant log, crash log, telemetry log, prompt library, and session memory
+- `Performance Summary`, `Telemetry Log`, and `Reset Log`
 
 ## How It Works
 
@@ -415,6 +418,13 @@ This records real usage events such as:
 - approved code execution success or failure
 
 The goal is passive model tracking during actual work rather than separate benchmarking runs.
+
+For advanced users, the Action Log includes:
+- `Performance Summary` to generate a quick in-app summary of recent model speed and behavior
+- `Telemetry Log` to inspect the latest raw JSONL records together with the summary
+- `Reset Log` to clear the local telemetry file and start fresh from the next request
+
+This keeps the append-only log intact while making it easier to review without leaving napari.
 
 Generated code is also preflight-validated before execution for common dtype mistakes, unsupported napari imports, and unavailable `viewer.*` APIs. When validation blocks execution, the code remains visible and copyable for review or regeneration.
 

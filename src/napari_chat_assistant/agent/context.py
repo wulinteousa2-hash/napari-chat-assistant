@@ -20,6 +20,12 @@ def layer_summary(viewer: napari.Viewer) -> str:
     if viewer is None:
         return "No active napari viewer."
 
+    def short_name(name: str, max_chars: int = 28) -> str:
+        text = str(name or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 3].rstrip()}..."
+
     lines = []
     if len(viewer.layers) == 0:
         lines.append("Layers: none")
@@ -30,13 +36,12 @@ def layer_summary(viewer: napari.Viewer) -> str:
             shape_text = tuple(profile["shape"]) if profile["shape"] is not None else "n/a"
             dtype_text = profile["dtype"] or "n/a"
             lines.append(
-                f"- {layer.name} [{layer.__class__.__name__}] "
-                f"semantic={profile['semantic_type']} confidence={profile['confidence']} "
-                f"axes={profile['axes_detected']} shape={shape_text} dtype={dtype_text}"
+                f"- {short_name(layer.name)} [{layer.__class__.__name__}] "
+                f"shape={shape_text} dtype={dtype_text} semantic={profile['semantic_type']}"
             )
 
     selected = viewer.layers.selection.active
-    lines.append(f"Selected layer: {selected.name}" if selected is not None else "Selected layer: none")
+    lines.append(f"Selected: {short_name(selected.name)}" if selected is not None else "Selected: none")
     return "\n".join(lines)
 
 
