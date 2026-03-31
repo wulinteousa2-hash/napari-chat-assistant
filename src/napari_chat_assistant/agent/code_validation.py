@@ -187,6 +187,10 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
             stats_error = _validate_statistical_coordinate_misuse(node, stat_value_names, histogram_axes_names)
             if stats_error:
                 errors.append(stats_error)
+        if isinstance(node, ast.Attribute):
+            layer_attr_error = _validate_layer_attribute_access(node)
+            if layer_attr_error:
+                errors.append(layer_attr_error)
     return errors
 
 
@@ -263,6 +267,19 @@ def _is_uint8_expr(node: ast.AST) -> bool:
     if isinstance(node, ast.Name):
         return node.id == "uint8"
     return False
+
+
+def _validate_layer_attribute_access(node: ast.Attribute) -> str | None:
+    if str(node.attr or "").strip() != "_type":
+        return None
+    if isinstance(node.value, ast.Name):
+        target_name = node.value.id
+    else:
+        target_name = "layer"
+    return (
+        f"Invalid napari layer attribute access: [{target_name}._type] is not a supported napari API. "
+        "Use isinstance(..., napari.layers.Shapes/Labels/Image/Points) or inspect the layer class instead."
+    )
 
 
 def _validate_import_module(module_name: str) -> str | None:

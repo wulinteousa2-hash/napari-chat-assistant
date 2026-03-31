@@ -88,6 +88,50 @@ def _rasterize_shapes_roi(layer: Shapes, image_shape: tuple[int, ...]) -> np.nda
     return mask
 
 
+def _shape_vertices_yx(vertices: object) -> np.ndarray | None:
+    verts = np.asarray(vertices, dtype=float)
+    if verts.ndim != 2 or verts.shape[0] < 2:
+        return None
+    if verts.shape[1] < 2:
+        return None
+    if verts.shape[1] > 2:
+        return verts[:, -2:]
+    return verts
+
+
+def _polygon_area_yx(vertices_yx: np.ndarray) -> float:
+    y = vertices_yx[:, 0]
+    x = vertices_yx[:, 1]
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def _measure_shape_area(layer: Shapes, index: int) -> tuple[str, float | None, str | None]:
+    shape_types = list(getattr(layer, "shape_type", []))
+    shape_type = str(shape_types[index] if index < len(shape_types) else "polygon").lower()
+    if index >= len(layer.data):
+        return shape_type, None, "shape index out of range"
+
+    verts_yx = _shape_vertices_yx(layer.data[index])
+    if verts_yx is None:
+        return shape_type, None, "invalid vertex array"
+
+    if shape_type in {"polygon", "rectangle"}:
+        if verts_yx.shape[0] < 3:
+            return shape_type, None, "fewer than 3 vertices"
+        return shape_type, float(_polygon_area_yx(verts_yx)), None
+    if shape_type == "ellipse":
+        mins = verts_yx.min(axis=0)
+        maxs = verts_yx.max(axis=0)
+        ry = (maxs[0] - mins[0]) / 2.0
+        rx = (maxs[1] - mins[1]) / 2.0
+        return shape_type, float(np.pi * ry * rx), None
+    if shape_type == "path":
+        if verts_yx.shape[0] < 3:
+            return shape_type, None, "fewer than 3 vertices"
+        return shape_type, float(_polygon_area_yx(verts_yx)), None
+    return shape_type, None, "unsupported shape type for area"
+
+
 def _resolve_shapes_layer(viewer, roi_layer_name: object | None = None):
     name = str(roi_layer_name or "").strip()
     if name:
@@ -1232,6 +1276,70 @@ class InspectROIContextTool:
         return result.message
 
 
+class MeasureShapesROIAreaTool:
+    spec = ToolSpec(
+        name="measure_shapes_roi_area",
+        display_name="Measure Shapes ROI Area",
+        category="roi",
+        description="Measure total area and per-shape areas for the selected or named Shapes ROI layer.",
+        execution_mode="immediate",
+        supported_layer_types=("shapes",),
+        parameter_schema=(ParamSpec("roi_layer", "string", description="Optional Shapes ROI layer name."),),
+        output_type="message",
+        ui_metadata={"panel_group": "ROI"},
+        provenance_metadata={"algorithm": "shapes_roi_area", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        roi_layer = _resolve_shapes_layer(ctx.viewer, (arguments or {}).get("roi_layer"))
+        if roi_layer is None:
+            return "No valid Shapes ROI layer available. Select or name a Shapes layer."
+
+        indices = _shape_indices(roi_layer)
+        if not indices:
+            return f"Shapes layer [{roi_layer.name}] contains no shapes."
+
+        measured: list[tuple[int, str, float]] = []
+        skipped: list[tuple[int, str, str]] = []
+        for index in indices:
+            shape_type, area, reason = _measure_shape_area(roi_layer, index)
+            display_index = int(index) + 1
+            if area is None:
+                skipped.append((display_index, shape_type, reason or "unknown reason"))
+                continue
+            measured.append((display_index, shape_type, float(area)))
+
+        total_area = float(sum(area for _, _, area in measured))
+        metadata = dict(getattr(roi_layer, "metadata", {}) or {})
+        metadata["roi_shape_areas"] = {
+            "layer_name": roi_layer.name,
+            "areas": measured,
+            "total_area": total_area,
+            "skipped": skipped,
+        }
+        roi_layer.metadata = metadata
+
+        lines = [
+            f'Selected Shapes layer: "{roi_layer.name}"',
+            f"Measured {len(measured)} shape(s).",
+        ]
+        for display_index, shape_type, area in measured:
+            lines.append(f"  Shape {display_index} ({shape_type}): area = {area:.2f} px^2")
+        lines.append(f"Total measured area: {total_area:.2f} px^2")
+        if skipped:
+            lines.append("")
+            lines.append("Skipped shapes:")
+            for display_index, shape_type, reason in skipped:
+                lines.append(f"  Shape {display_index} ({shape_type}): {reason}")
+        return "\n".join(lines)
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        raise RuntimeError("Immediate tool does not execute worker jobs.")
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        return result.message
+
+
 class ExtractROIValuesTool:
     spec = ToolSpec(
         name="extract_roi_values",
@@ -1565,6 +1673,7 @@ def workbench_scaffold_tools():
         HideImageGridViewTool(),
         ArrangeLayersForPresentationTool(),
         InspectROIContextTool(),
+        MeasureShapesROIAreaTool(),
         ExtractROIValuesTool(),
         SAMSegmentFromBoxTool(),
         SAMSegmentFromPointsTool(),

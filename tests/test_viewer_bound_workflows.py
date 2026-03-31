@@ -345,6 +345,25 @@ def test_inspect_roi_context_reports_shapes_roi(make_napari_viewer_proxy):
     assert "Shapes ROI" in prepared["message"]
 
 
+def test_measure_shapes_roi_area_reports_total_and_stores_metadata(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    layer = viewer.add_shapes(
+        data=[np.array([[2, 2], [2, 7], [7, 7], [7, 2]], dtype=float)],
+        shape_type="polygon",
+        name="roi_shapes",
+    )
+
+    prepared = prepare_tool_job(viewer, "measure_shapes_roi_area", {"roi_layer": "roi_shapes"})
+
+    assert prepared["mode"] == "immediate"
+    assert 'Selected Shapes layer: "roi_shapes"' in prepared["message"]
+    assert "Measured 1 shape(s)." in prepared["message"]
+    assert "Total measured area:" in prepared["message"]
+    assert "roi_shape_areas" in layer.metadata
+    assert layer.metadata["roi_shape_areas"]["layer_name"] == "roi_shapes"
+    assert len(layer.metadata["roi_shape_areas"]["areas"]) == 1
+
+
 def test_extract_roi_values_from_labels_roi(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     image = np.arange(100, dtype=np.float32).reshape(10, 10)
