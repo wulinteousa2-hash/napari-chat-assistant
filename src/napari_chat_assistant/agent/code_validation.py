@@ -3,12 +3,78 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import re
 
 
 DISALLOWED_IMPORT_TEXT = (
     "ViewerViewerContext",
     "from napari.viewer import ViewerViewerContext",
 )
+
+
+def normalize_generated_code_if_needed(code_text: str, *, viewer=None) -> tuple[str, list[str], list[str]]:
+    code = str(code_text or "").strip()
+    raw_errors = validate_generated_code(code, viewer=viewer)
+    if not raw_errors:
+        return code, [], []
+    repaired, repair_notes = _repair_generated_code(code)
+    normalized = _normalize_escaped_multiline_code(repaired)
+    if normalized == code:
+        return code, raw_errors, []
+    normalized_errors = validate_generated_code(normalized, viewer=viewer)
+    if normalized_errors:
+        return code, raw_errors, []
+    return normalized, [], repair_notes
+
+
+def _repair_generated_code(code: str) -> tuple[str, list[str]]:
+    text = str(code or "")
+    repair_notes: list[str] = []
+    repaired = text
+
+    selected_layer_lookup_pattern = r"\bviewer\.layers\[\s*selected_layer\s*\]"
+    selected_layer_lookup_repaired = re.sub(selected_layer_lookup_pattern, "selected_layer", repaired)
+    if selected_layer_lookup_repaired != repaired:
+        repaired = selected_layer_lookup_repaired
+        repair_notes.append(
+            "Replaced `viewer.layers[selected_layer]` with `selected_layer` because `selected_layer` is already a napari layer object."
+        )
+
+    repaired, data_access_notes = _repair_layer_data_access(repaired)
+    repair_notes.extend(data_access_notes)
+
+    return repaired, repair_notes
+
+
+def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:
+    text = str(code or "")
+    repair_notes: list[str] = []
+    repaired = text
+
+    if not re.search(r"(?m)^\s*layer\s*=\s*selected_layer\s*$", repaired):
+        return repaired, repair_notes
+
+    data_attr_pattern = r"\blayer\.(shape|dtype|ndim)\b"
+    if not re.search(data_attr_pattern, repaired):
+        return repaired, repair_notes
+
+    if not re.search(r"(?m)^\s*data\s*=\s*np\.asarray\(layer\.data\)\s*$", repaired):
+        layer_assign_pattern = r"(?m)^(?P<indent>\s*)layer\s*=\s*selected_layer\s*$"
+
+        def insert_data_assignment(match: re.Match[str]) -> str:
+            indent = match.group("indent")
+            return f"{match.group(0)}\n{indent}data = np.asarray(layer.data)"
+
+        repaired = re.sub(layer_assign_pattern, insert_data_assignment, repaired, count=1)
+
+    rewritten = re.sub(data_attr_pattern, lambda m: f"data.{m.group(1)}", repaired)
+    if rewritten != repaired:
+        repaired = rewritten
+        repair_notes.append(
+            "Replaced direct napari layer data checks like `layer.shape` and `layer.dtype` with `data = np.asarray(layer.data)` and `data.*` access."
+        )
+
+    return repaired, repair_notes
 
 
 def validate_generated_code(code_text: str, *, viewer=None) -> list[str]:
@@ -39,6 +105,41 @@ def validate_generated_code(code_text: str, *, viewer=None) -> list[str]:
     return errors
 
 
+def _normalize_escaped_multiline_code(code: str) -> str:
+    text = str(code or "").strip()
+    if not text:
+        return text
+    if "\n" in text:
+        real_newlines = text.count("\n")
+    else:
+        real_newlines = 0
+    escaped_newlines = text.count("\\n")
+    if escaped_newlines < 2 or real_newlines > 1:
+        return text
+    if not _looks_like_escaped_python(text):
+        return text
+    normalized = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "    ")
+    normalized = re.sub(r'(["\'])\n([ \t]+)(["\'])', r"\1\\n\2\3", normalized)
+    return normalized.strip()
+
+
+def _looks_like_escaped_python(text: str) -> bool:
+    signals = (
+        "if ",
+        "for ",
+        "while ",
+        "def ",
+        "class ",
+        "import ",
+        "from ",
+        "return ",
+        "raise ",
+        "viewer.",
+        "selected_layer",
+    )
+    return any(signal in text for signal in signals)
+
+
 def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
     errors: list[str] = []
     uint8_arrays: set[str] = set()
@@ -60,6 +161,8 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
             for alias in node.names:
                 if module == "napari.viewer" and alias.name == "ViewerViewerContext":
                     errors.append("Do not import ViewerViewerContext from napari.viewer.")
+                if module == "napari" and alias.name == "Viewer":
+                    errors.append("Do not import Viewer from napari. Use the existing [viewer] object provided by the plugin.")
                 import_error = _validate_import_from_symbol(module, alias.name)
                 if import_error:
                     errors.append(import_error)
@@ -70,7 +173,14 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
                 import_error = _validate_import_module(alias.name)
                 if import_error:
                     errors.append(import_error)
+        if isinstance(node, ast.Assign):
+            viewer_assignment_error = _validate_viewer_assignment(node)
+            if viewer_assignment_error:
+                errors.append(viewer_assignment_error)
         if isinstance(node, ast.Call):
+            viewer_creation_error = _validate_new_viewer_call(node)
+            if viewer_creation_error:
+                errors.append(viewer_creation_error)
             viewer_error = _validate_viewer_call(node, viewer)
             if viewer_error:
                 errors.append(viewer_error)
@@ -197,6 +307,28 @@ def _validate_viewer_call(node: ast.Call, viewer) -> str | None:
     if not hasattr(viewer, method_name):
         return f"Unsupported viewer API: [viewer.{method_name}] is not available on the current napari viewer."
     return None
+
+
+def _validate_new_viewer_call(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "Viewer":
+        return "Do not create a new napari Viewer. Use the existing [viewer] object provided by the plugin."
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name) and func.value.id == "napari" and func.attr == "Viewer":
+            return "Do not create a new napari Viewer. Use the existing [viewer] object provided by the plugin."
+    return None
+
+
+def _validate_viewer_assignment(node: ast.Assign) -> str | None:
+    if len(node.targets) != 1:
+        return None
+    target = node.targets[0]
+    if not isinstance(target, ast.Name) or target.id != "viewer":
+        return None
+    value = node.value
+    if not isinstance(value, ast.Call):
+        return None
+    return _validate_new_viewer_call(value) or "Do not overwrite the provided [viewer] object."
 
 
 def _validate_viewer_keywords(method_name: str, node: ast.Call, viewer) -> str | None:

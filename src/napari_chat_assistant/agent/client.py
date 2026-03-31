@@ -87,6 +87,19 @@ def unload_ollama_model(base_url: str, model_name: str) -> None:
     )
 
 
+def load_ollama_model(base_url: str, model_name: str, *, keep_alive: str = "30m") -> None:
+    http_json(
+        f"{base_url.rstrip('/')}/api/generate",
+        {
+            "model": model_name,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": keep_alive,
+        },
+        timeout=1800,
+    )
+
+
 def chat_ollama(
     base_url: str,
     model_name: str,

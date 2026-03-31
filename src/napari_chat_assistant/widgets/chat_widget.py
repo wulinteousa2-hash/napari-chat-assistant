@@ -36,8 +36,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, unload_ollama_model
-from napari_chat_assistant.agent.code_validation import validate_generated_code
+from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, load_ollama_model, unload_ollama_model
+from napari_chat_assistant.agent.code_validation import normalize_generated_code_if_needed, validate_generated_code
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
 from napari_chat_assistant.agent.logging_utils import (
@@ -162,17 +162,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     config_btn_row = QWidget()
     config_btn_layout = QHBoxLayout(config_btn_row)
-    save_btn = QPushButton("Use")
-    save_btn.setToolTip("Use the current model selection for chat requests.")
-    test_btn = QPushButton("Test")
-    test_btn.setToolTip("Test the local Ollama connection and confirm the selected model is available.")
+    save_btn = QPushButton("Load")
+    save_btn.setToolTip("Load the selected model into Ollama now so the first chat request starts faster.")
     unload_btn = QPushButton("Unload")
-    unload_btn.setToolTip("Unload the selected model from Ollama to free local memory.")
+    unload_btn.setToolTip("Unload the selected model from Ollama and free RAM or VRAM.")
+    test_btn = QPushButton("Test")
+    test_btn.setToolTip("Check that Ollama is reachable and confirm the selected model tag is installed locally.")
     config_btn_layout.addWidget(save_btn)
-    config_btn_layout.addWidget(test_btn)
     config_btn_layout.addWidget(unload_btn)
+    config_btn_layout.addWidget(test_btn)
     pull_btn = QPushButton("Setup")
-    pull_btn.setToolTip("Show Ollama setup steps and a pull command for the selected model tag.")
+    pull_btn.setToolTip("Show Ollama setup steps, including how to start Ollama and pull the selected model tag.")
     config_btn_layout.addWidget(pull_btn)
     config_layout.addRow(config_btn_row)
     left_layout.addWidget(config_group)
@@ -1263,7 +1263,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: missing base URL or model name", ok=False)
             append_log("Connection test failed: missing base URL or model name.")
             return
-        set_status(f"Status: testing {provider}...", ok=None)
+        set_status("Status: checking connection...", ok=None)
         append_log(f"Testing connection for {provider} | {base_url} | model={model_name}")
         try:
             models = list_ollama_models(base_url)
@@ -1305,13 +1305,40 @@ def chat_widget(napari_viewer=None) -> QWidget:
         model_name = model_combo.currentText().strip()
         if not base_url or not model_name:
             set_status("Status: missing base URL or model name", ok=False)
-            append_log("Settings not saved: missing base URL or model name.")
+            append_log("Model load skipped: missing base URL or model name.")
             return
         saved_settings["provider"] = provider
         saved_settings["base_url"] = base_url.rstrip("/")
         saved_settings["model"] = model_name
-        set_status(f"Status: ready to use {model_name}", ok=True)
-        append_log(f"Saved local model settings for {provider} | {base_url} | model={model_name}")
+        set_status(f"Status: loading {model_name}...", ok=None)
+        append_log(f"Loading model for {provider} | {base_url} | model={model_name}")
+
+        @thread_worker(ignore_errors=True)
+        def run_model_load():
+            return load_ollama_model(saved_settings["base_url"], saved_settings["model"])
+
+        worker = run_model_load()
+        active_workers.append(worker)
+
+        def finish_model_load():
+            if worker in active_workers:
+                active_workers.remove(worker)
+
+        def on_loaded(_result=None):
+            finish_model_load()
+            set_status(f"Status: model {model_name} loaded and ready", ok=True)
+            append_log(f"Loaded model for {provider} | {base_url} | model={model_name}")
+
+        def on_load_error(*args):
+            finish_model_load()
+            error_text = format_worker_error(*args)
+            set_status(f"Status: model load failed", ok=False)
+            append_chat_message("assistant", f"Model load failed:\n{error_text}")
+            append_log(f"Model load failed: {error_text}")
+
+        worker.returned.connect(on_loaded)
+        worker.errored.connect(on_load_error)
+        worker.start()
 
     def pull_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
@@ -1726,7 +1753,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_log("Unload failed: missing base URL or model name.")
             return
 
-        set_status(f"Status: unloading {model_name}...", ok=None)
+            set_status(f"Status: unloading {model_name}...", ok=None)
         append_log(f"Unloading model {model_name}")
         try:
             unload_ollama_model(base_url, model_name)
@@ -1949,7 +1976,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         target_profile=selected_layer_profile(),
                     )
                     append_log(f"Tool executed: {tool_name}")
-                    set_status(f"Status: connected to {model_name}", ok=True)
+                    set_status(f"Status: response received from {model_name}", ok=True)
                     append_log(f"Received response from {model_name}")
                     finish()
                     return
@@ -1967,7 +1994,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 def tool_finish():
                     if tool_worker in active_workers:
                         active_workers.remove(tool_worker)
-                    set_status(f"Status: connected to {model_name}", ok=True)
+                    set_status(f"Status: {tool_name} completed", ok=True)
                     append_log(f"Received response from {model_name}")
                     finish()
 
@@ -2031,7 +2058,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         },
                     )
                     append_log(f"Tool execution failed: {tool_name} | {error_text}")
-                    set_status("Status: tool execution failed", ok=False)
+                    set_status(f"Status: {tool_name} failed", ok=False)
                     if tool_worker in active_workers:
                         active_workers.remove(tool_worker)
                     finish()
@@ -2042,9 +2069,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return
 
             if action == "code":
-                code_text = str(parsed.get("code", "")).strip()
+                raw_code_text = str(parsed.get("code", "")).strip()
+                code_text, validation_errors, repair_notes = normalize_generated_code_if_needed(raw_code_text, viewer=viewer)
                 code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Code."
-                validation_errors = preflight_generated_code(code_text)
                 if validation_errors:
                     set_pending_code(
                         code_text,
@@ -2061,13 +2088,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         + format_code_block(code_text)
                     )
                     append_log("Rejected generated code after local validation.")
-                    set_status("Status: generated code rejected", ok=False)
+                    set_status("Status: code rejected", ok=False)
                     finish()
                     return
                 set_pending_code(code_text, message=code_message)
                 pending_code["turn_id"] = turn_id
                 pending_code["model"] = model_name
-                replace_last_assistant(f"{code_message}\n{format_code_block(code_text)}")
+                repair_prefix = ""
+                if repair_notes:
+                    repair_prefix = (
+                        "Local napari-specific repair applied before validation:\n"
+                        + "\n".join(f"- {note}" for note in repair_notes)
+                        + "\n\n"
+                    )
+                replace_last_assistant(f"{repair_prefix}{code_message}\n{format_code_block(code_text)}")
                 latency_ms = int((time.perf_counter() - request_started_at) * 1000)
                 last_turn_metrics.update(
                     {"turn_id": turn_id, "model": model_name, "action": "code", "prompt_hash": turn_prompt_hash}
@@ -2087,7 +2121,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     },
                 )
                 remember_assistant_outcome(code_message, target_type="recommendation", target_profile=selected_layer_profile())
-                set_status("Status: code generated, awaiting approval", ok=None)
+                set_status("Status: generated code ready for review", ok=None)
                 append_log("Generated pending napari code; waiting for approval.")
                 finish()
                 return
@@ -2116,7 +2150,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 target_type="recommendation",
                 target_profile=selected_layer_profile(),
             )
-            set_status(f"Status: connected to {model_name}", ok=True)
+            set_status(f"Status: reply ready from {model_name}", ok=True)
             append_log(f"Received response from {model_name}")
             finish()
 
@@ -2327,7 +2361,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             },
         )
         append_log(f"{code_label.capitalize()} executed successfully.")
-        set_status(f"Status: {code_label} executed", ok=True)
+        set_status(f"Status: {code_label} done", ok=True)
         return True
 
     def run_prompt_code(*_args):
