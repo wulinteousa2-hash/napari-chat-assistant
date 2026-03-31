@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 
 UI_HELP_ITEMS = [
     {
@@ -293,13 +295,13 @@ def answer_ui_question(text: str) -> str | None:
             "- `Load` warms the selected model into memory so the first real request starts faster.\n"
             "- `Test` only checks whether Ollama is reachable and whether the selected model tag exists locally."
         )
-    if "run code" in lowered and "run my code" in lowered and ("difference" in lowered or "vs" in lowered):
+    if _contains_alias(lowered, "run code") and _contains_alias(lowered, "run my code") and ("difference" in lowered or "vs" in lowered):
         return (
             "**Run Code vs Run My Code**\n"
             "- `Run Code` executes assistant-generated code that is already waiting as pending code.\n"
             "- `Run My Code` executes your own pasted Python directly from the Prompt box."
         )
-    if any(alias in lowered for alias in ("how should i ask", "how to ask", "how do i ask", "prompt tips")):
+    if any(_contains_alias(lowered, alias) for alias in ("how should i ask", "how to ask", "how do i ask", "prompt tips")):
         return (
             "**Prompt Tips**\n"
             "- Name the layer when possible.\n"
@@ -308,16 +310,34 @@ def answer_ui_question(text: str) -> str | None:
         )
 
     has_question_cue = any(cue in lowered for cue in QUESTION_CUES) or lowered.endswith("?")
+    matched_items: list[tuple[int, dict[str, object]]] = []
     for item in UI_HELP_ITEMS:
-        if any(alias in lowered for alias in item["aliases"]) and (has_question_cue or lowered in item["aliases"]):
-            return (
-                f"**{item['label']}**\n"
-                f"- Purpose: {item['purpose']}\n"
-                f"- Use it when: {item['when']}\n"
-                f"- Tip: {item['tip']}"
-            )
+        matched_aliases = [alias for alias in item["aliases"] if _contains_alias(lowered, alias)]
+        if matched_aliases and (has_question_cue or any(lowered == alias for alias in item["aliases"])):
+            matched_items.append((max(len(alias) for alias in matched_aliases), item))
+    if matched_items:
+        _, item = max(matched_items, key=lambda pair: pair[0])
+        return (
+            f"**{item['label']}**\n"
+            f"- Purpose: {item['purpose']}\n"
+            f"- Use it when: {item['when']}\n"
+            f"- Tip: {item['tip']}"
+        )
     return None
 
 
 def _looks_like_difference_question(text: str, left_aliases: tuple[str, ...], right_aliases: tuple[str, ...]) -> bool:
-    return "difference" in text and any(alias in text for alias in left_aliases) and any(alias in text for alias in right_aliases)
+    return (
+        "difference" in text
+        and any(_contains_alias(text, alias) for alias in left_aliases)
+        and any(_contains_alias(text, alias) for alias in right_aliases)
+    )
+
+
+def _contains_alias(text: str, alias: str) -> bool:
+    normalized_text = " ".join(str(text or "").strip().lower().split())
+    normalized_alias = " ".join(str(alias or "").strip().lower().split())
+    if not normalized_text or not normalized_alias:
+        return False
+    pattern = r"(?<!\w)" + re.escape(normalized_alias) + r"(?!\w)"
+    return re.search(pattern, normalized_text) is not None
