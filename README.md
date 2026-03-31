@@ -24,7 +24,7 @@ The current direction is a deterministic, layer-aware assistant: the plugin prof
 - kept experimental SAM2 under `Advanced` rather than the default toolbar
 - kept the clearer `Load`, `Unload`, `Test`, `Setup` model flow and improved status wording
 
-For older release history, see [CHANGELOG.md](/home/wteox2/Projects/napari/napari-chat-assistant/CHANGELOG.md).
+For older release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Overview
 
