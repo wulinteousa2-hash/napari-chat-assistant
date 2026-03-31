@@ -3,6 +3,7 @@ from __future__ import annotations
 import napari
 import numpy as np
 
+from .ui_help import build_ui_help_prompt_block
 from .image_ops import (
     close_binary_mask,
     dilate_binary_mask,
@@ -50,6 +51,9 @@ ASSISTANT_TOOL_NAMES = {
     "plot_histogram",
     "project_max_intensity",
     "crop_to_layer_bbox",
+    "show_image_layers_in_grid",
+    "hide_image_grid_view",
+    "arrange_layers_for_presentation",
     "extract_roi_values",
     "sam_segment_from_box",
     "sam_segment_from_points",
@@ -166,6 +170,9 @@ def assistant_system_prompt() -> str:
         '- plot_histogram: {"layer_name": optional string, "bins": optional int}\n'
         '- project_max_intensity: {"layer_name": optional string, "axis": optional int}\n'
         '- crop_to_layer_bbox: {"source_layer": string, "reference_layer": string, "padding": optional int or list}\n'
+        '- show_image_layers_in_grid: {"layer_names": optional list, "spacing": optional float}\n'
+        '- hide_image_grid_view: {}\n'
+        '- arrange_layers_for_presentation: {"layer_names": optional list, "layout": optional "row|column|grid|pairs", "spacing": optional float, "columns": optional int, "group_size": optional int, "use_copies": optional bool, "match_origin": optional bool}\n'
         '- extract_roi_values: {"image_layer": optional string, "roi_layer": optional string}\n'
         '- sam_segment_from_box: {"image_layer": optional string, "roi_layer": optional string, "shape_index": optional int, "multimask_output": optional bool, "model_name": optional string}\n'
         '- sam_segment_from_points: {"image_layer": optional string, "points_layer": optional string, "multimask_output": optional bool, "model_name": optional string}\n'
@@ -208,6 +215,9 @@ def assistant_system_prompt() -> str:
         "- If the user asks for a histogram or intensity distribution plot for an image layer, use plot_histogram instead of action=code.\n"
         "- If the user asks for a max intensity projection, MIP, or projection of a 3D grayscale image, use project_max_intensity.\n"
         "- If the user asks to crop one layer to the foreground bounding box of another layer or crop to a mask bounding box, use crop_to_layer_bbox.\n"
+        "- If the user asks to compare all open images side by side, show layers in a grid, tile the open images, split open images so they do not overlap, or turn on side-by-side image comparison, use show_image_layers_in_grid.\n"
+        "- If the user asks to turn grid view off, return to normal overlap view, or disable tiled image comparison, use hide_image_grid_view.\n"
+        "- If the user asks to arrange layers for presentation, place images next to masks, show layers side by side, stack layers in a row or column, make a grid, or align display copies for visual comparison, use arrange_layers_for_presentation.\n"
         "- If the user asks to compare two image layers with a Student t-test or Welch t-test, use compare_image_layers_ttest when the populations are the image intensities from those layers.\n"
         "- Use action=code only when the request needs custom napari/python logic that is not covered by the built-in tools.\n"
         "- Do not generate code for tasks already covered by built-in tools, especially threshold preview/apply, ROI inspection, ROI value extraction, mask measurement, mask morphology, CLAHE, Gaussian denoising, connected-component labeling, measurement tables, bbox crop, max intensity projection, SAM tool requests, image histograms, intensity summaries, or built-in t-tests.\n"
@@ -239,4 +249,6 @@ def assistant_system_prompt() -> str:
         "- Prefer explicit layer_name values when the user names a specific layer.\n"
         "- Mask operations automatically create a snapshot before editing.\n"
         "- If no tool is needed, use action=reply.\n"
+        + build_ui_help_prompt_block()
+        + "\n"
     )

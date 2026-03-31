@@ -15,15 +15,16 @@ It is designed for local interactive work, repeatable workflows, and gradual aut
 
 The current direction is a deterministic, layer-aware assistant: the plugin profiles loaded napari layers first, then uses that structured context to guide tool choice and generated code.
 
-## What's New In 1.4.2
+## What's New In 1.4.3
 
-- `Load` now preloads the selected Ollama model instead of only saving the selection
-- reordered model controls to `Load`, `Unload`, `Test`, `Setup`, with clearer tooltips
-- streamlined status messages for loading, replies, tools, and generated code
-- strengthened napari-specific code validation and added narrow auto-repair for common generated-code mistakes
-- blocked generated code from creating a new napari `Viewer` instead of using the current session viewer
-- improved chat code-block rendering with a more editor-like dark style and Python token coloring
+- added built-in image grid view for side-by-side comparison of open image layers
+- added a built-in action to turn image grid view off and restore hidden non-image layers
+- added built-in plugin UI help so users can ask what controls do and get short usage tips
+- expanded help coverage for Library, Prompt, code actions, model controls, telemetry, diagnostics, status, and prompt tips
 - kept experimental SAM2 under `Advanced` rather than the default toolbar
+- kept the clearer `Load`, `Unload`, `Test`, `Setup` model flow and improved status wording
+
+For older release history, see [CHANGELOG.md](/home/wteox2/Projects/napari/napari-chat-assistant/CHANGELOG.md).
 
 ## Overview
 
@@ -160,7 +161,7 @@ Install links:
 
 ### Experimental SAM2 integration
 
-Version `1.4.2` includes an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
+Version `1.4.3` includes an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar

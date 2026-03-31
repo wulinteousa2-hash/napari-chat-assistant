@@ -254,6 +254,70 @@ def test_crop_to_layer_bbox_adds_cropped_image_layer(make_napari_viewer_proxy):
     assert "Cropped [image_a] to the bounding box of [mask_a] as [image_a_crop]." in message
 
 
+def test_show_image_layers_in_grid_enables_grid_with_auto_shape(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((4, 5), dtype=np.float32), name="image_a")
+    viewer.add_image(np.ones((4, 5), dtype=np.float32), name="image_b")
+    viewer.add_image(np.full((4, 5), 2.0, dtype=np.float32), name="image_c")
+    viewer.add_image(np.full((4, 5), 3.0, dtype=np.float32), name="image_d")
+    viewer.add_image(np.full((4, 5), 4.0, dtype=np.float32), name="image_e")
+    viewer.add_image(np.full((4, 5), 5.0, dtype=np.float32), name="image_f")
+    mask = viewer.add_labels(np.ones((4, 5), dtype=np.uint8), name="mask_a")
+    mask.visible = True
+
+    if not hasattr(viewer, "grid"):
+        class _Grid:
+            enabled = False
+            shape = (-1, -1)
+            spacing = 0.0
+
+        viewer.grid = _Grid()
+    if not hasattr(viewer, "reset_view"):
+        viewer.reset_view = lambda: None
+
+    prepared = prepare_tool_job(
+        viewer,
+        "show_image_layers_in_grid",
+        {"spacing": 12},
+    )
+    assert prepared["mode"] == "immediate"
+
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert viewer.grid.enabled is True
+    assert tuple(viewer.grid.shape) == (2, 3)
+    assert float(viewer.grid.spacing) == 12.0
+    assert mask.visible is False
+    assert "shape=(2, 3)" in message
+
+
+def test_hide_image_grid_view_disables_grid_and_restores_non_image_layers(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    mask = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    if not hasattr(viewer, "grid"):
+        class _Grid:
+            enabled = False
+            shape = (-1, -1)
+            spacing = 0.0
+
+        viewer.grid = _Grid()
+    if not hasattr(viewer, "reset_view"):
+        viewer.reset_view = lambda: None
+    viewer.grid.enabled = True
+    setattr(viewer, "_assistant_grid_hidden_non_image_layers", ["mask_a"])
+    mask.visible = False
+
+    prepared = prepare_tool_job(viewer, "hide_image_grid_view", {})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert viewer.grid.enabled is False
+    assert mask.visible is True
+    assert "Disabled image grid view." == message
+
+
 def test_inspect_roi_context_reports_labels_roi(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     mask = np.zeros((10, 10), dtype=np.uint8)

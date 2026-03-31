@@ -214,6 +214,366 @@ def _format_bbox(bbox: tuple[tuple[int, int], ...]) -> str:
     return ", ".join(f"dim{axis}=[{lo}:{hi}]" for axis, (lo, hi) in enumerate(bbox))
 
 
+def _resolve_presentation_layers(viewer, layer_names: object | None = None) -> list[object]:
+    resolved: list[object] = []
+    if isinstance(layer_names, str):
+        names = [part.strip() for part in layer_names.split(",") if part.strip()]
+    elif isinstance(layer_names, (list, tuple)):
+        names = [str(value).strip() for value in layer_names if str(value).strip()]
+    else:
+        names = []
+
+    if names:
+        for name in names:
+            layer = find_any_layer(viewer, name)
+            if isinstance(layer, (Image, Labels)):
+                resolved.append(layer)
+        return resolved
+
+    selected_layers = list(getattr(viewer.layers.selection, "_selected", []) or [])
+    selected_layers = [layer for layer in selected_layers if isinstance(layer, (Image, Labels))]
+    if len(selected_layers) >= 2:
+        return selected_layers
+
+    return [layer for layer in viewer.layers if isinstance(layer, (Image, Labels))]
+
+
+def _normalized_layout_shape(layout: object) -> str:
+    value = str(layout or "row").strip().lower()
+    if value in {"row", "rows", "horizontal"}:
+        return "row"
+    if value in {"column", "col", "vertical"}:
+        return "column"
+    if value in {"grid"}:
+        return "grid"
+    if value in {"pairs", "pair", "image_mask_pairs"}:
+        return "pairs"
+    return "row"
+
+
+def _layer_display_extent(layer) -> tuple[float, float]:
+    data = np.asarray(layer.data)
+    spatial_ndim = int(getattr(layer, "ndim", data.ndim))
+    if spatial_ndim < 2:
+        return 1.0, 1.0
+    scale_values = getattr(layer, "scale", None)
+    scale = tuple(float(value) for value in scale_values) if scale_values is not None else ()
+    if len(scale) < spatial_ndim:
+        scale = (1.0,) * (spatial_ndim - len(scale)) + scale
+    height = max(1.0, float(data.shape[-2]) * abs(float(scale[-2])))
+    width = max(1.0, float(data.shape[-1]) * abs(float(scale[-1])))
+    return height, width
+
+
+def _arranged_translate(layer, *, offset_y: float, offset_x: float, match_origin: bool) -> tuple[float, ...]:
+    data = np.asarray(layer.data)
+    ndim = int(getattr(layer, "ndim", data.ndim))
+    translate_values = getattr(layer, "translate", None)
+    existing = tuple(float(value) for value in translate_values) if translate_values is not None else ()
+    if len(existing) < ndim:
+        existing = (0.0,) * (ndim - len(existing)) + existing
+    base = [0.0] * ndim if match_origin else list(existing)
+    if ndim >= 2:
+        base[-2] = float(offset_y) if match_origin else float(base[-2] + offset_y)
+        base[-1] = float(offset_x) if match_origin else float(base[-1] + offset_x)
+    return tuple(base)
+
+
+def _clone_layer_for_presentation(ctx: ToolContext, layer, *, output_name: str, translate: tuple[float, ...]):
+    data = np.asarray(layer.data).copy()
+    scale_values = getattr(layer, "scale", None)
+    scale = tuple(float(value) for value in scale_values) if scale_values is not None else ()
+    if isinstance(layer, Image):
+        ctx.viewer.add_image(data, name=output_name, scale=scale, translate=translate)
+    elif isinstance(layer, Labels):
+        ctx.viewer.add_labels(data, name=output_name, scale=scale, translate=translate)
+
+
+def _placements_for_row(layers: list[object], extents: list[tuple[float, float]], spacing: float) -> list[tuple[object, float, float]]:
+    placements: list[tuple[object, float, float]] = []
+    current_x = 0.0
+    for layer, (_height, width) in zip(layers, extents):
+        placements.append((layer, 0.0, current_x))
+        current_x += width + spacing
+    return placements
+
+
+def _placements_for_column(layers: list[object], extents: list[tuple[float, float]], spacing: float) -> list[tuple[object, float, float]]:
+    placements: list[tuple[object, float, float]] = []
+    current_y = 0.0
+    for layer, (height, _width) in zip(layers, extents):
+        placements.append((layer, current_y, 0.0))
+        current_y += height + spacing
+    return placements
+
+
+def _placements_for_grid(
+    layers: list[object],
+    extents: list[tuple[float, float]],
+    spacing: float,
+    columns: int,
+) -> list[tuple[object, float, float]]:
+    columns = max(1, columns)
+    row_heights: list[float] = []
+    col_widths: list[float] = [0.0] * columns
+    grouped: list[list[tuple[object, tuple[float, float]]]] = []
+
+    for start in range(0, len(layers), columns):
+        chunk = list(zip(layers[start : start + columns], extents[start : start + columns]))
+        grouped.append(chunk)
+        row_heights.append(max((height for _layer, (height, _width) in chunk), default=0.0))
+        for col_index, (_layer, (_height, width)) in enumerate(chunk):
+            col_widths[col_index] = max(col_widths[col_index], width)
+
+    row_offsets: list[float] = []
+    current_y = 0.0
+    for height in row_heights:
+        row_offsets.append(current_y)
+        current_y += height + spacing
+
+    col_offsets: list[float] = []
+    current_x = 0.0
+    for width in col_widths:
+        col_offsets.append(current_x)
+        current_x += width + spacing
+
+    placements: list[tuple[object, float, float]] = []
+    for row_index, chunk in enumerate(grouped):
+        for col_index, (layer, _extent) in enumerate(chunk):
+            placements.append((layer, row_offsets[row_index], col_offsets[col_index]))
+    return placements
+
+
+def _auto_grid_shape(count: int) -> tuple[int, int]:
+    count = max(1, int(count))
+    cols = max(1, int(np.ceil(np.sqrt(count))))
+    rows = max(1, int(np.ceil(count / cols)))
+    return rows, cols
+
+
+def _hide_non_image_layers(viewer) -> list[str]:
+    hidden: list[str] = []
+    for layer in viewer.layers:
+        if isinstance(layer, Image):
+            continue
+        if bool(getattr(layer, "visible", True)):
+            layer.visible = False
+            hidden.append(layer.name)
+    return hidden
+
+
+class ShowImageLayersInGridTool:
+    spec = ToolSpec(
+        name="show_image_layers_in_grid",
+        display_name="Show Image Layers In Grid",
+        category="presentation",
+        description="Show open image layers in napari grid view for side-by-side comparison.",
+        execution_mode="immediate",
+        supported_layer_types=("image",),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Optional ordered image layer names to show."),
+            ParamSpec("spacing", "float", description="Optional grid spacing.", default=0.0, minimum=0.0),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Presentation"},
+        provenance_metadata={"algorithm": "napari_grid_view", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        if isinstance(args.get("layer_names"), str):
+            names = [part.strip() for part in str(args.get("layer_names", "")).split(",") if part.strip()]
+        elif isinstance(args.get("layer_names"), (list, tuple)):
+            names = [str(value).strip() for value in args.get("layer_names", []) if str(value).strip()]
+        else:
+            names = []
+
+        image_layers: list[Image] = []
+        if names:
+            for name in names:
+                layer = find_any_layer(ctx.viewer, name)
+                if isinstance(layer, Image):
+                    image_layers.append(layer)
+        else:
+            image_layers = [layer for layer in ctx.viewer.layers if isinstance(layer, Image)]
+
+        if len(image_layers) < 2:
+            return "Need at least 2 image layers to show a side-by-side grid."
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "layer_names": [layer.name for layer in image_layers],
+                "spacing": normalize_float(args.get("spacing", 0.0), default=0.0, minimum=0.0, maximum=1500.0),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        layer_names = [str(name).strip() for name in payload.get("layer_names", []) if str(name).strip()]
+        image_layers = [find_any_layer(ctx.viewer, name) for name in layer_names]
+        image_layers = [layer for layer in image_layers if isinstance(layer, Image)]
+        if len(image_layers) < 2:
+            return "No usable image layers were available for grid view."
+
+        selected_names = {layer.name for layer in image_layers}
+        for layer in ctx.viewer.layers:
+            if isinstance(layer, Image):
+                layer.visible = layer.name in selected_names
+        hidden_non_image = _hide_non_image_layers(ctx.viewer)
+        rows, cols = _auto_grid_shape(len(image_layers))
+        ctx.viewer.grid.shape = (rows, cols)
+        ctx.viewer.grid.spacing = float(payload.get("spacing", 0.0))
+        ctx.viewer.grid.enabled = True
+        setattr(ctx.viewer, "_assistant_grid_hidden_non_image_layers", hidden_non_image)
+        if hasattr(ctx.viewer, "reset_view"):
+            ctx.viewer.reset_view()
+        return (
+            f"Enabled image grid view for {len(image_layers)} image layer(s) with shape=({rows}, {cols}). "
+            f"Hidden {len(hidden_non_image)} non-image layer(s)."
+        )
+
+
+class HideImageGridViewTool:
+    spec = ToolSpec(
+        name="hide_image_grid_view",
+        display_name="Hide Image Grid View",
+        category="presentation",
+        description="Turn off napari grid view and restore hidden non-image layers.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "points", "shapes"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Presentation"},
+        provenance_metadata={"algorithm": "napari_grid_view", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        hidden_non_image = list(getattr(ctx.viewer, "_assistant_grid_hidden_non_image_layers", []) or [])
+        for name in hidden_non_image:
+            layer = find_any_layer(ctx.viewer, name)
+            if layer is not None:
+                layer.visible = True
+        setattr(ctx.viewer, "_assistant_grid_hidden_non_image_layers", [])
+        ctx.viewer.grid.enabled = False
+        if hasattr(ctx.viewer, "reset_view"):
+            ctx.viewer.reset_view()
+        return "Disabled image grid view."
+
+
+class ArrangeLayersForPresentationTool:
+    spec = ToolSpec(
+        name="arrange_layers_for_presentation",
+        display_name="Arrange Layers For Presentation",
+        category="presentation",
+        description="Arrange image and labels layers into a row, column, grid, or repeated image-mask pairs for presentation.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Optional ordered layer names to arrange."),
+            ParamSpec("layout", "string", description="row, column, grid, or pairs.", default="row"),
+            ParamSpec("spacing", "float", description="World-coordinate spacing between arranged layers.", default=20.0, minimum=0.0),
+            ParamSpec("columns", "int", description="Optional number of columns for grid layout.", default=0, minimum=0),
+            ParamSpec("group_size", "int", description="Group size for pairs layout.", default=2, minimum=1),
+            ParamSpec("use_copies", "bool", description="Create display copies instead of moving the original layers.", default=True),
+            ParamSpec("match_origin", "bool", description="Reset arranged layers to a shared top-left origin before layout offsets are applied.", default=True),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Presentation"},
+        provenance_metadata={"algorithm": "layer_presentation_layout", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layers = _resolve_presentation_layers(ctx.viewer, args.get("layer_names"))
+        if len(layers) < 2:
+            return "Need at least 2 image or labels layers to arrange for presentation."
+        layer_names = [layer.name for layer in layers]
+        layout = _normalized_layout_shape(args.get("layout", "row"))
+        spacing = normalize_float(args.get("spacing", 20.0), default=20.0, minimum=0.0, maximum=10_000.0)
+        columns = normalize_int(args.get("columns", 0), default=0, minimum=0, maximum=64)
+        group_size = normalize_int(args.get("group_size", 2), default=2, minimum=1, maximum=32)
+        use_copies = bool(args.get("use_copies", True))
+        match_origin = bool(args.get("match_origin", True))
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "layer_names": layer_names,
+                "layout": layout,
+                "spacing": spacing,
+                "columns": columns,
+                "group_size": group_size,
+                "use_copies": use_copies,
+                "match_origin": match_origin,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        layer_names = [str(name).strip() for name in payload.get("layer_names", []) if str(name).strip()]
+        layers = [find_any_layer(ctx.viewer, name) for name in layer_names]
+        layers = [layer for layer in layers if isinstance(layer, (Image, Labels))]
+        if len(layers) < 2:
+            return "No usable image or labels layers were available to arrange."
+
+        spacing = float(payload.get("spacing", 20.0))
+        layout = _normalized_layout_shape(payload.get("layout", "row"))
+        columns = int(payload.get("columns", 0) or 0)
+        group_size = int(payload.get("group_size", 2) or 2)
+        use_copies = bool(payload.get("use_copies", True))
+        match_origin = bool(payload.get("match_origin", True))
+        extents = [_layer_display_extent(layer) for layer in layers]
+        if layout == "column":
+            placements = _placements_for_column(layers, extents, spacing)
+        elif layout == "grid":
+            if columns <= 0:
+                columns = max(1, int(np.ceil(np.sqrt(len(layers)))))
+            placements = _placements_for_grid(layers, extents, spacing, columns)
+        elif layout == "pairs":
+            group_size = max(1, group_size)
+            placements = _placements_for_grid(layers, extents, spacing, group_size)
+        else:
+            placements = _placements_for_row(layers, extents, spacing)
+
+        arranged_names: list[str] = []
+        for layer, offset_y, offset_x in placements:
+            translate = _arranged_translate(layer, offset_y=offset_y, offset_x=offset_x, match_origin=match_origin)
+            if use_copies:
+                output_name = next_output_name(ctx.viewer, f"{layer.name}_present")
+                _clone_layer_for_presentation(ctx, layer, output_name=output_name, translate=translate)
+                arranged_names.append(output_name)
+            else:
+                layer.translate = translate
+                arranged_names.append(layer.name)
+
+        arranged_label = ", ".join(f"[{name}]" for name in arranged_names[:6])
+        if len(arranged_names) > 6:
+            arranged_label += f" and {len(arranged_names) - 6} more"
+        action = "Created presentation copies for" if use_copies else "Arranged"
+        return (
+            f"{action} {len(arranged_names)} layer(s) with layout={layout} spacing={spacing:.6g}. "
+            f"match_origin={str(match_origin).lower()} use_copies={str(use_copies).lower()}. {arranged_label}."
+        )
+
+
 class GaussianDenoiseTool:
     spec = ToolSpec(
         name="gaussian_denoise",
@@ -1201,6 +1561,9 @@ def workbench_scaffold_tools():
         MeasureLabelsTableTool(),
         ProjectMaxIntensityTool(),
         CropToLayerBBoxTool(),
+        ShowImageLayersInGridTool(),
+        HideImageGridViewTool(),
+        ArrangeLayersForPresentationTool(),
         InspectROIContextTool(),
         ExtractROIValuesTool(),
         SAMSegmentFromBoxTool(),

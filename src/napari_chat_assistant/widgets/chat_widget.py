@@ -89,6 +89,7 @@ from napari_chat_assistant.agent.telemetry_summary import (
     summarize_telemetry_events,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
+from napari_chat_assistant.agent.ui_help import answer_ui_question
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 
@@ -550,7 +551,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def run_prepared_tool_request(prepared: dict, *, tool_name: str, tool_message: str = ""):
         nonlocal session_memory_state
         if prepared.get("mode") == "immediate":
-            result_message = str(prepared.get("message", ""))
+            try:
+                if "job" in prepared:
+                    tool_result = run_tool_job(prepared["job"])
+                    result_message = apply_tool_job_result(viewer, tool_result)
+                else:
+                    result_message = str(prepared.get("message", ""))
+            except Exception as exc:
+                logger.exception("Analysis panel immediate tool failed: %s", tool_name)
+                append_chat_message("assistant", f"{tool_name} failed:\n{exc}")
+                append_log(f"Analysis panel immediate tool failed: {tool_name} | {exc}")
+                set_status(f"Status: {tool_name} failed", ok=False)
+                return
             refresh_context()
             append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
             append_log(f"Tool executed from Analysis panel: {tool_name}")
@@ -1878,6 +1890,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
             )
             return
+        ui_help_reply = answer_ui_question(text)
+        if ui_help_reply:
+            append_chat_message("assistant", ui_help_reply)
+            append_log("Answered plugin UI help question locally.")
+            set_status("Status: plugin help ready", ok=True)
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": "local_ui_help",
+                    "base_url": "",
+                    "prompt_hash": prompt_hash(text),
+                    "prompt_category": "ui_help",
+                    "response_action": "reply",
+                    "pending_code_generated": False,
+                    **selected_layer_snapshot(),
+                },
+            )
+            return
         base_url = base_url_edit.text().strip().rstrip("/") or str(saved_settings["base_url"]).rstrip("/")
         model_name = model_combo.currentText().strip() or str(saved_settings["model"]).strip()
         if not base_url or not model_name:
@@ -1948,7 +1979,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 tool_message = str(parsed.get("message", "")).strip()
                 prepared = prepare_tool_job(viewer, tool_name, arguments if isinstance(arguments, dict) else {})
                 if prepared.get("mode") == "immediate":
-                    result_message = str(prepared.get("message", ""))
+                    try:
+                        if "job" in prepared:
+                            tool_result = run_tool_job(prepared["job"])
+                            result_message = apply_tool_job_result(viewer, tool_result)
+                        else:
+                            result_message = str(prepared.get("message", ""))
+                    except Exception as exc:
+                        logger.exception("Immediate tool failed: %s", tool_name)
+                        replace_last_assistant(f"{tool_name} failed:\n{exc}")
+                        set_status(f"Status: {tool_name} failed", ok=False)
+                        append_log(f"Immediate tool failed: {tool_name} | {exc}")
+                        finish()
+                        return
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
                     latency_ms = int((time.perf_counter() - request_started_at) * 1000)

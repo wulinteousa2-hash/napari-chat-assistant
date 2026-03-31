@@ -2,6 +2,31 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.4.3
+
+- Added built-in image grid view for side-by-side comparison of currently loaded image layers.
+- Added a built-in action to turn image grid view off and restore any non-image layers hidden for comparison.
+- Added built-in plugin UI help so users can ask what controls do and get short usage tips directly in chat.
+- Expanded UI help coverage for Library, Prompt, code actions, model controls, telemetry, diagnostics, status, and prompt-writing tips.
+- Kept experimental SAM2 under `Advanced` and kept the clearer `Load`, `Unload`, `Test`, `Setup` model flow.
+
+## 1.4.2
+
+- Changed `Use` to `Load` and made it warm the selected Ollama model instead of only saving the selection.
+- Reordered model controls to `Load`, `Unload`, `Test`, `Setup` and added clearer tooltips.
+- Streamlined status messages for loading, replies, tools, and generated code.
+- Strengthened napari-specific code validation and added narrow automatic repair for common generated-code mistakes.
+- Blocked generated code from creating a new napari `Viewer` instead of using the current session viewer.
+- Improved chat code-block rendering with a more editor-like dark style and Python token coloring.
+- Kept experimental SAM2 under `Advanced` rather than the default toolbar.
+
+## 1.4.1
+
+- Added experimental SAM2 integration as an optional advanced workflow.
+- Moved SAM2 access out of the default toolbar and into `Advanced`.
+- Improved dock resizing and splitter behavior on larger displays.
+- Added ROI-aware inspection and grayscale value extraction support for `Labels` and `Shapes` layers.
+
 ## 1.4.0
 
 - Introduced a new tool-registry foundation and migrated the first built-in tools to registry-backed execution.

@@ -7,19 +7,28 @@ from pathlib import Path
 
 
 DEFAULT_PROMPTS = [
-    "inspect the selected layer",
+    "what can you do with my current layers?",
     "inspect the selected layer first, then recommend the next step",
+    "what does Library do?",
+    "what is the difference between Load and Test?",
+    "compare all open images side by side in grid view",
+    "show layers in grid with spacing 0",
+    "use a built-in tool if possible; otherwise generate napari code",
+    "preview threshold first for the selected image, then explain whether I should apply it",
+    "measure the current mask",
+    "how should I ask for a tool action versus runnable code?",
+    "inspect the selected layer",
     "use layer: <layer_name>. inspect it and report its properties and recommendations",
     "apply CLAHE to the selected image with kernel_size 32, clip_limit 0.01, nbins 256",
     "preview threshold for the selected image",
-    "preview threshold first for the selected image, then explain whether I should apply it",
     "apply threshold for dim objects",
-    "measure the current mask",
-    "use a built-in tool if possible; otherwise generate napari code",
     "explain first, then give runnable napari code for the current viewer",
     "generate a synthetic image in the current viewer with chosen dimensions, bit depth, and SNR",
+    "for the selected layer, inspect it, explain the likely workflow, then choose the best built-in tool and tell me why",
+    "look at all open layers, group them by likely role, then suggest a short analysis plan before doing anything",
+    "for the current viewer, prefer built-in tools, but if none fit then generate safe napari code and explain the tradeoff",
+    "open SAM2 Setup from Advanced and explain what each field means",
     "improve my prompt first, then answer in markdown with bullets and short sections",
-    "ask clarifying questions before solving this if the request is ambiguous",
 ]
 
 DEFAULT_CODE_SNIPPETS = [
