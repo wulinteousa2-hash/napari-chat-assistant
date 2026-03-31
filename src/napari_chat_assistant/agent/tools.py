@@ -40,6 +40,7 @@ ASSISTANT_TOOL_NAMES = {
     "apply_threshold_batch",
     "measure_mask",
     "measure_mask_batch",
+    "inspect_roi_context",
     "keep_largest_component",
     "label_connected_components",
     "measure_labels_table",
@@ -49,6 +50,11 @@ ASSISTANT_TOOL_NAMES = {
     "plot_histogram",
     "project_max_intensity",
     "crop_to_layer_bbox",
+    "extract_roi_values",
+    "sam_segment_from_box",
+    "sam_segment_from_points",
+    "sam_refine_mask",
+    "sam_auto_segment",
     "compare_image_layers_ttest",
     "run_mask_op",
     "run_mask_op_batch",
@@ -150,6 +156,7 @@ def assistant_system_prompt() -> str:
         '- apply_threshold_batch: {"polarity": "auto|bright|dim"}\n'
         '- measure_mask: {"layer_name": optional string}\n'
         '- measure_mask_batch: {}\n'
+        '- inspect_roi_context: {"roi_layer": optional string}\n'
         '- keep_largest_component: {"layer_name": optional string}\n'
         '- label_connected_components: {"layer_name": optional string, "connectivity": optional int}\n'
         '- measure_labels_table: {"layer_name": optional string, "intensity_layer": optional string, "properties": optional list}\n'
@@ -159,6 +166,11 @@ def assistant_system_prompt() -> str:
         '- plot_histogram: {"layer_name": optional string, "bins": optional int}\n'
         '- project_max_intensity: {"layer_name": optional string, "axis": optional int}\n'
         '- crop_to_layer_bbox: {"source_layer": string, "reference_layer": string, "padding": optional int or list}\n'
+        '- extract_roi_values: {"image_layer": optional string, "roi_layer": optional string}\n'
+        '- sam_segment_from_box: {"image_layer": optional string, "roi_layer": optional string, "shape_index": optional int, "multimask_output": optional bool, "model_name": optional string}\n'
+        '- sam_segment_from_points: {"image_layer": optional string, "points_layer": optional string, "multimask_output": optional bool, "model_name": optional string}\n'
+        '- sam_refine_mask: {"image_layer": optional string, "mask_layer": optional string, "roi_layer": optional string, "model_name": optional string}\n'
+        '- sam_auto_segment: {"image_layer": optional string, "model_name": optional string}\n'
         '- compare_image_layers_ttest: {"layer_name_a": optional string, "layer_name_b": optional string, "equal_var": optional bool}\n'
         '- run_mask_op: {"layer_name": optional string, "op": "dilate|erode|open|close|fill_holes|remove_small|keep_largest", "radius": optional int, "min_size": optional int}\n'
         '- run_mask_op_batch: {"op": "dilate|erode|open|close|fill_holes|remove_small|keep_largest", "radius": optional int, "min_size": optional int}\n'
@@ -179,6 +191,11 @@ def assistant_system_prompt() -> str:
         "- If the user asks for thresholding, segmentation by threshold, binary mask creation, converting an image into labels, converting an image into a mask, Otsu-style thresholding, or creating a labels layer from an image, use preview_threshold or apply_threshold instead of action=code.\n"
         "- For thresholding or mask creation, use preview_threshold first unless they explicitly ask to apply.\n"
         "- If the user explicitly wants the threshold result added as a labels layer, use apply_threshold. The built-in threshold tools already create labels output layers and are preferred over generated code.\n"
+        "- If the user asks about an ROI, subregion, region of interest, labels ROI, or shapes ROI and wants to know what region is currently defined, use inspect_roi_context.\n"
+        "- If the user asks to measure or extract values from an image inside a labels ROI or shapes ROI, use extract_roi_values.\n"
+        "- If the user explicitly mentions SAM or Segment Anything, prefer the SAM segmentation tool family.\n"
+        "- If the user asks for segmentation from a box, rectangle, polygon ROI, prompt points, clicks, or mask refinement and SAM is available, prefer the corresponding SAM tool.\n"
+        "- If SAM is requested but unavailable, reply clearly that the SAM backend is not configured and suggest the closest built-in alternative.\n"
         "- If the user asks to keep only the biggest mask object or largest connected component in a labels layer, use keep_largest_component.\n"
         "- If the user asks to label components, create instance labels, or convert a binary mask into labeled objects, use label_connected_components.\n"
         "- If a profile indicates label_mask or probability_map, avoid treating that layer as a generic intensity image unless the user explicitly asks.\n"
@@ -193,7 +210,7 @@ def assistant_system_prompt() -> str:
         "- If the user asks to crop one layer to the foreground bounding box of another layer or crop to a mask bounding box, use crop_to_layer_bbox.\n"
         "- If the user asks to compare two image layers with a Student t-test or Welch t-test, use compare_image_layers_ttest when the populations are the image intensities from those layers.\n"
         "- Use action=code only when the request needs custom napari/python logic that is not covered by the built-in tools.\n"
-        "- Do not generate code for tasks already covered by built-in tools, especially threshold preview/apply, mask measurement, mask morphology, CLAHE, Gaussian denoising, connected-component labeling, measurement tables, bbox crop, max intensity projection, image histograms, intensity summaries, or built-in t-tests.\n"
+        "- Do not generate code for tasks already covered by built-in tools, especially threshold preview/apply, ROI inspection, ROI value extraction, mask measurement, mask morphology, CLAHE, Gaussian denoising, connected-component labeling, measurement tables, bbox crop, max intensity projection, SAM tool requests, image histograms, intensity summaries, or built-in t-tests.\n"
         "- Before generating custom code, classify the request as napari viewer/layer manipulation, napari overlay geometry, image statistics, matplotlib plotting, or Qt/UI work.\n"
         "- Keep napari image-space overlays separate from intensity/statistics plotting. Do not mix image coordinates with histogram or summary-statistic values.\n"
         "- Bind every derived quantity to its coordinate system before using it. Spatial overlays use image coordinates such as row/col or z/y/x. Statistics such as mean, std, median, min, max, thresholds, and histogram bins are intensity-domain values.\n"

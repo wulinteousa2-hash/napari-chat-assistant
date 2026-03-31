@@ -18,6 +18,12 @@ def test_builtin_registry_includes_workbench_scaffold_tools():
         "measure_labels_table",
         "project_max_intensity",
         "crop_to_layer_bbox",
+        "inspect_roi_context",
+        "extract_roi_values",
+        "sam_segment_from_box",
+        "sam_segment_from_points",
+        "sam_refine_mask",
+        "sam_auto_segment",
         "recommend_next_step",
         "record_workflow_step",
     }

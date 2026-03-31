@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage as ndi
+import napari
+from napari.layers import Labels, Shapes, Image, Points
 from skimage.measure import label as sk_label
 from skimage.measure import regionprops_table
+from skimage.draw import polygon
 
 from napari_chat_assistant.agent.context import find_any_layer, find_image_layer, find_labels_layer
 from napari_chat_assistant.agent.image_ops import fill_holes, keep_largest_component, remove_small_components
+from napari_chat_assistant.agent.sam2_backend import (
+    get_sam2_backend_status,
+    segment_image_from_box,
+    segment_image_from_points,
+)
 from napari_chat_assistant.agent.tool_types import ParamSpec, PreparedJob, ToolContext, ToolResult, ToolSpec
 from napari_chat_assistant.agent.tools import next_output_name, normalize_float, normalize_int
 
@@ -26,6 +34,184 @@ class PlaceholderTool:
 
     def apply(self, ctx: ToolContext, result: ToolResult) -> str:
         return result.message or f"Tool [{self.spec.name}] is not implemented yet."
+
+
+def _resolve_roi_layer(viewer, roi_layer_name: object | None = None):
+    name = str(roi_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        if isinstance(layer, (Labels, Shapes)):
+            return layer
+        return None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, (Labels, Shapes)):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        if isinstance(layer, (Labels, Shapes)):
+            return layer
+    return None
+
+
+def _labels_bbox(binary: np.ndarray) -> tuple[tuple[int, int], ...]:
+    coords = np.argwhere(binary)
+    if coords.size == 0:
+        return tuple()
+    mins = coords.min(axis=0)
+    maxs = coords.max(axis=0) + 1
+    return tuple((int(lo), int(hi)) for lo, hi in zip(mins, maxs))
+
+
+def _shape_indices(layer: Shapes) -> list[int]:
+    selected = getattr(layer, "selected_data", set()) or set()
+    if selected:
+        return sorted(int(i) for i in selected)
+    return list(range(int(getattr(layer, "nshapes", len(getattr(layer, "data", []))))))
+
+
+def _rasterize_shapes_roi(layer: Shapes, image_shape: tuple[int, ...]) -> np.ndarray:
+    if len(image_shape) != 2:
+        raise ValueError("Shapes ROI extraction currently supports 2D image layers only.")
+    mask = np.zeros(image_shape, dtype=bool)
+    indices = _shape_indices(layer)
+    shape_types = list(getattr(layer, "shape_type", []))
+    for index in indices:
+        if index >= len(layer.data):
+            continue
+        vertices = np.asarray(layer.data[index], dtype=float)
+        if vertices.ndim != 2 or vertices.shape[1] < 2 or len(vertices) < 3:
+            continue
+        shape_type = shape_types[index] if index < len(shape_types) else "polygon"
+        if str(shape_type) in {"line", "path"}:
+            continue
+        rr, cc = polygon(vertices[:, 0], vertices[:, 1], shape=image_shape)
+        mask[rr, cc] = True
+    return mask
+
+
+def _resolve_shapes_layer(viewer, roi_layer_name: object | None = None):
+    name = str(roi_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        return layer if isinstance(layer, Shapes) else None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, Shapes):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        if isinstance(layer, Shapes):
+            return layer
+    return None
+
+
+def _resolve_points_layer(viewer, points_layer_name: object | None = None):
+    name = str(points_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        return layer if isinstance(layer, Points) else None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, Points):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        if isinstance(layer, Points):
+            return layer
+    return None
+
+
+def _shape_bbox_xyxy(layer: Shapes, shape_index: int | None = None) -> tuple[tuple[float, float, float, float], int]:
+    indices = _shape_indices(layer)
+    if not indices:
+        raise ValueError(f"Shapes layer [{layer.name}] does not contain a usable ROI prompt.")
+    selected_index = int(shape_index) if shape_index is not None else indices[0]
+    if selected_index < 0 or selected_index >= len(layer.data):
+        raise ValueError(f"Shape index {selected_index} is out of range for [{layer.name}].")
+    vertices = np.asarray(layer.data[selected_index], dtype=float)
+    if vertices.ndim != 2 or vertices.shape[1] < 2 or len(vertices) < 2:
+        raise ValueError(f"Shape index {selected_index} in [{layer.name}] does not define a valid ROI.")
+    min_y = float(np.min(vertices[:, 0]))
+    max_y = float(np.max(vertices[:, 0]))
+    min_x = float(np.min(vertices[:, 1]))
+    max_x = float(np.max(vertices[:, 1]))
+    return (min_x, min_y, max_x, max_y), selected_index
+
+
+def _feature_value(layer: Points, column_name: str, row_index: int):
+    features = getattr(layer, "features", None)
+    if features is None:
+        return None
+    try:
+        column = features[column_name]
+    except Exception:
+        return None
+    try:
+        return column.iloc[row_index]
+    except Exception:
+        try:
+            return column[row_index]
+        except Exception:
+            return None
+
+
+def _coerce_point_label(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "pos", "positive", "fg", "foreground", "true"}:
+            return 1
+        if text in {"0", "neg", "negative", "bg", "background", "false"}:
+            return 0
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return 1 if bool(value) else 0
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return 1 if float(value) > 0 else 0
+    return None
+
+
+def _points_prompt_xy_and_labels(layer: Points) -> tuple[np.ndarray, np.ndarray]:
+    indices = sorted(int(i) for i in (getattr(layer, "selected_data", set()) or set()))
+    if not indices:
+        indices = list(range(len(layer.data)))
+    if not indices:
+        raise ValueError(f"Points layer [{layer.name}] does not contain any prompt points.")
+
+    coords_xy: list[list[float]] = []
+    labels: list[int] = []
+    feature_candidates = ("sam_label", "point_label", "prompt_label", "label", "is_positive", "positive")
+    for index in indices:
+        point = np.asarray(layer.data[index], dtype=float)
+        if point.shape[0] < 2:
+            continue
+        coords_xy.append([float(point[1]), float(point[0])])
+        resolved_label = None
+        for candidate in feature_candidates:
+            resolved_label = _coerce_point_label(_feature_value(layer, candidate, index))
+            if resolved_label is not None:
+                break
+        labels.append(1 if resolved_label is None else resolved_label)
+    if not coords_xy:
+        raise ValueError(f"Points layer [{layer.name}] does not contain usable 2D point prompts.")
+    return np.asarray(coords_xy, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
+
+def _roi_mask_from_layer(roi_layer, target_shape: tuple[int, ...]) -> np.ndarray:
+    if isinstance(roi_layer, Labels):
+        data = np.asarray(roi_layer.data) > 0
+        if data.shape != target_shape:
+            raise ValueError(
+                f"ROI labels shape {data.shape} does not match target image shape {target_shape}."
+            )
+        return data
+    if isinstance(roi_layer, Shapes):
+        return _rasterize_shapes_roi(roi_layer, target_shape)
+    raise ValueError("ROI layer must be a Labels or Shapes layer.")
+
+
+def _format_bbox(bbox: tuple[tuple[int, int], ...]) -> str:
+    if not bbox:
+        return "none"
+    return ", ".join(f"dim{axis}=[{lo}:{hi}]" for axis, (lo, hi) in enumerate(bbox))
 
 
 class GaussianDenoiseTool:
@@ -640,6 +826,371 @@ class CropToLayerBBoxTool:
         )
 
 
+class InspectROIContextTool:
+    spec = ToolSpec(
+        name="inspect_roi_context",
+        display_name="Inspect ROI Context",
+        category="roi",
+        description="Inspect a labels or shapes ROI layer and summarize its spatial scope.",
+        execution_mode="immediate",
+        supported_layer_types=("labels", "shapes"),
+        parameter_schema=(ParamSpec("roi_layer", "string", description="Optional ROI layer name."),),
+        output_type="message",
+        ui_metadata={"panel_group": "ROI"},
+        provenance_metadata={"algorithm": "roi_summary", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        roi_layer = _resolve_roi_layer(ctx.viewer, (arguments or {}).get("roi_layer"))
+        if roi_layer is None:
+            return "No valid ROI layer available. Select or name a Labels or Shapes layer."
+        if isinstance(roi_layer, Labels):
+            binary = np.asarray(roi_layer.data) > 0
+            bbox = _labels_bbox(binary)
+            return (
+                f"ROI layer [{roi_layer.name}] is a Labels ROI. "
+                f"ndim={binary.ndim} foreground={int(binary.sum())} bbox={_format_bbox(bbox)}."
+            )
+        indices = _shape_indices(roi_layer)
+        bbox = tuple()
+        if indices:
+            vertices = np.concatenate([np.asarray(roi_layer.data[i], dtype=float) for i in indices if i < len(roi_layer.data)], axis=0)
+            if vertices.size:
+                mins = vertices.min(axis=0)
+                maxs = vertices.max(axis=0)
+                bbox = tuple((int(np.floor(lo)), int(np.ceil(hi))) for lo, hi in zip(mins, maxs))
+        selection_text = f"selected_shapes={len(indices)}" if getattr(roi_layer, "selected_data", set()) else f"shapes={len(indices)}"
+        return (
+            f"ROI layer [{roi_layer.name}] is a Shapes ROI. "
+            f"ndim={getattr(roi_layer, 'ndim', 'n/a')} {selection_text} bbox={_format_bbox(bbox)}."
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        raise RuntimeError("Immediate tool does not execute worker jobs.")
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        return result.message
+
+
+class ExtractROIValuesTool:
+    spec = ToolSpec(
+        name="extract_roi_values",
+        display_name="Extract ROI Values",
+        category="roi",
+        description="Extract image intensity values from a labels or shapes ROI and summarize them.",
+        execution_mode="worker",
+        supported_layer_types=("image", "labels", "shapes"),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Image layer to sample.", required=False),
+            ParamSpec("roi_layer", "string", description="Labels or Shapes ROI layer.", required=False),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "ROI"},
+        provenance_metadata={"algorithm": "roi_value_summary", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for ROI value extraction."
+        if getattr(image_layer, "rgb", False):
+            return "ROI value extraction currently supports grayscale image layers, not RGB layers."
+        roi_layer = _resolve_roi_layer(ctx.viewer, args.get("roi_layer"))
+        if roi_layer is None:
+            return "No valid ROI layer available. Select or name a Labels or Shapes layer."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "roi_layer_name": roi_layer.name,
+                "roi_kind": roi_layer.__class__.__name__,
+                "image_data": np.asarray(image_layer.data).copy(),
+                "roi_data": np.asarray(getattr(roi_layer, "data", None), dtype=object if isinstance(roi_layer, Shapes) else None).copy()
+                if isinstance(roi_layer, Labels)
+                else [np.asarray(shape, dtype=float).copy() for shape in roi_layer.data],
+                "roi_shape_type": list(getattr(roi_layer, "shape_type", [])) if isinstance(roi_layer, Shapes) else None,
+                "roi_selected": sorted(int(i) for i in getattr(roi_layer, "selected_data", set())) if isinstance(roi_layer, Shapes) else None,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        image_data = np.asarray(payload["image_data"])
+        if payload["roi_kind"] == "Labels":
+            roi_layer = Labels(np.asarray(payload["roi_data"]).astype(np.int32, copy=False))
+        else:
+            roi_layer = Shapes(
+                data=list(payload["roi_data"]),
+                shape_type=payload["roi_shape_type"] or "polygon",
+            )
+            if payload["roi_selected"]:
+                roi_layer.selected_data = set(payload["roi_selected"])
+        roi_mask = _roi_mask_from_layer(roi_layer, image_data.shape)
+        if not np.any(roi_mask):
+            payload["roi_voxels"] = 0
+            payload["bbox"] = tuple()
+            payload["stats"] = {}
+            return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload)
+        values = image_data[roi_mask]
+        bbox = _labels_bbox(roi_mask)
+        payload["roi_voxels"] = int(roi_mask.sum())
+        payload["bbox"] = bbox
+        payload["stats"] = {
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values)),
+            "median": float(np.median(values)),
+            "min": float(np.min(values)),
+            "max": float(np.max(values)),
+        }
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "image_layer": payload["image_layer_name"],
+                "roi_layer": payload["roi_layer_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        if int(payload.get("roi_voxels", 0)) <= 0:
+            return (
+                f"ROI [{payload['roi_layer_name']}] did not produce any pixels/voxels inside "
+                f"[{payload['image_layer_name']}]."
+            )
+        stats = payload["stats"]
+        return (
+            f"Extracted ROI values from [{payload['image_layer_name']}] using [{payload['roi_layer_name']}]. "
+            f"roi_voxels={payload['roi_voxels']} bbox={_format_bbox(payload['bbox'])} "
+            f"mean={stats['mean']:.6g} std={stats['std']:.6g} median={stats['median']:.6g} "
+            f"min={stats['min']:.6g} max={stats['max']:.6g}."
+        )
+
+
+class SAMSegmentFromBoxTool:
+    spec = ToolSpec(
+        name="sam_segment_from_box",
+        display_name="SAM Segment From Box",
+        category="segmentation",
+        description="Run SAM2 using a Shapes ROI prompt on a 2D grayscale image.",
+        execution_mode="worker",
+        supported_layer_types=("image", "shapes"),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Target 2D grayscale image layer."),
+            ParamSpec("roi_layer", "string", description="Shapes ROI layer used as the prompt."),
+            ParamSpec("shape_index", "int", description="Optional shape index.", default=0, minimum=0),
+            ParamSpec("multimask_output", "bool", description="Reserved for future SAM2 multimask support.", default=False),
+            ParamSpec("model_name", "string", description="Optional SAM2 wrapper/model identifier."),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "sam2", "deterministic": False},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for SAM2 box segmentation."
+        if getattr(image_layer, "rgb", False):
+            return "SAM2 box segmentation currently supports grayscale 2D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 2:
+            return f"SAM2 box segmentation currently supports 2D image layers only. Got ndim={image_data.ndim}."
+        roi_layer = _resolve_shapes_layer(ctx.viewer, args.get("roi_layer"))
+        if roi_layer is None:
+            return "No valid Shapes ROI layer available for SAM2. Select or name a Shapes layer."
+        requested_shape_index = args.get("shape_index")
+        normalized_shape_index = None
+        if requested_shape_index is not None:
+            normalized_shape_index = normalize_int(
+                requested_shape_index,
+                default=0,
+                minimum=0,
+                maximum=max(0, len(getattr(roi_layer, "data", [])) - 1),
+            )
+        try:
+            box_xyxy, used_shape_index = _shape_bbox_xyxy(roi_layer, normalized_shape_index)
+        except Exception as exc:
+            return str(exc)
+
+        ready, status_message = get_sam2_backend_status()
+        if not ready:
+            return status_message
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "roi_layer_name": roi_layer.name,
+                "shape_index": used_shape_index,
+                "box_xyxy": tuple(float(value) for value in box_xyxy),
+                "output_name": next_output_name(ctx.viewer, f"{image_layer.name}_sam2"),
+                "model_name": str(args.get("model_name") or "").strip() or None,
+                "data": image_data.copy(),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        mask, backend_message = segment_image_from_box(
+            np.asarray(payload["data"]),
+            box_xyxy=tuple(float(value) for value in payload["box_xyxy"]),
+            model_name=payload.get("model_name"),
+        )
+        payload["result"] = mask
+        payload["backend_message"] = backend_message
+        payload["foreground_pixels"] = int(np.count_nonzero(mask))
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "parameters": {
+                    "shape_index": payload["shape_index"],
+                    "box_xyxy": payload["box_xyxy"],
+                    "model_name": payload.get("model_name"),
+                },
+                "input_layer": payload["image_layer_name"],
+                "roi_layer": payload["roi_layer_name"],
+                "output_layer": payload["output_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        suffix = f" {payload['backend_message']}" if payload.get("backend_message") else ""
+        return (
+            f"Segmented [{payload['image_layer_name']}] with SAM2 using [{payload['roi_layer_name']}] "
+            f"shape_index={payload['shape_index']} as [{payload['output_name']}]. "
+            f"box_xyxy={payload['box_xyxy']} foreground_pixels={payload['foreground_pixels']}.{suffix}"
+        )
+
+
+class SAMSegmentFromPointsTool:
+    spec = ToolSpec(
+        name="sam_segment_from_points",
+        display_name="SAM Segment From Points",
+        category="segmentation",
+        description="Run SAM2 using positive and negative point prompts on a 2D grayscale image.",
+        execution_mode="worker",
+        supported_layer_types=("image", "points"),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Target 2D grayscale image layer."),
+            ParamSpec("points_layer", "string", description="Points prompt layer."),
+            ParamSpec("multimask_output", "bool", description="Reserved for future SAM2 multimask support.", default=False),
+            ParamSpec("model_name", "string", description="Optional SAM2 wrapper/model identifier."),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "sam2", "deterministic": False},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for SAM2 point segmentation."
+        if getattr(image_layer, "rgb", False):
+            return "SAM2 point segmentation currently supports grayscale 2D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 2:
+            return f"SAM2 point segmentation currently supports 2D image layers only. Got ndim={image_data.ndim}."
+        points_layer = _resolve_points_layer(ctx.viewer, args.get("points_layer"))
+        if points_layer is None:
+            return "No valid Points prompt layer available for SAM2. Select or name a Points layer."
+        try:
+            point_coords_xy, point_labels = _points_prompt_xy_and_labels(points_layer)
+        except Exception as exc:
+            return str(exc)
+
+        ready, status_message = get_sam2_backend_status()
+        if not ready:
+            return status_message
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "points_layer_name": points_layer.name,
+                "output_name": next_output_name(ctx.viewer, f"{image_layer.name}_sam2_points"),
+                "model_name": str(args.get("model_name") or "").strip() or None,
+                "data": image_data.copy(),
+                "point_coords_xy": point_coords_xy,
+                "point_labels": point_labels,
+                "positive_points": int(np.count_nonzero(point_labels == 1)),
+                "negative_points": int(np.count_nonzero(point_labels == 0)),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        mask, backend_message = segment_image_from_points(
+            np.asarray(payload["data"]),
+            point_coords_xy=np.asarray(payload["point_coords_xy"], dtype=np.float32),
+            point_labels=np.asarray(payload["point_labels"], dtype=np.int32),
+            model_name=payload.get("model_name"),
+        )
+        payload["result"] = mask
+        payload["backend_message"] = backend_message
+        payload["foreground_pixels"] = int(np.count_nonzero(mask))
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "parameters": {
+                    "point_count": int(len(payload["point_labels"])),
+                    "positive_points": payload["positive_points"],
+                    "negative_points": payload["negative_points"],
+                    "model_name": payload.get("model_name"),
+                },
+                "input_layer": payload["image_layer_name"],
+                "points_layer": payload["points_layer_name"],
+                "output_layer": payload["output_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        suffix = f" {payload['backend_message']}" if payload.get("backend_message") else ""
+        return (
+            f"Segmented [{payload['image_layer_name']}] with SAM2 using [{payload['points_layer_name']}] "
+            f"positive_points={payload['positive_points']} negative_points={payload['negative_points']} "
+            f"as [{payload['output_name']}]. foreground_pixels={payload['foreground_pixels']}.{suffix}"
+        )
+
+
 def workbench_scaffold_tools():
     return [
         GaussianDenoiseTool(),
@@ -650,6 +1201,46 @@ def workbench_scaffold_tools():
         MeasureLabelsTableTool(),
         ProjectMaxIntensityTool(),
         CropToLayerBBoxTool(),
+        InspectROIContextTool(),
+        ExtractROIValuesTool(),
+        SAMSegmentFromBoxTool(),
+        SAMSegmentFromPointsTool(),
+        PlaceholderTool(
+            ToolSpec(
+                name="sam_refine_mask",
+                display_name="SAM Refine Mask",
+                category="segmentation",
+                description="Refine an existing mask using Segment Anything.",
+                execution_mode="worker",
+                supported_layer_types=("image", "labels"),
+                parameter_schema=(
+                    ParamSpec("image_layer", "string", description="Target image layer."),
+                    ParamSpec("mask_layer", "string", description="Existing mask or labels layer."),
+                    ParamSpec("roi_layer", "string", description="Optional additional ROI prompt."),
+                    ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
+                ),
+                output_type="labels_layer",
+                ui_metadata={"panel_group": "Segmentation"},
+                provenance_metadata={"algorithm": "sam", "deterministic": False},
+            )
+        ),
+        PlaceholderTool(
+            ToolSpec(
+                name="sam_auto_segment",
+                display_name="SAM Auto Segment",
+                category="segmentation",
+                description="Run automatic Segment Anything mask generation on an image.",
+                execution_mode="worker",
+                supported_layer_types=("image",),
+                parameter_schema=(
+                    ParamSpec("image_layer", "string", description="Target image layer."),
+                    ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
+                ),
+                output_type="labels_layer",
+                ui_metadata={"panel_group": "Segmentation"},
+                provenance_metadata={"algorithm": "sam", "deterministic": False},
+            )
+        ),
         PlaceholderTool(
             ToolSpec(
                 name="recommend_next_step",

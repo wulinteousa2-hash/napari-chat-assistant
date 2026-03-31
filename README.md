@@ -15,6 +15,13 @@ It is designed for local interactive work, repeatable workflows, and gradual aut
 
 The current direction is a deterministic, layer-aware assistant: the plugin profiles loaded napari layers first, then uses that structured context to guide tool choice and generated code.
 
+## What's New In 1.4.1
+
+- added experimental SAM2 integration as an optional advanced workflow
+- moved SAM2 access out of the default toolbar and into `Advanced`
+- kept the main assistant workflow clean for users who do not use SAM2
+- improved dock resizing so the assistant panel behaves better on larger displays
+
 ## Overview
 
 Current capabilities include:
@@ -24,6 +31,7 @@ Current capabilities include:
 - profile loaded layers with deterministic semantic and workflow-aware metadata
 - run built-in, registry-backed image-analysis tools from natural-language requests
 - support common microscopy workflows such as enhancement, thresholding, cleanup, measurement, projection, and cropping
+- support ROI-aware inspection and grayscale value extraction from `Labels` and `Shapes` layers
 - automate batch actions across multiple layers when the request applies to all compatible inputs
 - generate napari Python code only when no built-in tool is a better fit
 - review, copy, validate, and run assistant-generated code from the plugin UI
@@ -35,6 +43,7 @@ Current capabilities include:
 - delete selected built-in, recent, saved, or code items from the Library and clear unpinned recent history while keeping saved and pinned items
 - keep bounded session memory from approved prior turns
 - reject the last assistant outcome from session memory with a thumbs-down control
+- optionally configure and run experimental SAM2 segmentation from `Advanced`
 - optionally open ND2 conversion, spectral viewer, and spectral analysis widgets from `napari-nd2-spectral-ome-zarr`
 
 The current default model is:
@@ -86,6 +95,7 @@ The assistant currently supports built-in tools for:
 - per-object measurement table summaries for labels layers
 - max-intensity projection for 3D grayscale images
 - cropping one layer to the bounding box of another layer
+- ROI inspection and grayscale value extraction from labels or shapes regions
 - registry-backed tool execution as the foundation for future workflow and pipeline expansion
 
 Layer inspection is now backed by a deterministic profile object that includes:
@@ -115,6 +125,8 @@ Additional built-in workflow tools currently exposed through chat include:
 - `measure_labels_table`
 - `project_max_intensity`
 - `crop_to_layer_bbox`
+- `inspect_roi_context`
+- `extract_roi_values`
 
 ### Code generation workflows
 
@@ -142,6 +154,34 @@ This lets chat act as an entry point for Nikon ND2 conversion and spectral workf
 Install links:
 - GitHub: `https://github.com/wulinteousa2-hash/napari-nd2-spectral-ome-zarr`
 - napari Hub: `https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html`
+
+### Experimental SAM2 integration
+
+Version `1.4.1` adds an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
+
+Behavior:
+- SAM2 is accessed from `Advanced`, not from the main toolbar
+- `SAM2 Setup` is always available from `Advanced`
+- `SAM2 Live` stays disabled until the backend is configured and passes readiness checks
+- the rest of the assistant remains usable even if SAM2 is not configured
+
+Current setup expects:
+- a working Python environment that already includes the dependencies required by your SAM2 wrapper
+- an external SAM2 project path
+- a wrapper module exposed as `sam2_wrapper.py` or `sam2_wrapper/__init__.py`
+- `segment_image_from_box(...)` for box workflows
+- `segment_image_from_points(...)` for point workflows if you want live point prompting
+- a valid checkpoint path
+- a valid config path
+
+Typical setup flow:
+1. Start napari from the environment that contains your SAM2 dependencies.
+2. Open `Plugins -> Chat Assistant`.
+3. Open `Advanced -> SAM2 Setup`.
+4. Enter the SAM2 project path, checkpoint path, config path, and device.
+5. Click `Test`.
+6. Save the settings.
+7. Open `Advanced -> SAM2 Live` when the backend reports ready.
 
 ### Selective Session Memory
 
@@ -198,6 +238,7 @@ Core Python dependencies used by the plugin are installed with the package itsel
 
 Optional:
 - `napari-nd2-spectral-ome-zarr` for ND2 export, spectral viewer, and spectral analysis integration
+- external SAM2 project, weights, and config if you want the experimental SAM2 workflow
 
 Notes:
 - The plugin does not bundle the Ollama server or model weights.
@@ -274,6 +315,8 @@ Examples:
 - `Measure labels table for rgb_cells_2d_labels`
 - `Create a max intensity projection from em_3d_snr_mid along axis 0`
 - `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`
+- `Inspect the current ROI`
+- `Extract ROI values from em_2d_snr_mid using em_2d_mask`
 
 ### Demo Packs
 
@@ -286,7 +329,7 @@ Current demo packs include:
 - RGB cells 3D SNR sweep
 - messy masks 2D/3D
 
-These create named layers so you can test built-in tools quickly without hunting for sample data.
+These create named layers so you can test built-in tools quickly without hunting for sample data. Labels layers from the demo packs can also be used as ROIs for ROI inspection and value extraction.
 
 Example pipeline:
 1. Run the `EM 2D SNR Sweep` demo pack.
@@ -340,11 +383,14 @@ Example pipeline:
 - `Run Code`
 - `Run My Code`
 - `Copy Code`
+- `Advanced`
 - `Help`
 
 `Run Code` is for assistant-generated code that has been staged in the chat.
 
 `Run My Code` is for your own pasted Python from the Prompt box when you want to test or iterate directly inside napari without opening QtConsole.
+
+`Advanced` contains optional integrations such as experimental SAM2 setup and live preview.
 
 ### Current Context
 
@@ -377,6 +423,50 @@ The current strategy is:
 7. update session memory from explicit user feedback or successful follow-up behavior
 
 This keeps the assistant more grounded than a plain chat interface and makes common operations more reliable.
+
+## Design Direction
+
+The intended architecture is:
+
+1. natural language at the user surface
+2. registry-backed tools underneath
+3. explicit scope resolution for full-layer and ROI/subregion workflows
+
+This means users should be able to ask for operations in normal language, while the plugin resolves those requests into deterministic tool calls with structured parameters.
+
+### Tool model
+
+Registered tools are the common execution model for:
+- chat-triggered actions
+- reusable UI actions
+- future workflow and pipeline steps
+- future plugin-contributed extensions
+
+Each tool is moving toward a shared definition with:
+- stable name
+- parameter schema
+- supported layer types
+- prepare/execute/apply lifecycle
+- UI metadata
+- provenance metadata
+
+### Scope model
+
+For imaging analysis, operations may target:
+- the full layer
+- a labels mask
+- a specific labels object
+- a shapes ROI
+- a bounding-box crop
+
+Natural language can express these requests, but the plugin still needs deterministic binding rules underneath.
+
+The preferred resolution order is:
+1. explicit user binding such as `image_a using roi_shapes`
+2. current viewer selection when there is only one clear match
+3. a short clarification question when multiple bindings are plausible
+
+Session memory should remain secondary context. Current viewer state and explicit user clarification should remain the primary source of truth.
 
 ## Recommended Models
 

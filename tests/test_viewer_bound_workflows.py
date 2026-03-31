@@ -252,3 +252,93 @@ def test_crop_to_layer_bbox_adds_cropped_image_layer(make_napari_viewer_proxy):
     assert tuple(layer.scale) == (2.0, 3.0)
     assert tuple(layer.translate) == (12.0, 26.0)
     assert "Cropped [image_a] to the bounding box of [mask_a] as [image_a_crop]." in message
+
+
+def test_inspect_roi_context_reports_labels_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    mask = np.zeros((10, 10), dtype=np.uint8)
+    mask[2:6, 3:8] = 1
+    viewer.add_labels(mask, name="mask_a")
+
+    prepared = prepare_tool_job(viewer, "inspect_roi_context", {"roi_layer": "mask_a"})
+
+    assert prepared["mode"] == "immediate"
+    assert "Labels ROI" in prepared["message"]
+    assert "foreground=20" in prepared["message"]
+
+
+def test_inspect_roi_context_reports_shapes_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_shapes(
+        data=[np.array([[2, 2], [2, 7], [7, 7], [7, 2]], dtype=float)],
+        shape_type="polygon",
+        name="roi_shapes",
+    )
+
+    prepared = prepare_tool_job(viewer, "inspect_roi_context", {"roi_layer": "roi_shapes"})
+
+    assert prepared["mode"] == "immediate"
+    assert "Shapes ROI" in prepared["message"]
+
+
+def test_extract_roi_values_from_labels_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    mask = np.zeros((10, 10), dtype=np.uint8)
+    mask[2:6, 3:8] = 1
+    viewer.add_image(image, name="image_a")
+    viewer.add_labels(mask, name="mask_a")
+
+    result = run_tool_job(
+        prepare_tool_job(viewer, "extract_roi_values", {"image_layer": "image_a", "roi_layer": "mask_a"})["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "Extracted ROI values from [image_a] using [mask_a]." in message
+    assert "roi_voxels=20" in message
+    assert "mean=" in message
+
+
+def test_extract_roi_values_from_shapes_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    viewer.add_image(image, name="image_a")
+    viewer.add_shapes(
+        data=[np.array([[2, 2], [2, 7], [7, 7], [7, 2]], dtype=float)],
+        shape_type="polygon",
+        name="roi_shapes",
+    )
+
+    result = run_tool_job(
+        prepare_tool_job(viewer, "extract_roi_values", {"image_layer": "image_a", "roi_layer": "roi_shapes"})["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "Extracted ROI values from [image_a] using [roi_shapes]." in message
+    assert "roi_voxels=" in message
+
+
+def test_sam_segment_from_box_reports_missing_backend_cleanly(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.arange(100, dtype=np.float32).reshape(10, 10), name="image_a")
+    viewer.add_shapes(
+        data=[np.array([[2, 2], [2, 7], [7, 7], [7, 2]], dtype=float)],
+        shape_type="polygon",
+        name="roi_shapes",
+    )
+
+    prepared = prepare_tool_job(viewer, "sam_segment_from_box", {"image_layer": "image_a", "roi_layer": "roi_shapes"})
+
+    assert prepared["mode"] == "immediate"
+    assert "SAM2 backend is not configured." in prepared["message"]
+
+
+def test_sam_segment_from_points_reports_missing_backend_cleanly(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.arange(100, dtype=np.float32).reshape(10, 10), name="image_a")
+    viewer.add_points(np.array([[3, 3], [6, 6]], dtype=float), name="points_a")
+
+    prepared = prepare_tool_job(viewer, "sam_segment_from_points", {"image_layer": "image_a", "points_layer": "points_a"})
+
+    assert prepared["mode"] == "immediate"
+    assert "SAM2 backend is not configured." in prepared["message"]

@@ -68,6 +68,7 @@ from napari_chat_assistant.agent.prompt_library import (
     upsert_saved_code,
     upsert_saved_prompt,
 )
+from napari_chat_assistant.agent.sam2_backend import get_sam2_backend_status, sam2_config_from_ui_state
 from napari_chat_assistant.agent.session_memory import (
     add_memory_item,
     approve_items,
@@ -87,7 +88,7 @@ from napari_chat_assistant.agent.telemetry_summary import (
     read_telemetry_tail,
     summarize_telemetry_events,
 )
-from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt
+from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 
@@ -122,7 +123,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     left_panel = QWidget()
     left_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-    left_panel.setMinimumWidth(600)
+    left_panel.setMinimumWidth(360)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -320,6 +321,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
     reject_memory_btn.setEnabled(False)
     help_btn = QPushButton("Help")
     help_btn.setToolTip("Show prompt-writing tips and example instruction patterns.")
+    advanced_btn = QPushButton("Advanced")
+    advanced_btn.setToolTip("Open advanced and optional integrations.")
+    advanced_menu = QMenu(advanced_btn)
+    sam2_setup_action = advanced_menu.addAction("SAM2 Setup")
+    sam2_live_action = advanced_menu.addAction("SAM2 Live")
+    advanced_btn.setMenu(advanced_menu)
     run_code_btn = QPushButton("Run Code")
     run_my_code_btn = QPushButton("Run My Code")
     run_my_code_btn.setToolTip("Paste your own Python in the Prompt box and click to run it directly, without opening QtConsole.")
@@ -331,6 +338,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     code_btn_layout.addWidget(copy_code_btn)
     code_btn_layout.addWidget(run_my_code_btn)
     code_btn_layout.addWidget(reject_memory_btn)
+    code_btn_layout.addWidget(advanced_btn)
     code_btn_layout.addWidget(help_btn)
     transcript_layout.addWidget(code_btn_row)
 
@@ -382,9 +390,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     splitter.addWidget(left_panel)
     splitter.addWidget(right_panel)
-    splitter.setStretchFactor(0, 2)
-    splitter.setStretchFactor(1, 3)
-    splitter.setSizes([600, 600])
+    splitter.setChildrenCollapsible(False)
+    splitter.setStretchFactor(0, 45)
+    splitter.setStretchFactor(1, 55)
+
+    def clamp_splitter_ratio(value: float) -> float:
+        return min(0.7, max(0.3, float(value)))
+
+    def apply_splitter_ratio() -> None:
+        total_width = splitter.size().width()
+        if total_width <= 0:
+            total_width = max(root.size().width(), 900)
+        ratio = clamp_splitter_ratio(ui_state.get("assistant_splitter_ratio", 0.45))
+        left_width = max(left_panel.minimumWidth(), int(total_width * ratio))
+        right_width = max(1, total_width - left_width)
+        splitter.setSizes([left_width, right_width])
+
+    def remember_splitter_ratio(*_args) -> None:
+        sizes = splitter.sizes()
+        total_width = sum(sizes)
+        if total_width <= 0:
+            return
+        ui_state["assistant_splitter_ratio"] = clamp_splitter_ratio(sizes[0] / total_width)
+        save_ui_state(ui_state)
+
+    splitter.splitterMoved.connect(remember_splitter_ratio)
+    QTimer.singleShot(0, apply_splitter_ratio)
 
     saved_settings = {
         "provider": "Local (Ollama-style)",
@@ -821,7 +852,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- `Keep only the largest connected component in mask_messy_2d`\n"
             "- `Measure labels table for rgb_cells_2d_labels`\n"
             "- `Create a max intensity projection from em_3d_snr_mid along axis 0`\n"
-            "- `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`\n\n"
+            "- `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`\n"
+            "- `Inspect the current ROI`\n"
+            "- `Extract ROI values from em_2d_snr_mid using em_2d_mask`\n\n"
+            "**ROI Support**\n"
+            "- Labels and Shapes layers can be used as regions of interest.\n"
+            "- You can inspect ROI context or extract grayscale image values inside an ROI.\n"
+            "- Example: `Extract ROI values from image_a using roi_shapes`\n\n"
             "**Demo Data**\n"
             "- Use the Library `Code` tab to load built-in demo packs for testing.\n"
             "- Available demo packs include EM 2D/3D SNR sweeps, RGB cells 2D/3D SNR sweeps, and messy masks 2D/3D.\n"
@@ -1313,6 +1350,373 @@ def chat_widget(napari_viewer=None) -> QWidget:
         )
         append_log(f"Opened Ollama setup help. Suggested terminal command: {command}")
         set_status("Status: Ollama setup help shown", ok=None)
+
+    def show_sam2_setup_dialog(*_args):
+        dialog = QDialog(root)
+        dialog.setWindowTitle("SAM2 Setup")
+        dialog.resize(760, 360)
+        dialog_layout = QVBoxLayout(dialog)
+
+        hint = QLabel(
+            "Configure the external SAM2 wrapper used by the built-in SAM2 tools. "
+            "The external project should expose `sam2_wrapper.py` with `segment_image_from_box(...)`."
+        )
+        hint.setWordWrap(True)
+        dialog_layout.addWidget(hint)
+
+        form = QFormLayout()
+        project_path_edit = QLineEdit(str(ui_state.get("sam2_project_path", "")))
+        checkpoint_path_edit = QLineEdit(str(ui_state.get("sam2_checkpoint_path", "")))
+        config_path_edit = QLineEdit(str(ui_state.get("sam2_config_path", "")))
+        device_combo = QComboBox()
+        device_combo.setEditable(True)
+        device_combo.addItems(["cuda", "cpu"])
+        device_combo.setCurrentText(str(ui_state.get("sam2_device", "cuda")))
+        form.addRow("Project Path:", project_path_edit)
+        form.addRow("Checkpoint:", checkpoint_path_edit)
+        form.addRow("Config:", config_path_edit)
+        form.addRow("Device:", device_combo)
+        dialog_layout.addLayout(form)
+
+        status_label = QLabel()
+        status_label.setWordWrap(True)
+        status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
+        dialog_layout.addWidget(status_label)
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        save_dialog_btn = QPushButton("Save")
+        test_dialog_btn = QPushButton("Test")
+        close_dialog_btn = QPushButton("Close")
+        button_layout.addWidget(save_dialog_btn)
+        button_layout.addWidget(test_dialog_btn)
+        button_layout.addWidget(close_dialog_btn)
+        dialog_layout.addWidget(button_row)
+
+        def refresh_status():
+            config = sam2_config_from_ui_state(
+                {
+                    **ui_state,
+                    "sam2_project_path": project_path_edit.text().strip(),
+                    "sam2_checkpoint_path": checkpoint_path_edit.text().strip(),
+                    "sam2_config_path": config_path_edit.text().strip(),
+                    "sam2_device": device_combo.currentText().strip(),
+                }
+            )
+            ok, message = get_sam2_backend_status(config)
+            status_label.setText(message)
+            status_label.setStyleSheet(
+                "QLabel { background: #17341f; color: #e6ffed; padding: 8px; }"
+                if ok
+                else "QLabel { background: #3a1f1f; color: #ffe4e6; padding: 8px; }"
+            )
+            return ok, message
+
+        def save_sam2_settings():
+            ui_state["sam2_project_path"] = project_path_edit.text().strip()
+            ui_state["sam2_checkpoint_path"] = checkpoint_path_edit.text().strip()
+            ui_state["sam2_config_path"] = config_path_edit.text().strip()
+            ui_state["sam2_device"] = device_combo.currentText().strip() or "cuda"
+            save_ui_state(ui_state)
+            ok, _message = refresh_status()
+            refresh_sam2_actions()
+            append_log("Saved SAM2 settings.")
+            set_status("Status: SAM2 settings saved", ok=ok if ok else None)
+
+        def test_sam2_settings():
+            ok, message = refresh_status()
+            append_chat_message("assistant", message)
+            append_log("Tested SAM2 backend configuration.")
+            set_status("Status: SAM2 backend ready" if ok else "Status: SAM2 backend not ready", ok=ok)
+
+        save_dialog_btn.clicked.connect(save_sam2_settings)
+        test_dialog_btn.clicked.connect(test_sam2_settings)
+        close_dialog_btn.clicked.connect(dialog.accept)
+        refresh_status()
+        append_log("Opened SAM2 setup dialog.")
+        set_status("Status: SAM2 setup opened", ok=None)
+        dialog.exec_()
+
+    def refresh_sam2_actions():
+        ok, message = get_sam2_backend_status()
+        sam2_live_action.setEnabled(ok)
+        advanced_btn.setToolTip(
+            "Open advanced and optional integrations."
+            if ok
+            else f"Open advanced and optional integrations. {message}"
+        )
+
+    def show_sam2_live_dialog(*_args):
+        dialog = QDialog(root)
+        dialog.setWindowTitle("SAM2 Live")
+        dialog.resize(760, 420)
+        dialog_layout = QVBoxLayout(dialog)
+
+        hint = QLabel(
+            "Live SAM2 preview for 2D grayscale images. Use a Shapes layer for Box mode or a Points layer for Points mode. "
+            "Turn on Auto-update to refresh the preview while editing prompts."
+        )
+        hint.setWordWrap(True)
+        dialog_layout.addWidget(hint)
+
+        form = QFormLayout()
+        image_combo = QComboBox()
+        mode_combo = QComboBox()
+        mode_combo.addItems(["Box", "Points"])
+        prompt_layer_combo = QComboBox()
+        auto_update_check = QCheckBox("Auto-update")
+        auto_update_check.setChecked(True)
+        form.addRow("Image:", image_combo)
+        form.addRow("Mode:", mode_combo)
+        form.addRow("Prompt Layer:", prompt_layer_combo)
+        form.addRow("", auto_update_check)
+        dialog_layout.addLayout(form)
+
+        status_label = QLabel("SAM2 Live is ready.")
+        status_label.setWordWrap(True)
+        status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
+        dialog_layout.addWidget(status_label)
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        preview_btn = QPushButton("Run Preview")
+        apply_btn = QPushButton("Apply")
+        clear_btn = QPushButton("Clear Preview")
+        close_btn = QPushButton("Close")
+        button_layout.addWidget(preview_btn)
+        button_layout.addWidget(apply_btn)
+        button_layout.addWidget(clear_btn)
+        button_layout.addWidget(close_btn)
+        dialog_layout.addWidget(button_row)
+
+        preview_layer_name = "__sam2_preview__"
+        live_state = {
+            "request_id": 0,
+            "busy": False,
+            "rerun": False,
+            "last_payload": None,
+            "connections": [],
+        }
+        debounce_timer = QTimer(dialog)
+        debounce_timer.setSingleShot(True)
+        debounce_timer.setInterval(250)
+
+        def set_live_status(message: str, *, ok: bool | None = None):
+            status_label.setText(message)
+            if ok is True:
+                status_label.setStyleSheet("QLabel { background: #17341f; color: #e6ffed; padding: 8px; }")
+            elif ok is False:
+                status_label.setStyleSheet("QLabel { background: #3a1f1f; color: #ffe4e6; padding: 8px; }")
+            else:
+                status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
+
+        def current_prompt_tool_name() -> str:
+            return "sam_segment_from_box" if mode_combo.currentText().strip() == "Box" else "sam_segment_from_points"
+
+        def image_layer_names_2d() -> list[str]:
+            names = []
+            for layer in viewer.layers if viewer is not None else []:
+                if isinstance(layer, napari.layers.Image) and not getattr(layer, "rgb", False):
+                    data = np.asarray(layer.data)
+                    if data.ndim == 2:
+                        names.append(layer.name)
+            return names
+
+        def prompt_layer_names_for_mode() -> list[str]:
+            mode = mode_combo.currentText().strip()
+            names = []
+            for layer in viewer.layers if viewer is not None else []:
+                if mode == "Box" and isinstance(layer, napari.layers.Shapes):
+                    names.append(layer.name)
+                if mode == "Points" and isinstance(layer, napari.layers.Points):
+                    names.append(layer.name)
+            return names
+
+        def clear_event_connections():
+            for emitter, callback in live_state["connections"]:
+                try:
+                    emitter.disconnect(callback)
+                except Exception:
+                    pass
+            live_state["connections"] = []
+
+        def _connect_if_present(layer, event_name: str, callback):
+            events = getattr(layer, "events", None)
+            emitter = getattr(events, event_name, None) if events is not None else None
+            if emitter is None:
+                return
+            try:
+                emitter.connect(callback)
+                live_state["connections"].append((emitter, callback))
+            except Exception:
+                pass
+
+        def schedule_preview(*_args):
+            if auto_update_check.isChecked():
+                debounce_timer.start()
+
+        def refresh_prompt_watchers():
+            clear_event_connections()
+            image_name = image_combo.currentText().strip()
+            prompt_name = prompt_layer_combo.currentText().strip()
+            image_layer = viewer.layers[image_name] if viewer is not None and image_name in viewer.layers else None
+            prompt_layer = viewer.layers[prompt_name] if viewer is not None and prompt_name in viewer.layers else None
+            if image_layer is not None:
+                _connect_if_present(image_layer, "data", schedule_preview)
+            if prompt_layer is not None:
+                _connect_if_present(prompt_layer, "data", schedule_preview)
+                _connect_if_present(prompt_layer, "features", schedule_preview)
+
+        def refresh_live_controls(*_args):
+            current_image = image_combo.currentText().strip()
+            image_names = image_layer_names_2d()
+            image_combo.blockSignals(True)
+            image_combo.clear()
+            image_combo.addItems(image_names)
+            if current_image in image_names:
+                image_combo.setCurrentText(current_image)
+            image_combo.blockSignals(False)
+
+            current_prompt = prompt_layer_combo.currentText().strip()
+            prompt_names = prompt_layer_names_for_mode()
+            prompt_layer_combo.blockSignals(True)
+            prompt_layer_combo.clear()
+            prompt_layer_combo.addItems(prompt_names)
+            if current_prompt in prompt_names:
+                prompt_layer_combo.setCurrentText(current_prompt)
+            prompt_layer_combo.blockSignals(False)
+            refresh_prompt_watchers()
+
+        def upsert_preview_layer(mask: np.ndarray, *, image_name: str, scale, translate):
+            if viewer is None:
+                return
+            if preview_layer_name in viewer.layers:
+                layer = viewer.layers[preview_layer_name]
+                if isinstance(layer, napari.layers.Labels):
+                    layer.data = np.asarray(mask, dtype=np.int32)
+                    layer.scale = scale
+                    layer.translate = translate
+                    return
+            viewer.add_labels(np.asarray(mask, dtype=np.int32), name=preview_layer_name, scale=scale, translate=translate)
+
+        def run_live_preview(*_args):
+            if viewer is None:
+                return
+            image_name = image_combo.currentText().strip()
+            prompt_name = prompt_layer_combo.currentText().strip()
+            if not image_name or not prompt_name:
+                set_live_status("Select both an image layer and a prompt layer.", ok=False)
+                return
+            tool_name = current_prompt_tool_name()
+            arguments = {"image_layer": image_name}
+            if tool_name == "sam_segment_from_box":
+                arguments["roi_layer"] = prompt_name
+            else:
+                arguments["points_layer"] = prompt_name
+            prepared = prepare_tool_job(viewer, tool_name, arguments)
+            if prepared.get("mode") == "immediate":
+                set_live_status(str(prepared.get("message", "")), ok=False)
+                return
+            if live_state["busy"]:
+                live_state["rerun"] = True
+                return
+            live_state["busy"] = True
+            live_state["request_id"] += 1
+            request_id = int(live_state["request_id"])
+            set_live_status(f"Running live preview with {tool_name}...", ok=None)
+
+            @thread_worker(ignore_errors=True)
+            def run_live_job():
+                return run_tool_job(prepared["job"])
+
+            worker = run_live_job()
+            active_workers.append(worker)
+
+            def finish_live_job():
+                if worker in active_workers:
+                    active_workers.remove(worker)
+                live_state["busy"] = False
+                if live_state["rerun"]:
+                    live_state["rerun"] = False
+                    run_live_preview()
+
+            def on_returned(result):
+                if request_id != live_state["request_id"]:
+                    finish_live_job()
+                    return
+                payload = result.get("result") if isinstance(result, dict) else None
+                if not isinstance(payload, np.ndarray):
+                    payload = np.asarray(result.get("result")) if isinstance(result, dict) and result.get("result") is not None else None
+                if payload is None:
+                    set_live_status("SAM2 live preview returned no preview mask.", ok=False)
+                    finish_live_job()
+                    return
+                scale = tuple(result.get("scale", (1.0, 1.0)))
+                translate = tuple(result.get("translate", (0.0, 0.0)))
+                upsert_preview_layer(payload, image_name=image_name, scale=scale, translate=translate)
+                live_state["last_payload"] = {"mask": np.asarray(payload, dtype=np.int32).copy(), "image_name": image_name, "scale": scale, "translate": translate}
+                backend_message = str(result.get("backend_message") or "").strip()
+                set_live_status(
+                    f"SAM2 live preview updated for [{image_name}] using [{prompt_name}]."
+                    + (f" {backend_message}" if backend_message else ""),
+                    ok=True,
+                )
+                finish_live_job()
+
+            def on_error(*args):
+                error_text = format_worker_error(*args)
+                set_live_status(f"SAM2 live preview failed: {error_text}", ok=False)
+                finish_live_job()
+
+            worker.returned.connect(on_returned)
+            worker.errored.connect(on_error)
+            worker.start()
+
+        def apply_live_preview(*_args):
+            payload = live_state.get("last_payload")
+            if not payload:
+                set_live_status("Run a live preview first before applying a labels layer.", ok=False)
+                return
+            image_name = str(payload["image_name"])
+            output_name = next_output_name(viewer, f"{image_name}_sam2_live")
+            viewer.add_labels(
+                np.asarray(payload["mask"], dtype=np.int32).copy(),
+                name=output_name,
+                scale=payload["scale"],
+                translate=payload["translate"],
+            )
+            set_live_status(f"Applied SAM2 live preview as [{output_name}].", ok=True)
+            append_log(f"Applied SAM2 live preview as {output_name}.")
+            refresh_context()
+
+        def clear_live_preview(*_args):
+            live_state["last_payload"] = None
+            if viewer is not None and preview_layer_name in viewer.layers:
+                try:
+                    viewer.layers.remove(viewer.layers[preview_layer_name])
+                except Exception:
+                    pass
+            set_live_status("Cleared SAM2 live preview.", ok=None)
+            refresh_context()
+
+        def cleanup_live_dialog():
+            clear_event_connections()
+            debounce_timer.stop()
+
+        debounce_timer.timeout.connect(run_live_preview)
+        preview_btn.clicked.connect(run_live_preview)
+        apply_btn.clicked.connect(apply_live_preview)
+        clear_btn.clicked.connect(clear_live_preview)
+        close_btn.clicked.connect(dialog.accept)
+        image_combo.currentTextChanged.connect(refresh_prompt_watchers)
+        prompt_layer_combo.currentTextChanged.connect(refresh_prompt_watchers)
+        mode_combo.currentTextChanged.connect(refresh_live_controls)
+        auto_update_check.toggled.connect(lambda checked: set_live_status("Auto-update enabled." if checked else "Auto-update disabled.", ok=None))
+        dialog.finished.connect(lambda *_args: cleanup_live_dialog())
+        refresh_live_controls()
+        append_log("Opened SAM2 live dialog.")
+        set_status("Status: SAM2 live opened", ok=None)
+        dialog.exec_()
 
     def unload_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
@@ -2071,6 +2475,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_my_code_btn.clicked.connect(run_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
     reject_memory_btn.clicked.connect(reject_last_memory)
+    sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
+    sam2_live_action.triggered.connect(show_sam2_live_dialog)
     help_btn.clicked.connect(show_help_tips)
     telemetry_summary_btn.clicked.connect(show_telemetry_summary)
     telemetry_view_btn.clicked.connect(show_telemetry_viewer)
@@ -2101,6 +2507,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     refresh_context()
     set_pending_code()
     refresh_models()
+    refresh_sam2_actions()
     refresh_prompt_library()
     append_log(f"Assistant log: {APP_LOG_PATH}")
     append_log(f"Crash log: {CRASH_LOG_PATH}")
