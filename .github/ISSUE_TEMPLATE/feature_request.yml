@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a workflow improvement, tool, or UI enhancement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please describe the user workflow, not just the implementation idea.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow gap
+      description: What user problem are you trying to solve?
+      placeholder: Describe the imaging workflow or repeated task that is missing or painful today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like the plugin to do?
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Real use case
+      description: Who would use this and in what context?
+      placeholder: Imaging core facility, teaching demo, microscopy analysis, ROI workflow, ...
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Describe any workaround or alternative you currently use.
+  - type: input
+    id: model
+    attributes:
+      label: Related model tag
+      description: Optional. If this request is model-specific, note the model tag.
+      placeholder: gpt-oss:120b, qwen3-coder-next:latest, ...

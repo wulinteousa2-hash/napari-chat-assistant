@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Usage and workflow questions
+    url: https://github.com/wulinteousa2-hash/napari-chat-assistant/issues
+    about: Use issues for now for workflow questions, bug reports, and feature requests until GitHub Discussions is enabled.
