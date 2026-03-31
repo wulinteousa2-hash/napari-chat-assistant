@@ -15,7 +15,7 @@ The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn nap
 
 This plugin is built for:
 - imaging core facility users
-- researchers and staff scientists
+- researchers, staff scientists, and students working with imaging data
 - teachers and educators running imaging demos or training sessions
 - users who already work in napari and want help with code, automation, ROI-driven analysis, and repeatable workflows
 
