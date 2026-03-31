@@ -44,6 +44,9 @@ test = [
   "pytest-cov",
 ]
 
+[project.scripts]
+napari-chat-assistant-telemetry-report = "napari_chat_assistant.agent.telemetry_report:main"
+
 [project.entry-points."napari.manifest"]
 napari-chat-assistant = "napari_chat_assistant:napari.yaml"
 
