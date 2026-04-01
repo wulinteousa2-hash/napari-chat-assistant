@@ -70,6 +70,14 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
+## What's New In 1.5.0
+
+- added a built-in `Templates` tab with a category tree, preview pane, load action, and double-click run through `Run My Code`
+- organized starter code around a napari workbench model with categories for `Data`, `Inspect`, `Process`, `Segment`, `Measure`, `Visualize`, `Compare`, `Workbench`, and `Background Jobs`
+- moved built-in demo packs into `Templates > Data` so users can browse and launch test datasets from the new library
+- added plugin-native starter templates designed for `viewer`, `selected_layer`, and `run_in_background(...)`
+- added a `Line Profile Gaussian Fit` measurement template for profile extraction, Gaussian fitting, and FWHM readout
+
 ## What's New In 1.4.7
 
 - clarified workflow wording so the README does not imply the current text-only assistant directly sees image pixels
@@ -347,7 +355,7 @@ Install links:
 
 ### Experimental SAM2 integration
 
-Version `1.4.7` keeps the 1.4.6 feature set and adds a small README wording correction so the current text-only assistant is described accurately as working from the viewer session rather than direct image vision.
+Version `1.5.0` adds a new built-in `Templates` workbench library with categorized starter code, integrated demo data generators, and plugin-native examples meant to be loaded, refined with chat, and run directly inside napari.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar

@@ -33,6 +33,8 @@ from qtpy.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -95,6 +97,7 @@ from napari_chat_assistant.agent.session_memory import (
     set_active_dataset_focus,
     update_session_goal,
 )
+from napari_chat_assistant.agent.template_library import template_library_payload
 from napari_chat_assistant.agent.telemetry_summary import (
     format_telemetry_summary,
     load_telemetry_events,
@@ -234,8 +237,39 @@ def chat_widget(napari_viewer=None) -> QWidget:
         prompt_library_font.setPointSize(prompt_library_font.pointSize() + 1)
         prompt_library_list.setFont(prompt_library_font)
         code_library_list.setFont(prompt_library_font)
+    template_tab = QWidget()
+    template_tab_layout = QVBoxLayout(template_tab)
+    template_tab_layout.setContentsMargins(0, 0, 0, 0)
+    template_splitter = QSplitter(Qt.Horizontal)
+    template_tree = QTreeWidget()
+    template_tree.setHeaderHidden(True)
+    template_tree.setMinimumWidth(180)
+    template_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    template_tree.setStyleSheet("QTreeWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
+    template_preview = QTextEdit()
+    template_preview.setReadOnly(True)
+    template_preview.setAcceptRichText(False)
+    template_preview.setPlaceholderText("Select a template to preview its description and code.")
+    template_preview.setStyleSheet(
+        "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 10px; }"
+    )
+    template_splitter.addWidget(template_tree)
+    template_splitter.addWidget(template_preview)
+    template_splitter.setStretchFactor(0, 0)
+    template_splitter.setStretchFactor(1, 1)
+    template_tab_layout.addWidget(template_splitter, 1)
+    template_btn_row = QWidget()
+    template_btn_layout = QHBoxLayout(template_btn_row)
+    template_load_btn = QPushButton("Load Template")
+    template_load_btn.setToolTip("Load the selected built-in template into the Prompt box for refinement.")
+    template_run_btn = QPushButton("Run Template")
+    template_run_btn.setToolTip("Load the selected built-in template and run it immediately with Run My Code.")
+    template_btn_layout.addWidget(template_load_btn)
+    template_btn_layout.addWidget(template_run_btn)
+    template_tab_layout.addWidget(template_btn_row)
     library_tabs.addTab(prompt_library_list, "Prompts")
     library_tabs.addTab(code_library_list, "Code")
+    library_tabs.addTab(template_tab, "Templates")
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
     save_prompt_btn = QPushButton("Save")
@@ -451,6 +485,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     session_memory_state = load_session_memory()
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
+    template_library_state = template_library_payload()
     generation_defaults = {
         "temperature": 1.0,
         "top_k": 20,
@@ -985,15 +1020,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_last_memory_candidates([])
 
     def current_library_kind() -> str:
-        return "code" if library_tabs.currentWidget() is code_library_list else "prompt"
+        current_widget = library_tabs.currentWidget()
+        if current_widget is code_library_list:
+            return "code"
+        if current_widget is template_tab:
+            return "template"
+        return "prompt"
 
     def current_library_list() -> QListWidget:
         return code_library_list if current_library_kind() == "code" else prompt_library_list
 
     def current_library_item_name() -> str:
+        if current_library_kind() == "template":
+            return "template"
         return "code snippet" if current_library_kind() == "code" else "prompt"
 
     def selected_library_records() -> list[dict]:
+        if current_library_kind() == "template":
+            item = template_tree.currentItem()
+            if item is None:
+                return []
+            record = item.data(0, Qt.UserRole)
+            return [record] if isinstance(record, dict) and record.get("code") else []
         records: list[dict] = []
         for item in current_library_list().selectedItems():
             record = item.data(Qt.UserRole)
@@ -1171,6 +1219,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         model_combo.blockSignals(False)
 
     def refresh_library_controls():
+        if current_library_kind() == "template":
+            save_prompt_btn.setText("Save")
+            pin_prompt_btn.setText("Pin")
+            delete_prompt_btn.setText("Delete")
+            clear_prompt_btn.setText("Clear")
+            save_prompt_btn.setEnabled(False)
+            pin_prompt_btn.setEnabled(False)
+            delete_prompt_btn.setEnabled(False)
+            clear_prompt_btn.setEnabled(False)
+            prompt_library_hint.setText(
+                "Click a template to preview it. Double-click to run it with Run My Code."
+            )
+            template_selected = current_template_record() is not None
+            template_load_btn.setEnabled(template_selected)
+            template_run_btn.setEnabled(template_selected)
+            return
+        template_load_btn.setEnabled(False)
+        template_run_btn.setEnabled(False)
+        save_prompt_btn.setEnabled(True)
+        pin_prompt_btn.setEnabled(True)
+        delete_prompt_btn.setEnabled(True)
+        clear_prompt_btn.setEnabled(True)
         if current_library_kind() == "code":
             save_prompt_btn.setText("Save")
             pin_prompt_btn.setText("Pin")
@@ -1213,7 +1283,134 @@ def chat_widget(napari_viewer=None) -> QWidget:
             item.setData(Qt.UserRole, record)
             item.setForeground(QColor(color))
             code_library_list.addItem(item)
+        template_tree.clear()
+        categories = [str(name).strip() for name in template_library_state.get("categories", []) if str(name).strip()]
+        category_lookup: dict[str, QTreeWidgetItem] = {}
+        for category in categories:
+            category_item = QTreeWidgetItem([category])
+            category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
+            category_item.setFirstColumnSpanned(True)
+            category_lookup[category] = category_item
+            template_tree.addTopLevelItem(category_item)
+        for record in template_library_state.get("templates", []):
+            if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+                continue
+            category = str(record.get("category", "Templates")).strip() or "Templates"
+            parent = category_lookup.get(category)
+            if parent is None:
+                parent = QTreeWidgetItem([category])
+                parent.setFlags(parent.flags() & ~Qt.ItemIsSelectable)
+                parent.setFirstColumnSpanned(True)
+                category_lookup[category] = parent
+                template_tree.addTopLevelItem(parent)
+            child = QTreeWidgetItem([str(record.get("title", "Untitled Template")).strip() or "Untitled Template"])
+            child.setData(0, Qt.UserRole, record)
+            parent.addChild(child)
+        for index in range(template_tree.topLevelItemCount()):
+            template_tree.topLevelItem(index).setExpanded(True)
+        template_tree.setCurrentItem(None)
+        template_preview.clear()
         refresh_library_controls()
+
+    def current_template_record() -> dict | None:
+        item = template_tree.currentItem()
+        if item is None:
+            return None
+        record = item.data(0, Qt.UserRole)
+        return record if isinstance(record, dict) and str(record.get("code", "")).strip() else None
+
+    def template_preview_text(record: dict) -> str:
+        title = str(record.get("title", "")).strip() or "Untitled Template"
+        category = str(record.get("category", "")).strip() or "Templates"
+        description = str(record.get("description", "")).strip()
+        tags = [str(tag).strip() for tag in record.get("tags", []) if str(tag).strip()]
+        best_for = str(record.get("best_for", "")).strip()
+        followup = str(record.get("suggested_followup", "")).strip()
+        runtime = record.get("runtime", {})
+        runtime_flags: list[str] = []
+        if isinstance(runtime, dict):
+            if runtime.get("uses_viewer"):
+                runtime_flags.append("Viewer")
+            if runtime.get("uses_selected_layer"):
+                runtime_flags.append("Selected Layer")
+            if runtime.get("uses_run_in_background"):
+                runtime_flags.append("Background")
+        lines = [f"Template: {title}", f"Category: {category}"]
+        if tags:
+            lines.append(f"Tags: {', '.join(tags)}")
+        if runtime_flags:
+            lines.append(f"Runtime: {', '.join(runtime_flags)}")
+        if description:
+            lines.extend(["", description])
+        if best_for:
+            lines.extend(["", f"Best for: {best_for}"])
+        if followup:
+            lines.extend(["", f"Suggested follow-up: {followup}"])
+        lines.extend(
+            [
+                "",
+                "This template is designed to run inside the Chat Assistant plugin runtime in napari.",
+                "It may use viewer, selected_layer, and run_in_background(...).",
+                "",
+                "Code:",
+                str(record.get("code", "")).rstrip(),
+            ]
+        )
+        return "\n".join(lines).strip()
+
+    def show_template_preview(item: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None = None):
+        del _previous
+        if item is None:
+            template_preview.clear()
+            refresh_library_controls()
+            return
+        record = item.data(0, Qt.UserRole)
+        if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+            template_preview.clear()
+            refresh_library_controls()
+            return
+        template_preview.setPlainText(template_preview_text(record))
+        refresh_library_controls()
+
+    def load_template_record(record: dict | None, *, run_now: bool = False):
+        if not isinstance(record, dict):
+            set_status("Status: no template selected", ok=False)
+            append_log("Template load skipped: no template record selected.")
+            return
+        code_text = str(record.get("code", ""))
+        if not code_text.strip():
+            set_status("Status: selected template is empty", ok=False)
+            append_log("Template load skipped: selected template is empty.")
+            return
+        prompt.setPlainText(code_text)
+        prompt.setFocus()
+        append_log(f"Loaded template: {record.get('title', 'Untitled Template')}")
+        set_status("Status: template loaded", ok=None)
+        if run_now:
+            run_prompt_code()
+
+    def load_selected_template(*_args):
+        record = current_template_record()
+        if record is None:
+            set_status("Status: no template selected", ok=False)
+            append_log("Load template skipped: no selection.")
+            return
+        load_template_record(record)
+
+    def run_selected_template(*_args):
+        record = current_template_record()
+        if record is None:
+            set_status("Status: no template selected", ok=False)
+            append_log("Run template skipped: no selection.")
+            return
+        load_template_record(record, run_now=True)
+
+    def run_template_tree_item(item: QTreeWidgetItem, _column: int):
+        del _column
+        record = item.data(0, Qt.UserRole)
+        if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+            return
+        load_template_record(record, run_now=True)
 
     def persist_prompt_library():
         save_prompt_library(prompt_library_state)
@@ -3432,6 +3629,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
     code_library_list.itemClicked.connect(load_library_code)
     code_library_list.itemDoubleClicked.connect(run_library_code)
     code_library_list.customContextMenuRequested.connect(show_library_context_menu)
+    template_tree.currentItemChanged.connect(show_template_preview)
+    template_tree.itemDoubleClicked.connect(run_template_tree_item)
+    template_load_btn.clicked.connect(load_selected_template)
+    template_run_btn.clicked.connect(run_selected_template)
     save_prompt_btn.clicked.connect(save_current_prompt)
     pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
     delete_prompt_btn.clicked.connect(delete_selected_prompt)

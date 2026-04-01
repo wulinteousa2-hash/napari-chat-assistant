@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.5.0
+
+- Added a new built-in `Templates` tab with a category tree, read-only preview, `Load Template`, and double-click-to-run behavior through `Run My Code`.
+- Organized starter templates around a broader napari workbench model with categories for `Data`, `Inspect`, `Process`, `Segment`, `Measure`, `Visualize`, `Compare`, `Workbench`, and `Background Jobs`.
+- Added plugin-native starter code designed for this runtime, including templates that use `viewer`, `selected_layer`, and `run_in_background(...)` where appropriate.
+- Brought the built-in demo packs into `Templates > Data` so users can browse and launch EM, RGB cell, and messy-mask demo generators from the new template library.
+- Added a measurement-focused `Line Profile Gaussian Fit` template that generates synthetic data, adds a line ROI, fits a Gaussian profile, and reports quantitative outputs such as sigma and FWHM.
+
 ## 1.4.7
 
 - Clarified README workflow wording so it no longer implies the text-only assistant directly sees image pixels, and instead describes work starting from the data already open in the napari viewer.

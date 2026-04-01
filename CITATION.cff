@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use napari-chat-assistant in research, please cite this software."
 title: "napari-chat-assistant"
-version: "1.4.7"
+version: "1.5.0"
 date-released: "2026-04-01"
 type: software
 license: MIT
