@@ -30,7 +30,7 @@ It is especially useful when you:
 This plugin comes out of long practical imaging experience rather than a generic "chat in a sidebar" idea.
 
 It is designed around how imaging work actually happens:
-- look at the data first
+- start from the data already open in the viewer
 - identify objects or regions of interest in the viewer
 - ask for the next analysis step in plain language
 - inspect the result
@@ -69,6 +69,11 @@ The assistant runs on local open-weight models through Ollama:
 - no image data leaves your workstation
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
+
+## What's New In 1.4.7
+
+- clarified workflow wording so the README does not imply the current text-only assistant directly sees image pixels
+- kept the description grounded in the live napari viewer state and loaded data
 
 ## What's New In 1.4.6
 
@@ -342,7 +347,7 @@ Install links:
 
 ### Experimental SAM2 integration
 
-Version `1.4.6` expands the experimental SAM2 path with bundled-adapter support, easier setup, and better live prompting for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
+Version `1.4.7` keeps the 1.4.6 feature set and adds a small README wording correction so the current text-only assistant is described accurately as working from the viewer session rather than direct image vision.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar

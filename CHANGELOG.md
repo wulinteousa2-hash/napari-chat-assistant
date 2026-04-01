@@ -2,6 +2,10 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.4.7
+
+- Clarified README workflow wording so it no longer implies the text-only assistant directly sees image pixels, and instead describes work starting from the data already open in the napari viewer.
+
 ## 1.4.6
 
 - Expanded SAM2 into the main release focus with bundled adapter support, setup auto-detect, checkpoint/config discovery, a live-model selector, and a more practical SAM2-managed points workflow for preview and propagation inside napari.
