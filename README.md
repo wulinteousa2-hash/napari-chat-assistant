@@ -70,14 +70,13 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.4.5
+## What's New In 1.4.6
 
-- improved prompt routing for compound imaging workflows and added a local-first path for axon-interior extraction
-- strengthened napari code validation to block invented layer attributes such as `.type` and `._type`
-- preserved saved code formatting better in `Run My Code` and the local library
-- expanded experimental SAM2 live work with better session handling, progress feedback, and a simpler points workflow
-- kept experimental SAM2 under `Advanced` rather than the default toolbar
-- kept the clearer `Load`, `Unload`, `Test`, `Setup` model flow and improved status wording
+- expanded SAM2 as the main focus of this release with bundled adapter support, setup auto-detect, checkpoint/config discovery, and live model selection
+- improved SAM2 Live with a more practical managed-points workflow, clearer prompt guidance, polarity toggling on the active points layer, and better preview/save behavior
+- refactored local Python guardrails into dual-mode validation: strict for assistant-generated code and permissive-with-warnings for `Run My Code`
+- kept protections against clearly bad napari hallucinations and dtype hazards while separating hard errors, warnings, and repair notes
+- continued workflow/help/documentation polish across the current 1.4.x line
 
 For older release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -343,7 +342,7 @@ Install links:
 
 ### Experimental SAM2 integration
 
-Version `1.4.5` includes an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
+Version `1.4.6` expands the experimental SAM2 path with bundled-adapter support, easier setup, and better live prompting for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar
@@ -352,22 +351,35 @@ Behavior:
 - the rest of the assistant remains usable even if SAM2 is not configured
 
 Current setup expects:
-- a working Python environment that already includes the dependencies required by your SAM2 wrapper
+- a working Python environment that already includes the dependencies required by SAM2
 - an external SAM2 project path
-- a wrapper module exposed as `sam2_wrapper.py` or `sam2_wrapper/__init__.py`
-- `segment_image_from_box(...)` for box workflows
-- `segment_image_from_points(...)` for point workflows if you want live point prompting
 - a valid checkpoint path
 - a valid config path
+
+`napari-chat-assistant` now ships its own bundled SAM2 adapter in
+`napari_chat_assistant.integrations.sam2_adapter`, so users only need the SAM2 repo,
+checkpoint, and config files in the normal places.
+
+The `SAM2 Setup` dialog now includes:
+- `Auto Detect` to scan common local clone locations and fill likely project, checkpoint, and config paths
+- `Setup Help` for short setup commands and field tips
+
+Minimal install:
+
+```bash
+git clone https://github.com/facebookresearch/sam2.git && cd sam2
+pip install -e .
+```
 
 Typical setup flow:
 1. Start napari from the environment that contains your SAM2 dependencies.
 2. Open `Plugins -> Chat Assistant`.
 3. Open `Advanced -> SAM2 Setup`.
-4. Enter the SAM2 project path, checkpoint path, config path, and device.
-5. Click `Test`.
-6. Save the settings.
-7. Open `Advanced -> SAM2 Live` when the backend reports ready.
+4. Click `Auto Detect` first.
+5. Confirm or edit the SAM2 project path, checkpoint path, config path, and device.
+6. Click `Test`.
+7. Save the settings.
+8. Open `Advanced -> SAM2 Live` when the backend reports ready.
 
 ## UI Overview
 

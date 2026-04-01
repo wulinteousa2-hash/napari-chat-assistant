@@ -203,9 +203,9 @@ UI_HELP_ITEMS = [
     {
         "label": "SAM2 Setup",
         "aliases": ("sam2 setup",),
-        "purpose": "Configures the external SAM2 wrapper, checkpoint, config, and device.",
+        "purpose": "Configures the SAM2 repo path, checkpoint, config, and device.",
         "when": "Use it when you want to enable the experimental SAM2 segmentation backend.",
-        "tip": "SAM2 Live stays disabled until the backend passes readiness checks.",
+        "tip": "Use Auto Detect after cloning the SAM2 repo, then Test and Save. SAM2 Live stays disabled until the backend passes readiness checks.",
     },
     {
         "label": "SAM2 Live",

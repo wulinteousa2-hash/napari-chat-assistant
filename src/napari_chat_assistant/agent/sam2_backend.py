@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import importlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
@@ -10,6 +11,24 @@ from typing import Any
 import numpy as np
 
 from napari_chat_assistant.agent.ui_state import DEFAULT_UI_STATE, load_ui_state
+
+_COMMON_SAM2_PROJECT_NAMES = ("sam2", "Sam2", "SAM2")
+_COMMON_SAM2_CHECKPOINTS = (
+    "checkpoints/sam2.1_hiera_large.pt",
+    "checkpoints/sam2.1_hiera_base_plus.pt",
+    "checkpoints/sam2.1_hiera_small.pt",
+    "checkpoints/sam2.1_hiera_tiny.pt",
+)
+_COMMON_SAM2_CONFIGS = (
+    "configs/sam2.1/sam2.1_hiera_l.yaml",
+    "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "sam2/configs/sam2.1/sam2.1_hiera_l.yaml",
+    "sam2/configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "sam2/configs/sam2.1/sam2.1_hiera_s.yaml",
+    "sam2/configs/sam2.1/sam2.1_hiera_t.yaml",
+)
 
 
 @dataclass(frozen=True)
@@ -74,6 +93,167 @@ def _wrapper_candidates(project_root: Path) -> list[Path]:
     ]
 
 
+def _bundled_adapter_module() -> ModuleType:
+    return importlib.import_module("napari_chat_assistant.integrations.sam2_adapter")
+
+
+def _relative_to_root_or_absolute(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except Exception:
+        return str(path)
+
+
+def list_sam2_checkpoints(project_path: str) -> list[str]:
+    root = Path(str(project_path or "").strip()).expanduser()
+    checkpoint_dir = root / "checkpoints"
+    if not checkpoint_dir.exists():
+        return []
+    results: list[str] = []
+    for path in sorted(checkpoint_dir.glob("*.pt")):
+        results.append(_relative_to_root_or_absolute(path, root))
+    return results
+
+
+def list_sam2_configs(project_path: str) -> list[str]:
+    root = Path(str(project_path or "").strip()).expanduser()
+    results: list[str] = []
+    seen: set[str] = set()
+    for rel in _COMMON_SAM2_CONFIGS:
+        candidate = root / rel
+        if candidate.exists():
+            value = _relative_to_root_or_absolute(candidate, root)
+            if value not in seen:
+                seen.add(value)
+                results.append(value)
+    for pattern in ("**/*.yaml",):
+        for path in sorted(root.glob(pattern)):
+            if "site-packages" in path.parts:
+                continue
+            value = _relative_to_root_or_absolute(path, root)
+            if value not in seen:
+                seen.add(value)
+                results.append(value)
+    return results
+
+
+def _is_likely_sam2_project(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    if (path / "checkpoints").exists():
+        return True
+    if (path / "configs").exists():
+        return True
+    if (path / "sam2").exists():
+        return True
+    return path.name.lower() == "sam2"
+
+
+def _candidate_sam2_roots(project_hint: str) -> list[Path]:
+    seen: set[Path] = set()
+    roots: list[Path] = []
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        resolved = path.expanduser()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    hint_text = str(project_hint or "").strip()
+    if hint_text:
+        hinted = Path(hint_text).expanduser()
+        add(hinted)
+        add(hinted.parent)
+        for name in _COMMON_SAM2_PROJECT_NAMES:
+            add(hinted.parent / name)
+
+    default_root = Path(DEFAULT_UI_STATE["sam2_project_path"]).expanduser()
+    add(default_root)
+    add(default_root.parent)
+
+    home = Path.home()
+    search_bases = (
+        home / "Projects" / "napari",
+        home / "Projects",
+        home,
+    )
+    for base in search_bases:
+        add(base)
+        for name in _COMMON_SAM2_PROJECT_NAMES:
+            add(base / name)
+
+    return roots
+
+
+def discover_sam2_setup(ui_state: dict[str, Any] | None = None) -> tuple[dict[str, str], str]:
+    state = ui_state or load_ui_state()
+    project_hint = str(state.get("sam2_project_path", DEFAULT_UI_STATE["sam2_project_path"])).strip()
+    checkpoint_hint = str(state.get("sam2_checkpoint_path", DEFAULT_UI_STATE["sam2_checkpoint_path"])).strip()
+    config_hint = str(state.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip()
+    device = str(state.get("sam2_device", DEFAULT_UI_STATE["sam2_device"])).strip() or "cuda"
+
+    project_root = Path(project_hint).expanduser()
+    detected_root = None
+    for candidate in _candidate_sam2_roots(project_hint):
+        if _is_likely_sam2_project(candidate):
+            detected_root = candidate
+            break
+    if detected_root is None:
+        detected_root = project_root
+
+    checkpoint_candidates: list[Path] = []
+    if checkpoint_hint:
+        hinted_checkpoint = Path(checkpoint_hint).expanduser()
+        checkpoint_candidates.append(hinted_checkpoint if hinted_checkpoint.is_absolute() else detected_root / hinted_checkpoint)
+    checkpoint_candidates.extend(detected_root / rel for rel in _COMMON_SAM2_CHECKPOINTS)
+    checkpoint_dir = detected_root / "checkpoints"
+    if checkpoint_dir.exists():
+        checkpoint_candidates.extend(sorted(checkpoint_dir.glob("*.pt")))
+
+    config_candidates: list[Path] = []
+    if config_hint:
+        hinted_config = Path(config_hint).expanduser()
+        config_candidates.append(hinted_config if hinted_config.is_absolute() else detected_root / hinted_config)
+    config_candidates.extend(detected_root / rel for rel in _COMMON_SAM2_CONFIGS)
+
+    checkpoint_file = next((path for path in checkpoint_candidates if path.exists()), None)
+    config_file = next((path for path in config_candidates if path.exists()), None)
+    wrapper_file = next((path for path in _wrapper_candidates(detected_root) if path.exists()), None)
+
+    settings = {
+        "sam2_project_path": str(detected_root),
+        "sam2_checkpoint_path": (
+            _relative_to_root_or_absolute(checkpoint_file, detected_root) if checkpoint_file is not None else checkpoint_hint
+        ),
+        "sam2_config_path": (
+            _relative_to_root_or_absolute(config_file, detected_root) if config_file is not None else config_hint
+        ),
+        "sam2_device": device,
+    }
+
+    notes = [f"Project: [{detected_root}]"]
+    notes.append(
+        f"Adapter: external [{_relative_to_root_or_absolute(wrapper_file, detected_root)}]"
+        if wrapper_file is not None
+        else "Adapter: bundled [napari_chat_assistant.integrations.sam2_adapter]"
+    )
+    notes.append(
+        f"Checkpoint: [{_relative_to_root_or_absolute(checkpoint_file, detected_root)}]"
+        if checkpoint_file is not None
+        else "Checkpoint: not found"
+    )
+    notes.append(
+        f"Config: [{_relative_to_root_or_absolute(config_file, detected_root)}]"
+        if config_file is not None
+        else "Config: not found"
+    )
+    notes.append("Project Path should point to the SAM2 repo root that contains checkpoints/ and config files.")
+    return settings, "Auto Detect scanned common SAM2 locations.\n" + "\n".join(notes)
+
+
 def _load_wrapper_module(config: SAM2BackendConfig) -> ModuleType:
     project_root = config.project_root
     if not project_root.exists():
@@ -91,10 +271,7 @@ def _load_wrapper_module(config: SAM2BackendConfig) -> ModuleType:
         spec.loader.exec_module(module)
         return module
 
-    raise ImportError(
-        f"No SAM2 wrapper module was found under [{project_root}]. "
-        "Expected sam2_wrapper.py or sam2_wrapper/__init__.py."
-    )
+    return _bundled_adapter_module()
 
 
 def get_sam2_backend_status(config: SAM2BackendConfig | None = None) -> tuple[bool, str]:
@@ -121,8 +298,8 @@ def get_sam2_backend_status(config: SAM2BackendConfig | None = None) -> tuple[bo
         return False, f"SAM2 backend is not configured. {exc}"
     if not hasattr(wrapper, "segment_image_from_box"):
         return False, (
-            "SAM2 backend wrapper is missing [segment_image_from_box]. "
-            "Expose that function from the external SAM2 wrapper."
+            "SAM2 backend adapter is missing [segment_image_from_box]. "
+            "Expose that function from the external adapter."
         )
     return True, (
         f"SAM2 backend ready. project=[{project_root}] checkpoint=[{resolved.checkpoint_file}] "
@@ -187,8 +364,8 @@ def segment_image_from_points(
     wrapper = _load_wrapper_module(resolved)
     if not hasattr(wrapper, "segment_image_from_points"):
         raise RuntimeError(
-            "SAM2 backend wrapper is missing [segment_image_from_points]. "
-            "Expose that function from the external SAM2 wrapper."
+            "SAM2 backend adapter is missing [segment_image_from_points]. "
+            "Expose that function from the external adapter."
         )
 
     result = wrapper.segment_image_from_points(

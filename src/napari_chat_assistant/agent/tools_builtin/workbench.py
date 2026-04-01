@@ -1713,10 +1713,6 @@ class SAMSegmentFromBoxTool:
         except Exception as exc:
             return str(exc)
 
-        ready, status_message = get_sam2_backend_status()
-        if not ready:
-            return status_message
-
         return PreparedJob(
             tool_name=self.spec.name,
             kind=self.spec.name,
@@ -1737,11 +1733,19 @@ class SAMSegmentFromBoxTool:
 
     def execute(self, job: PreparedJob) -> ToolResult:
         payload = dict(job.payload)
-        mask, backend_message = segment_image_from_box(
-            np.asarray(payload["data"]),
-            box_xyxy=tuple(float(value) for value in payload["box_xyxy"]),
-            model_name=payload.get("model_name"),
-        )
+        try:
+            mask, backend_message = segment_image_from_box(
+                np.asarray(payload["data"]),
+                box_xyxy=tuple(float(value) for value in payload["box_xyxy"]),
+                model_name=payload.get("model_name"),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.spec.name,
+                kind=job.kind,
+                payload=payload,
+                message=str(exc),
+            )
         payload["result"] = mask
         payload["backend_message"] = backend_message
         payload["foreground_pixels"] = int(np.count_nonzero(mask))
@@ -1764,6 +1768,8 @@ class SAMSegmentFromBoxTool:
 
     def apply(self, ctx: ToolContext, result: ToolResult) -> str:
         payload = result.payload
+        if "result" not in payload:
+            return result.message or "SAM2 box segmentation did not produce a result."
         ctx.viewer.add_labels(
             payload["result"],
             name=payload["output_name"],
@@ -1815,10 +1821,6 @@ class SAMSegmentFromPointsTool:
         except Exception as exc:
             return str(exc)
 
-        ready, status_message = get_sam2_backend_status()
-        if not ready:
-            return status_message
-
         return PreparedJob(
             tool_name=self.spec.name,
             kind=self.spec.name,
@@ -1841,12 +1843,20 @@ class SAMSegmentFromPointsTool:
 
     def execute(self, job: PreparedJob) -> ToolResult:
         payload = dict(job.payload)
-        mask, backend_message = segment_image_from_points(
-            np.asarray(payload["data"]),
-            point_coords_xy=np.asarray(payload["point_coords_xy"], dtype=np.float32),
-            point_labels=np.asarray(payload["point_labels"], dtype=np.int32),
-            model_name=payload.get("model_name"),
-        )
+        try:
+            mask, backend_message = segment_image_from_points(
+                np.asarray(payload["data"]),
+                point_coords_xy=np.asarray(payload["point_coords_xy"], dtype=np.float32),
+                point_labels=np.asarray(payload["point_labels"], dtype=np.int32),
+                model_name=payload.get("model_name"),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.spec.name,
+                kind=job.kind,
+                payload=payload,
+                message=str(exc),
+            )
         payload["result"] = mask
         payload["backend_message"] = backend_message
         payload["foreground_pixels"] = int(np.count_nonzero(mask))
@@ -1870,6 +1880,8 @@ class SAMSegmentFromPointsTool:
 
     def apply(self, ctx: ToolContext, result: ToolResult) -> str:
         payload = result.payload
+        if "result" not in payload:
+            return result.message or "SAM2 point segmentation did not produce a result."
         ctx.viewer.add_labels(
             payload["result"],
             name=payload["output_name"],

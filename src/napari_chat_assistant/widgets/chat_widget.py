@@ -38,7 +38,12 @@ from qtpy.QtWidgets import (
 )
 
 from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, load_ollama_model, unload_ollama_model
-from napari_chat_assistant.agent.code_validation import normalize_generated_code_if_needed, validate_generated_code
+from napari_chat_assistant.agent.code_validation import (
+    ValidationMode,
+    ValidationReport,
+    normalize_generated_code_if_needed,
+    validate_generated_code,
+)
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
 from napari_chat_assistant.agent.logging_utils import (
@@ -70,7 +75,13 @@ from napari_chat_assistant.agent.prompt_library import (
     upsert_saved_prompt,
 )
 from napari_chat_assistant.agent.prompt_routing import route_local_workflow_prompt
-from napari_chat_assistant.agent.sam2_backend import get_sam2_backend_status, sam2_config_from_ui_state
+from napari_chat_assistant.agent.sam2_backend import (
+    discover_sam2_setup,
+    get_sam2_backend_status,
+    list_sam2_checkpoints,
+    list_sam2_configs,
+    sam2_config_from_ui_state,
+)
 from napari_chat_assistant.agent.session_memory import (
     add_memory_item,
     approve_items,
@@ -427,7 +438,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
     }
     active_workers: list[object] = []
     available_models: list[str] = []
-    pending_code = {"code": "", "message": "", "turn_id": "", "model": "", "runnable": False}
+    pending_code = {
+        "code": "",
+        "message": "",
+        "turn_id": "",
+        "model": "",
+        "runnable": False,
+        "validation_mode": "strict",
+        "code_source": "assistant",
+    }
     last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
     session_memory_state = load_session_memory()
     last_memory_candidate_ids: list[str] = []
@@ -1087,21 +1106,55 @@ def chat_widget(napari_viewer=None) -> QWidget:
         for widget in (base_url_edit, model_combo, test_btn, save_btn, pull_btn, unload_btn, prompt, refresh_btn):
             widget.setEnabled(enabled)
 
-    def set_pending_code(code_text: str = "", *, message: str = "", runnable: bool = True, label: str | None = None):
+    def set_pending_code(
+        code_text: str = "",
+        *,
+        message: str = "",
+        runnable: bool = True,
+        label: str | None = None,
+        validation_mode: ValidationMode = "strict",
+        code_source: str = "assistant",
+    ):
         pending_code["code"] = str(code_text or "").strip()
         pending_code["message"] = str(message or "").strip()
         pending_code["runnable"] = bool(runnable and pending_code["code"])
+        pending_code["validation_mode"] = validation_mode
+        pending_code["code_source"] = code_source
         has_code = bool(pending_code["code"])
         if not has_code:
             pending_code["turn_id"] = ""
             pending_code["model"] = ""
             pending_code["runnable"] = False
+            pending_code["validation_mode"] = "strict"
+            pending_code["code_source"] = "assistant"
         pending_code_label.setText(label or ("Pending code: ready to run" if has_code else "Pending code: none"))
         run_code_btn.setEnabled(bool(has_code and pending_code["runnable"]))
         copy_code_btn.setEnabled(has_code)
 
-    def preflight_generated_code(code_text: str) -> list[str]:
+    def preflight_generated_code(code_text: str) -> ValidationReport:
         return validate_generated_code(code_text, viewer=viewer)
+
+    def format_validation_report(
+        report: ValidationReport,
+        *,
+        mode: ValidationMode,
+        heading: str,
+        include_notes: bool = True,
+    ) -> str:
+        lines = [heading]
+        if report.errors:
+            lines.append("Errors:")
+            lines.extend(f"- {error}" for error in report.errors)
+        if report.warnings:
+            lines.append("Warnings:")
+            lines.extend(f"- {warning}" for warning in report.warnings)
+            if mode == "permissive" and not report.errors:
+                lines.append("")
+                lines.append("Permissive mode allows execution despite warnings.")
+        if include_notes and report.notes:
+            lines.append("Notes:")
+            lines.extend(f"- {note}" for note in report.notes)
+        return "\n".join(lines)
 
     def refresh_model_choices(model_names: list[str], preferred: str | None = None):
         nonlocal available_models
@@ -1404,54 +1457,159 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: Ollama setup help shown", ok=None)
 
     def show_sam2_setup_dialog(*_args):
+        sam2_clone_command = "git clone https://github.com/facebookresearch/sam2.git && cd sam2"
+        sam2_install_commands = f"{sam2_clone_command}\npip install -e ."
         dialog = QDialog(root)
         dialog.setWindowTitle("SAM2 Setup")
-        dialog.resize(760, 360)
+        dialog.resize(760, 430)
         dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(18, 18, 18, 14)
+        dialog_layout.setSpacing(10)
 
-        hint = QLabel(
-            "Configure the external SAM2 wrapper used by the built-in SAM2 tools. "
-            "The external project should expose `sam2_wrapper.py` with `segment_image_from_box(...)`."
-        )
+        hint = QLabel("Set up SAM2 for the built-in SAM2 tools.")
         hint.setWordWrap(True)
+        hint.setStyleSheet("QLabel { color: #f3f4f6; font-size: 15px; font-weight: 600; }")
         dialog_layout.addWidget(hint)
 
+        guidance_label = QLabel(
+            "Project Path should be the SAM2 repo folder. "
+            "Click `Auto Detect` first."
+        )
+        guidance_label.setWordWrap(True)
+        guidance_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        guidance_label.setStyleSheet("QLabel { color: #cbd5e1; line-height: 1.35; }")
+        dialog_layout.addWidget(guidance_label)
+
+        install_group = QGroupBox("Quick Install")
+        install_group.setStyleSheet(
+            "QGroupBox { color: #dbe4f0; font-weight: 600; border: 1px solid #30363d; border-radius: 8px; margin-top: 10px; padding-top: 12px; } "
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
+        )
+        install_layout = QVBoxLayout(install_group)
+        install_layout.setContentsMargins(12, 10, 12, 12)
+        install_layout.setSpacing(8)
+
+        install_hint = QLabel(
+            "Use the same virtual environment as napari. Clone SAM2, then run `pip install -e .` from the SAM2 repo."
+        )
+        install_hint.setWordWrap(True)
+        install_hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        install_hint.setStyleSheet("QLabel { color: #b6c2cf; }")
+        install_layout.addWidget(install_hint)
+
+        install_command_box = QTextEdit()
+        install_command_box.setReadOnly(True)
+        install_command_box.setAcceptRichText(False)
+        install_command_box.setLineWrapMode(QTextEdit.NoWrap)
+        install_command_box.setMinimumHeight(76)
+        install_command_box.setMaximumHeight(76)
+        install_command_box.setPlainText(sam2_install_commands)
+        install_command_box.setStyleSheet(
+            "QTextEdit { background: #0b1021; color: #e6edf3; border: 1px solid #22304a; border-radius: 6px; "
+            "padding: 10px 12px; selection-background-color: #264f78; "
+            "font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; }"
+        )
+        install_layout.addWidget(install_command_box)
+
+        copy_install_btn = QPushButton("Copy Commands")
+        copy_install_btn.setToolTip("Copy the install commands to the clipboard.")
+        install_layout.addWidget(copy_install_btn, 0, Qt.AlignRight)
+        dialog_layout.addWidget(install_group)
+
+        settings_group = QGroupBox("Backend Settings")
+        settings_group.setStyleSheet(
+            "QGroupBox { color: #dbe4f0; font-weight: 600; border: 1px solid #30363d; border-radius: 8px; margin-top: 10px; padding-top: 12px; } "
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
+        )
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setContentsMargins(12, 10, 12, 12)
+        settings_layout.setSpacing(8)
+
         form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
         project_path_edit = QLineEdit(str(ui_state.get("sam2_project_path", "")))
-        checkpoint_path_edit = QLineEdit(str(ui_state.get("sam2_checkpoint_path", "")))
-        config_path_edit = QLineEdit(str(ui_state.get("sam2_config_path", "")))
+        checkpoint_path_edit = QComboBox()
+        checkpoint_path_edit.setEditable(True)
+        config_path_edit = QComboBox()
+        config_path_edit.setEditable(True)
         device_combo = QComboBox()
         device_combo.setEditable(True)
         device_combo.addItems(["cuda", "cpu"])
         device_combo.setCurrentText(str(ui_state.get("sam2_device", "cuda")))
+        field_style = (
+            "QLineEdit, QComboBox { background: #1f2329; color: #e6edf3; border: 1px solid #30363d; "
+            "border-radius: 5px; padding: 6px 8px; min-height: 20px; }"
+        )
+        project_path_edit.setStyleSheet(field_style)
+        checkpoint_path_edit.setStyleSheet(field_style)
+        config_path_edit.setStyleSheet(field_style)
+        device_combo.setStyleSheet(field_style)
         form.addRow("Project Path:", project_path_edit)
         form.addRow("Checkpoint:", checkpoint_path_edit)
         form.addRow("Config:", config_path_edit)
         form.addRow("Device:", device_combo)
-        dialog_layout.addLayout(form)
+        settings_layout.addLayout(form)
+        dialog_layout.addWidget(settings_group)
 
         status_label = QLabel()
         status_label.setWordWrap(True)
-        status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
+        status_label.setStyleSheet(
+            "QLabel { background: #101820; color: #e6edf3; border: 1px solid #22304a; border-radius: 6px; padding: 10px 12px; }"
+        )
         dialog_layout.addWidget(status_label)
 
         button_row = QWidget()
         button_layout = QHBoxLayout(button_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
+        autodetect_dialog_btn = QPushButton("Detect Setup")
         save_dialog_btn = QPushButton("Save")
         test_dialog_btn = QPushButton("Test")
         close_dialog_btn = QPushButton("Close")
+        button_layout.addWidget(autodetect_dialog_btn)
         button_layout.addWidget(save_dialog_btn)
         button_layout.addWidget(test_dialog_btn)
         button_layout.addWidget(close_dialog_btn)
         dialog_layout.addWidget(button_row)
+
+        def current_checkpoint_text() -> str:
+            return checkpoint_path_edit.currentText().strip()
+
+        def current_config_text() -> str:
+            return config_path_edit.currentText().strip()
+
+        def refresh_checkpoint_and_config_choices():
+            project_path = project_path_edit.text().strip()
+            selected_checkpoint = current_checkpoint_text() or str(ui_state.get("sam2_checkpoint_path", "")).strip()
+            selected_config = current_config_text() or str(ui_state.get("sam2_config_path", "")).strip()
+            checkpoint_choices = list_sam2_checkpoints(project_path)
+            config_choices = list_sam2_configs(project_path)
+
+            checkpoint_path_edit.blockSignals(True)
+            checkpoint_path_edit.clear()
+            checkpoint_path_edit.addItems(checkpoint_choices)
+            if selected_checkpoint and selected_checkpoint not in checkpoint_choices:
+                checkpoint_path_edit.addItem(selected_checkpoint)
+            checkpoint_path_edit.setCurrentText(selected_checkpoint)
+            checkpoint_path_edit.blockSignals(False)
+
+            config_path_edit.blockSignals(True)
+            config_path_edit.clear()
+            config_path_edit.addItems(config_choices)
+            if selected_config and selected_config not in config_choices:
+                config_path_edit.addItem(selected_config)
+            config_path_edit.setCurrentText(selected_config)
+            config_path_edit.blockSignals(False)
 
         def refresh_status():
             config = sam2_config_from_ui_state(
                 {
                     **ui_state,
                     "sam2_project_path": project_path_edit.text().strip(),
-                    "sam2_checkpoint_path": checkpoint_path_edit.text().strip(),
-                    "sam2_config_path": config_path_edit.text().strip(),
+                    "sam2_checkpoint_path": current_checkpoint_text(),
+                    "sam2_config_path": current_config_text(),
                     "sam2_device": device_combo.currentText().strip(),
                 }
             )
@@ -1464,10 +1622,35 @@ def chat_widget(napari_viewer=None) -> QWidget:
             )
             return ok, message
 
+        def autodetect_sam2_settings():
+            detected, message = discover_sam2_setup(
+                {
+                    **ui_state,
+                    "sam2_project_path": project_path_edit.text().strip(),
+                    "sam2_checkpoint_path": current_checkpoint_text(),
+                    "sam2_config_path": current_config_text(),
+                    "sam2_device": device_combo.currentText().strip(),
+                }
+            )
+            project_path_edit.setText(detected["sam2_project_path"])
+            refresh_checkpoint_and_config_choices()
+            checkpoint_path_edit.setCurrentText(detected["sam2_checkpoint_path"])
+            config_path_edit.setCurrentText(detected["sam2_config_path"])
+            device_combo.setCurrentText(detected["sam2_device"])
+            guidance_label.setText(message)
+            refresh_status()
+            append_log("Auto-detected SAM2 setup candidates.")
+            set_status("Status: SAM2 auto-detect finished", ok=None)
+
+        def copy_sam2_install_commands():
+            QApplication.clipboard().setText(sam2_install_commands)
+            append_log("Copied SAM2 install commands.")
+            set_status("Status: SAM2 install commands copied", ok=True)
+
         def save_sam2_settings():
             ui_state["sam2_project_path"] = project_path_edit.text().strip()
-            ui_state["sam2_checkpoint_path"] = checkpoint_path_edit.text().strip()
-            ui_state["sam2_config_path"] = config_path_edit.text().strip()
+            ui_state["sam2_checkpoint_path"] = current_checkpoint_text()
+            ui_state["sam2_config_path"] = current_config_text()
             ui_state["sam2_device"] = device_combo.currentText().strip() or "cuda"
             save_ui_state(ui_state)
             ok, _message = refresh_status()
@@ -1481,9 +1664,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_log("Tested SAM2 backend configuration.")
             set_status("Status: SAM2 backend ready" if ok else "Status: SAM2 backend not ready", ok=ok)
 
+        autodetect_dialog_btn.clicked.connect(autodetect_sam2_settings)
+        copy_install_btn.clicked.connect(copy_sam2_install_commands)
         save_dialog_btn.clicked.connect(save_sam2_settings)
         test_dialog_btn.clicked.connect(test_sam2_settings)
         close_dialog_btn.clicked.connect(dialog.accept)
+        project_path_edit.editingFinished.connect(refresh_checkpoint_and_config_choices)
+        refresh_checkpoint_and_config_choices()
         refresh_status()
         append_log("Opened SAM2 setup dialog.")
         set_status("Status: SAM2 setup opened", ok=None)
@@ -1507,21 +1694,26 @@ def chat_widget(napari_viewer=None) -> QWidget:
         hint = QLabel(
             "Live SAM2 preview for grayscale images. "
             "Use a Shapes layer for 2D Box mode, or initialize a SAM2-managed points session for points prompting. "
-            "For 3D propagation, initialize on the current seed slice and place prompts there before propagating."
+            "For 3D propagation, initialize on the current seed slice and place prompts there before propagating. "
+            "When the SAM2 points layer is active, press T to toggle polarity."
         )
         hint.setWordWrap(True)
         dialog_layout.addWidget(hint)
 
         form = QFormLayout()
         image_combo = QComboBox()
+        model_combo = QComboBox()
+        model_combo.setEditable(False)
         mode_combo = QComboBox()
         mode_combo.addItems(["Box", "Points"])
         prompt_layer_combo = QComboBox()
         polarity_combo = QComboBox()
         polarity_combo.addItems(["Positive", "Negative"])
+        polarity_combo.setToolTip("Point label mode for new prompt points. With the SAM2 points layer active, press T to toggle polarity.")
         auto_update_check = QCheckBox("Auto-update")
         auto_update_check.setChecked(True)
         form.addRow("Image:", image_combo)
+        form.addRow("Model:", model_combo)
         form.addRow("Mode:", mode_combo)
         form.addRow("Prompt Layer:", prompt_layer_combo)
         form.addRow("Polarity:", polarity_combo)
@@ -1567,6 +1759,57 @@ def chat_widget(napari_viewer=None) -> QWidget:
         debounce_timer = QTimer(dialog)
         debounce_timer.setSingleShot(True)
         debounce_timer.setInterval(250)
+
+        def infer_config_for_checkpoint(checkpoint_path: str, project_path: str) -> str | None:
+            checkpoint_name = Path(str(checkpoint_path or "").strip()).name.lower()
+            if not checkpoint_name:
+                return None
+            config_choices = list_sam2_configs(project_path)
+            if not config_choices:
+                return None
+            preferred_tokens = []
+            if "large" in checkpoint_name:
+                preferred_tokens.extend(["hiera_l", "hiera_large"])
+            if "base_plus" in checkpoint_name or "base+" in checkpoint_name or "b+" in checkpoint_name:
+                preferred_tokens.extend(["hiera_b+", "hiera_base_plus"])
+            if "small" in checkpoint_name:
+                preferred_tokens.extend(["hiera_s", "hiera_small"])
+            if "tiny" in checkpoint_name:
+                preferred_tokens.extend(["hiera_t", "hiera_tiny"])
+            lowered_choices = [(choice, choice.lower()) for choice in config_choices]
+            for token in preferred_tokens:
+                for choice, lowered in lowered_choices:
+                    if token in lowered:
+                        return choice
+            return config_choices[0]
+
+        def refresh_live_model_choices():
+            project_path = str(ui_state.get("sam2_project_path", "")).strip()
+            selected_checkpoint = str(ui_state.get("sam2_checkpoint_path", "")).strip()
+            checkpoint_choices = list_sam2_checkpoints(project_path)
+            model_combo.blockSignals(True)
+            model_combo.clear()
+            model_combo.addItems(checkpoint_choices)
+            if selected_checkpoint and selected_checkpoint not in checkpoint_choices:
+                model_combo.addItem(selected_checkpoint)
+            model_combo.setCurrentText(selected_checkpoint)
+            model_combo.blockSignals(False)
+
+        def apply_live_model_selection(*_args):
+            selected_checkpoint = model_combo.currentText().strip()
+            if not selected_checkpoint:
+                return
+            ui_state["sam2_checkpoint_path"] = selected_checkpoint
+            inferred_config = infer_config_for_checkpoint(selected_checkpoint, str(ui_state.get("sam2_project_path", "")).strip())
+            if inferred_config:
+                ui_state["sam2_config_path"] = inferred_config
+            save_ui_state(ui_state)
+            refresh_sam2_actions()
+            config_name = str(ui_state.get("sam2_config_path", "")).strip() or "[unknown config]"
+            set_live_status(
+                f"SAM2 model set to [{selected_checkpoint}] with config [{config_name}].",
+                ok=None,
+            )
 
         def set_live_status(message: str, *, ok: bool | None = None):
             status_label.setText(message)
@@ -1661,6 +1904,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
         def active_polarity_label() -> int:
             return 1 if polarity_combo.currentText().strip() == "Positive" else 0
 
+        def active_polarity_name() -> str:
+            return polarity_combo.currentText().strip().lower()
+
+        def set_points_mode_polarity(label_value: int):
+            polarity_combo.setCurrentText("Positive" if int(label_value) == 1 else "Negative")
+
         def apply_points_polarity_defaults(layer):
             label_value = active_polarity_label()
             try:
@@ -1681,6 +1930,142 @@ def chat_widget(napari_viewer=None) -> QWidget:
             except Exception:
                 pass
 
+        def apply_points_layer_colors(layer, labels: np.ndarray | None = None):
+            if layer is None:
+                return
+            if labels is None:
+                labels = np.asarray([], dtype=np.int32)
+                try:
+                    features = getattr(layer, "features", None)
+                    if features is not None and "sam_label" in features:
+                        column = features["sam_label"]
+                        try:
+                            labels = np.asarray(column.to_numpy(), dtype=np.int32)
+                        except Exception:
+                            labels = np.asarray(column, dtype=np.int32)
+                except Exception:
+                    pass
+            colors = np.asarray(["#4caf50" if int(label) == 1 else "#ef5350" for label in np.asarray(labels, dtype=np.int32)], dtype=object)
+            try:
+                if colors.size:
+                    layer.face_color = colors.tolist()
+                    layer.border_color = ["white"] * int(colors.size)
+            except Exception:
+                pass
+
+        def toggle_selected_or_pending_polarity():
+            layer_name = str(live_state.get("managed_points_layer") or "").strip()
+            if viewer is None or not layer_name or layer_name not in viewer.layers:
+                set_live_status("Initialize SAM2 Live first so the managed points layer is available.", ok=False)
+                return
+            layer = viewer.layers[layer_name]
+            if not isinstance(layer, napari.layers.Points):
+                set_live_status("Managed SAM2 prompt layer is not a points layer.", ok=False)
+                return
+
+            selected = []
+            try:
+                selected = sorted(int(index) for index in getattr(layer, "selected_data", set()) or set())
+            except Exception:
+                selected = []
+
+            labels = None
+            try:
+                features = getattr(layer, "features", None)
+                if features is not None and "sam_label" in features:
+                    column = features["sam_label"]
+                    try:
+                        labels = np.asarray(column.to_numpy(), dtype=np.int32)
+                    except Exception:
+                        labels = np.asarray(column, dtype=np.int32)
+            except Exception:
+                labels = None
+            if labels is None:
+                data = np.asarray(getattr(layer, "data", np.empty((0, current_image_ndim() or 2))), dtype=np.float32)
+                labels = np.ones((data.shape[0],), dtype=np.int32)
+
+            if selected:
+                updated = labels.copy()
+                changed = 0
+                for index in selected:
+                    if 0 <= index < updated.shape[0]:
+                        updated[index] = 0 if int(updated[index]) == 1 else 1
+                        changed += 1
+                try:
+                    layer.features = {"sam_label": updated}
+                except Exception:
+                    try:
+                        existing = getattr(layer, "features", None)
+                        if existing is not None:
+                            existing["sam_label"] = updated
+                            layer.features = existing
+                    except Exception:
+                        pass
+                apply_points_layer_colors(layer, updated)
+                set_live_status(
+                    f"Toggled polarity for {changed} selected SAM2 prompt point(s).",
+                    ok=None,
+                )
+                return
+
+            next_label = 0 if active_polarity_label() == 1 else 1
+            set_points_mode_polarity(next_label)
+            apply_points_polarity_defaults(layer)
+            set_live_status(
+                f"SAM2 prompt polarity toggled to {active_polarity_name()}. New points will use that label.",
+                ok=None,
+            )
+
+        def toggle_sam2_polarity_from_viewer(_viewer=None):
+            del _viewer
+            active_dialog = getattr(root, "_sam2_live_dialog", None)
+            if active_dialog is not dialog or not dialog.isVisible():
+                return
+            layer_name = str(live_state.get("managed_points_layer") or "").strip()
+            if viewer is None or not layer_name or layer_name not in viewer.layers:
+                return
+            active_layer = getattr(getattr(viewer.layers, "selection", None), "active", None)
+            if active_layer is None or getattr(active_layer, "name", "") != layer_name:
+                return
+            toggle_selected_or_pending_polarity()
+
+        def register_points_toggle_binding(layer):
+            if layer is None or not hasattr(layer, "bind_key"):
+                return
+            if getattr(layer, "_sam2_toggle_registered", False):
+                return
+            try:
+                @layer.bind_key("t", overwrite=True)
+                def _toggle_sam2_prompt_polarity(active_layer):
+                    del active_layer
+                    toggle_selected_or_pending_polarity()
+            except TypeError:
+                try:
+                    layer.bind_key("t", toggle_selected_or_pending_polarity, overwrite=True)
+                except Exception:
+                    return
+            except Exception:
+                return
+            setattr(layer, "_sam2_toggle_registered", True)
+
+        def register_viewer_toggle_binding():
+            if viewer is None or not hasattr(viewer, "bind_key"):
+                return
+            if getattr(root, "_sam2_viewer_toggle_registered", False):
+                return
+            try:
+                @viewer.bind_key("t", overwrite=True)
+                def _toggle_sam2_prompt_polarity(_active_viewer):
+                    toggle_sam2_polarity_from_viewer(_active_viewer)
+            except TypeError:
+                try:
+                    viewer.bind_key("t", toggle_sam2_polarity_from_viewer, overwrite=True)
+                except Exception:
+                    return
+            except Exception:
+                return
+            setattr(root, "_sam2_viewer_toggle_registered", True)
+
         def ensure_managed_points_layer():
             if viewer is None:
                 return None
@@ -1699,6 +2084,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 layer = viewer.layers[layer_name]
                 if isinstance(layer, napari.layers.Points):
                     apply_points_polarity_defaults(layer)
+                    register_points_toggle_binding(layer)
                     live_state["managed_points_layer"] = layer.name
                     return layer
             empty = np.empty((0, ndim), dtype=np.float32)
@@ -1713,6 +2099,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             layer.metadata = dict(getattr(layer, "metadata", {}) or {})
             layer.metadata["sam2_managed_points"] = True
             apply_points_polarity_defaults(layer)
+            register_points_toggle_binding(layer)
             live_state["managed_points_layer"] = layer.name
             return layer
 
@@ -1732,13 +2119,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     set_live_status(
                         f"SAM2 Live initialized for [{image_layer.name}]. "
                         f"Seed slice={live_state['seed_slice'] if live_state['seed_slice'] is not None else '?'}. "
-                        f"Use [{points_layer.name}] in {polarity_combo.currentText().strip().lower()} mode, then click Propagate.",
+                        f"Add prompt points on [{points_layer.name}], use the Polarity control or press T on the active points layer, then click Propagate.",
                         ok=True,
                     )
                 else:
                     set_live_status(
                         f"SAM2 Live initialized for [{image_layer.name}]. "
-                        f"Use [{points_layer.name}] in {polarity_combo.currentText().strip().lower()} mode, then run preview.",
+                        f"Add prompt points on [{points_layer.name}], use the Polarity control or press T on the active points layer, then run preview.",
                         ok=True,
                     )
                 try:
@@ -1878,7 +2265,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if image_ndim == 2:
                 hint.setText(
                     "Live SAM2 preview for 2D grayscale images. Use a Shapes layer for Box mode "
-                    "or click Initialize to start a SAM2-managed points session."
+                    "or click Initialize to start a SAM2-managed points session. Press T on the active SAM2 points layer to toggle polarity."
                 )
                 preview_btn.setText("Run Preview")
                 apply_btn.setText("Save Labels")
@@ -1887,7 +2274,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             elif image_ndim == 3:
                 hint.setText(
                     "Live SAM2 propagation for 3D grayscale images. Click Initialize on the desired seed slice, "
-                    "place positive/negative prompts on that slice, then click Propagate."
+                    "place positive/negative prompts on that slice, then click Propagate. Press T on the active SAM2 points layer to toggle polarity."
                 )
                 preview_btn.setText("Propagate")
                 apply_btn.setText("Save Labels")
@@ -1897,7 +2284,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             else:
                 hint.setText(
                     "Live SAM2 preview for grayscale images. Use a Shapes layer for 2D Box mode or initialize a "
-                    "SAM2-managed points session for 2D/3D points prompting."
+                    "SAM2-managed points session for 2D/3D points prompting. Press T on the active SAM2 points layer to toggle polarity."
                 )
                 preview_btn.setText("Run Preview")
                 apply_btn.setText("Save Labels")
@@ -1935,7 +2322,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     except Exception:
                         pass
             set_live_status(
-                f"SAM2 prompt polarity set to {polarity_combo.currentText().strip().lower()}.",
+                f"SAM2 prompt polarity set to {active_polarity_name()}. "
+                "Add points now.",
                 ok=None,
             )
 
@@ -2085,6 +2473,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         apply_btn.clicked.connect(apply_live_preview)
         clear_btn.clicked.connect(clear_live_preview)
         close_btn.clicked.connect(dialog.accept)
+        model_combo.currentTextChanged.connect(apply_live_model_selection)
         image_combo.currentTextChanged.connect(refresh_live_controls)
         prompt_layer_combo.currentTextChanged.connect(refresh_prompt_watchers)
         mode_combo.currentTextChanged.connect(refresh_live_controls)
@@ -2096,6 +2485,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
             )
         )
         dialog.finished.connect(lambda *_args: cleanup_live_dialog())
+        register_viewer_toggle_binding()
+        refresh_live_model_choices()
         refresh_live_controls()
         append_log("Opened SAM2 live dialog.")
         set_status("Status: SAM2 live opened", ok=None)
@@ -2185,19 +2576,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
         prompt.clear()
         append_log(f"Queued message: {text}")
         if manual_code:
-            validation_errors = preflight_generated_code(manual_code)
+            validation_report = preflight_generated_code(manual_code)
             code_message = "Manual code captured from the prompt. Review it, then click Run Code."
-            if validation_errors:
+            if validation_report.errors:
                 set_pending_code(
                     manual_code,
                     message=code_message,
                     runnable=False,
                     label="Pending code: blocked by validation",
+                    validation_mode="permissive",
+                    code_source="user",
                 )
                 append_chat_message(
                     "assistant",
-                    "Pasted code was rejected by local validation:\n"
-                    + "\n".join(f"- {error}" for error in validation_errors)
+                    format_validation_report(
+                        validation_report,
+                        mode="permissive",
+                        heading="Pasted code was rejected by local validation.",
+                        include_notes=False,
+                    )
                     + "\n\nFix the code in the prompt and send it again with `/code` or `run code`.\n\n"
                     + format_code_block(manual_code),
                 )
@@ -2220,7 +2617,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_pending_code(manual_code, message=code_message)
             pending_code["turn_id"] = turn_id
             pending_code["model"] = "manual"
-            append_chat_message("assistant", f"{code_message}\n{format_code_block(manual_code)}")
+            pending_code["validation_mode"] = "permissive"
+            pending_code["code_source"] = "user"
+            warning_prefix = ""
+            if validation_report.warnings:
+                warning_prefix = (
+                    format_validation_report(
+                        validation_report,
+                        mode="permissive",
+                        heading="Manual code has validation warnings.",
+                        include_notes=False,
+                    )
+                    + "\n\n"
+                )
+            append_chat_message("assistant", f"{warning_prefix}{code_message}\n{format_code_block(manual_code)}")
             append_log("Queued pasted manual code; waiting for Run Code approval.")
             set_status("Status: manual code ready to run", ok=None)
             record_telemetry(
@@ -2539,20 +2949,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
             if action == "code":
                 raw_code_text = str(parsed.get("code", "")).strip()
-                code_text, validation_errors, repair_notes = normalize_generated_code_if_needed(raw_code_text, viewer=viewer)
+                code_text, validation_report = normalize_generated_code_if_needed(raw_code_text, viewer=viewer)
                 code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Code."
-                if validation_errors:
+                if validation_report.has_blocking_issues("strict"):
                     set_pending_code(
                         code_text,
                         message=code_message,
                         runnable=False,
                         label="Pending code: blocked by validation",
+                        validation_mode="strict",
+                        code_source="assistant",
                     )
                     pending_code["turn_id"] = turn_id
                     pending_code["model"] = model_name
                     replace_last_assistant(
-                        "Generated code was rejected by local validation:\n"
-                        + "\n".join(f"- {error}" for error in validation_errors)
+                        format_validation_report(
+                            validation_report,
+                            mode="strict",
+                            heading="Generated code was rejected by local validation.",
+                        )
                         + "\n\nReview or copy the generated code below, then ask the assistant to regenerate or fix it.\n\n"
                         + format_code_block(code_text)
                     )
@@ -2560,17 +2975,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     set_status("Status: code rejected", ok=False)
                     finish()
                     return
-                set_pending_code(code_text, message=code_message)
+                set_pending_code(code_text, message=code_message, validation_mode="strict", code_source="assistant")
                 pending_code["turn_id"] = turn_id
                 pending_code["model"] = model_name
-                repair_prefix = ""
-                if repair_notes:
-                    repair_prefix = (
-                        "Local napari-specific repair applied before validation:\n"
-                        + "\n".join(f"- {note}" for note in repair_notes)
-                        + "\n\n"
-                    )
-                replace_last_assistant(f"{repair_prefix}{code_message}\n{format_code_block(code_text)}")
+                report_prefix = ""
+                if validation_report.notes or validation_report.warnings:
+                    report_prefix = format_validation_report(
+                        validation_report,
+                        mode="strict",
+                        heading="Local validation summary for generated code.",
+                    ) + "\n\n"
+                replace_last_assistant(f"{report_prefix}{code_message}\n{format_code_block(code_text)}")
                 latency_ms = int((time.perf_counter() - request_started_at) * 1000)
                 last_turn_metrics.update(
                     {"turn_id": turn_id, "model": model_name, "action": "code", "prompt_hash": turn_prompt_hash}
@@ -2673,10 +3088,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         if not run_code_text(
             code_text,
-            code_label="approved napari code",
+            code_label="your code" if pending_code.get("code_source") == "user" else "approved napari code",
+            validation_mode=pending_code.get("validation_mode", "strict"),
             turn_id=pending_code.get("turn_id", ""),
             model_name=pending_code.get("model", ""),
-            code_source="assistant",
+            code_source=pending_code.get("code_source", "assistant"),
             disable_pending_buttons=True,
         ):
             return
@@ -2694,20 +3110,35 @@ def chat_widget(napari_viewer=None) -> QWidget:
         code_text: str,
         *,
         code_label: str,
+        validation_mode: ValidationMode = "strict",
         turn_id: str = "",
         model_name: str = "",
         code_source: str = "assistant",
         disable_pending_buttons: bool = False,
     ) -> bool:
-        validation_errors = preflight_generated_code(code_text)
-        if validation_errors:
+        validation_report = preflight_generated_code(code_text)
+        if validation_report.has_blocking_issues(validation_mode):
             append_chat_message(
                 "assistant",
-                f"{code_label.capitalize()} failed local validation:\n" + "\n".join(f"- {error}" for error in validation_errors),
+                format_validation_report(
+                    validation_report,
+                    mode=validation_mode,
+                    heading=f"{code_label.capitalize()} failed local validation.",
+                ),
             )
             append_log(f"{code_label.capitalize()} blocked by local validation.")
             set_status(f"Status: {code_label} blocked", ok=False)
             return False
+        if validation_report.warnings:
+            append_chat_message(
+                "assistant",
+                format_validation_report(
+                    validation_report,
+                    mode=validation_mode,
+                    heading=f"{code_label.capitalize()} has validation warnings.",
+                ),
+            )
+            append_log(f"{code_label.capitalize()} allowed with validation warnings.")
 
         set_status(f"Status: running {code_label}", ok=None)
         append_log(f"Running {code_label}.")
@@ -2844,7 +3275,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
         refresh_prompt_library()
         append_chat_message("user", f"/my-code\n{format_code_block(code_text)}")
         prompt.clear()
-        run_code_text(code_text, code_label="your code", model_name="manual", code_source="user")
+        run_code_text(
+            code_text,
+            code_label="your code",
+            validation_mode="permissive",
+            model_name="manual",
+            code_source="user",
+        )
 
     def load_library_prompt(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}

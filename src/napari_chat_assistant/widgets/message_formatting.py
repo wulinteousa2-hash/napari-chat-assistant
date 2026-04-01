@@ -89,7 +89,7 @@ def render_assistant_message_html(message: str) -> str:
                 break
             paragraph_lines.append(candidate)
             index += 1
-        blocks.append('<p style="margin: 0 0 10px 0;">' + "<br>".join(_render_inline_html(line) for line in paragraph_lines) + "</p>")
+        blocks.append("<p>" + "<br>".join(_render_inline_html(line) for line in paragraph_lines) + "</p>")
 
     return "".join(blocks) or "<p></p>"
 
@@ -102,8 +102,8 @@ def _restore_code_block(token: str, segments: list[tuple[str, str, str]]) -> str
     label = html.escape(language) if language else "text"
     rendered_code = _render_code_html(language, code)
     return (
-        '<div style="margin: 12px 0 14px 0; border: 1px solid #2b2d30; border-radius: 10px; overflow: hidden; '
-        'background: #1e1e1e; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);">'
+        '<div style="background: #0f1b2d; margin: 12px 0 14px 0; border: 1px solid #2b2d30; border-radius: 10px; overflow: hidden; '
+        'box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);">'
         '<div style="background: #252526; color: #cccccc; font-size: 11px; '
         'padding: 7px 12px; letter-spacing: 0.06em; line-height: 1.35; text-transform: uppercase; '
         'border-bottom: 1px solid #2b2d30; font-family: \'Segoe UI\', \'Noto Sans\', sans-serif;">'

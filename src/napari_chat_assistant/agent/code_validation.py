@@ -4,6 +4,11 @@ import ast
 import importlib
 import inspect
 import re
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+ValidationMode = Literal["strict", "permissive"]
 
 
 DISALLOWED_IMPORT_TEXT = (
@@ -12,19 +17,41 @@ DISALLOWED_IMPORT_TEXT = (
 )
 
 
-def normalize_generated_code_if_needed(code_text: str, *, viewer=None) -> tuple[str, list[str], list[str]]:
+@dataclass(slots=True)
+class ValidationReport:
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def has_issues(self) -> bool:
+        return bool(self.errors or self.warnings)
+
+    def has_blocking_issues(self, mode: ValidationMode = "strict") -> bool:
+        return bool(self.errors or (mode == "strict" and self.warnings))
+
+    def blocking_messages(self, mode: ValidationMode = "strict") -> list[str]:
+        messages = list(self.errors)
+        if mode == "strict":
+            messages.extend(self.warnings)
+        return messages
+
+
+def normalize_generated_code_if_needed(code_text: str, *, viewer=None) -> tuple[str, ValidationReport]:
     code = str(code_text or "").strip()
     raw_errors = validate_generated_code(code, viewer=viewer)
-    if not raw_errors:
-        return code, [], []
+    if not raw_errors.has_issues():
+        return code, raw_errors
     repaired, repair_notes = _repair_generated_code(code)
     normalized = _normalize_escaped_multiline_code(repaired)
     if normalized == code:
-        return code, raw_errors, []
+        return code, raw_errors
     normalized_errors = validate_generated_code(normalized, viewer=viewer)
-    if normalized_errors:
-        return code, raw_errors, []
-    return normalized, [], repair_notes
+    if normalized_errors.errors:
+        return code, raw_errors
+    if len(normalized_errors.warnings) > len(raw_errors.warnings) and not raw_errors.errors:
+        return code, raw_errors
+    normalized_errors.notes.extend(repair_notes)
+    return normalized, normalized_errors
 
 
 def _repair_generated_code(code: str) -> tuple[str, list[str]]:
@@ -77,19 +104,20 @@ def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:
     return repaired, repair_notes
 
 
-def validate_generated_code(code_text: str, *, viewer=None) -> list[str]:
+def validate_generated_code(code_text: str, *, viewer=None) -> ValidationReport:
     code = str(code_text or "").strip()
-    errors: list[str] = []
+    report = ValidationReport()
     if not code:
-        return ["Generated code is empty."]
+        report.errors.append("Generated code is empty.")
+        return report
     if code.startswith("```") or "```" in code:
-        errors.append("Generated code must not contain Markdown code fences.")
+        report.errors.append("Generated code must not contain Markdown code fences.")
     if '"action"' in code and '"code"' in code and "{" in code and "}" in code:
-        errors.append("Generated code appears to contain JSON instead of pure Python.")
+        report.errors.append("Generated code appears to contain JSON instead of pure Python.")
     if any(token in code for token in DISALLOWED_IMPORT_TEXT):
-        errors.append("Generated code uses an unsupported napari API import.")
+        report.errors.append("Generated code uses an unsupported napari API import.")
     if "equalize_adap_hist" in code:
-        errors.append(
+        report.warnings.append(
             "Generated code uses the wrong scikit-image CLAHE function name [equalize_adap_hist]. "
             "Use [skimage.exposure.equalize_adapthist] instead."
         )
@@ -98,11 +126,11 @@ def validate_generated_code(code_text: str, *, viewer=None) -> list[str]:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
         line = f"line {exc.lineno}" if exc.lineno else "unknown line"
-        errors.append(f"Generated code is not valid Python: {exc.msg} ({line}).")
-        return errors
+        report.errors.append(f"Generated code is not valid Python: {exc.msg} ({line}).")
+        return report
 
-    errors.extend(_validate_ast(tree, viewer=viewer))
-    return errors
+    _validate_ast(tree, viewer=viewer, report=report)
+    return report
 
 
 def _normalize_escaped_multiline_code(code: str) -> str:
@@ -140,8 +168,7 @@ def _looks_like_escaped_python(text: str) -> bool:
     return any(signal in text for signal in signals)
 
 
-def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
-    errors: list[str] = []
+def _validate_ast(tree: ast.AST, *, viewer=None, report: ValidationReport) -> None:
     uint8_arrays: set[str] = set()
     unsafe_int_arrays: set[str] = set()
     stat_value_names: set[str] = set()
@@ -153,45 +180,47 @@ def _validate_ast(tree: ast.AST, *, viewer=None) -> list[str]:
         _track_histogram_axes(node, histogram_axes_names)
         error = _detect_unsafe_uint8_augassign(node, uint8_arrays, unsafe_int_arrays)
         if error:
-            errors.append(error)
+            report.errors.append(error)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             for alias in node.names:
                 if module == "napari.viewer" and alias.name == "ViewerViewerContext":
-                    errors.append("Do not import ViewerViewerContext from napari.viewer.")
+                    report.errors.append("Do not import ViewerViewerContext from napari.viewer.")
                 if module == "napari" and alias.name == "Viewer":
-                    errors.append("Do not import Viewer from napari. Use the existing [viewer] object provided by the plugin.")
+                    report.errors.append("Do not import Viewer from napari. Use the existing [viewer] object provided by the plugin.")
                 import_error = _validate_import_from_symbol(module, alias.name)
                 if import_error:
-                    errors.append(import_error)
+                    report.warnings.append(import_error)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "ViewerViewerContext":
-                    errors.append("Do not import ViewerViewerContext.")
+                    report.errors.append("Do not import ViewerViewerContext.")
                 import_error = _validate_import_module(alias.name)
                 if import_error:
-                    errors.append(import_error)
+                    report.warnings.append(import_error)
         if isinstance(node, ast.Assign):
             viewer_assignment_error = _validate_viewer_assignment(node)
             if viewer_assignment_error:
-                errors.append(viewer_assignment_error)
+                report.errors.append(viewer_assignment_error)
         if isinstance(node, ast.Call):
             viewer_creation_error = _validate_new_viewer_call(node)
             if viewer_creation_error:
-                errors.append(viewer_creation_error)
+                report.errors.append(viewer_creation_error)
+            run_loop_error = _validate_napari_run_call(node)
+            if run_loop_error:
+                report.errors.append(run_loop_error)
             viewer_error = _validate_viewer_call(node, viewer)
             if viewer_error:
-                errors.append(viewer_error)
+                report.warnings.append(viewer_error)
             stats_error = _validate_statistical_coordinate_misuse(node, stat_value_names, histogram_axes_names)
             if stats_error:
-                errors.append(stats_error)
+                report.warnings.append(stats_error)
         if isinstance(node, ast.Attribute):
             layer_attr_error = _validate_layer_attribute_access(node)
             if layer_attr_error:
-                errors.append(layer_attr_error)
-    return errors
+                report.warnings.append(layer_attr_error)
 
 
 def _track_assignment_state(node: ast.stmt, uint8_arrays: set[str], unsafe_int_arrays: set[str]) -> None:
@@ -335,6 +364,17 @@ def _validate_new_viewer_call(node: ast.Call) -> str | None:
         if isinstance(func.value, ast.Name) and func.value.id == "napari" and func.attr == "Viewer":
             return "Do not create a new napari Viewer. Use the existing [viewer] object provided by the plugin."
     return None
+
+
+def _validate_napari_run_call(node: ast.Call) -> str | None:
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if not isinstance(func.value, ast.Name) or func.value.id != "napari":
+        return None
+    if func.attr != "run":
+        return None
+    return "Do not call [napari.run()] inside plugin-executed code. Use the existing napari event loop."
 
 
 def _validate_viewer_assignment(node: ast.Assign) -> str | None:

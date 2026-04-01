@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.4.6
+
+- Expanded SAM2 into the main release focus with bundled adapter support, setup auto-detect, checkpoint/config discovery, a live-model selector, and a more practical SAM2-managed points workflow for preview and propagation inside napari.
+- Improved SAM2 Live prompt interaction with managed prompt-layer initialization, polarity toggling on the active points layer, better point coloring, and clearer live status messages during preview, propagation, and save steps.
+- Refactored local Python guardrails into dual-mode validation: strict blocking for assistant-generated code and permissive execution with warnings for user-pasted `Run My Code` workflows.
+- Preserved protections against clearly bad napari hallucinations and known dtype hazards while separating hard errors, soft warnings, and repair notes in validation results.
+- Continued the broader 1.4.x workflow polish already visible in the current worktree, including SAM2-related UI/help updates and related formatting/documentation refreshes included in this release.
+
 ## 1.4.5
 
 - Added local prompt routing for compound imaging requests and a built-in axon-interior extraction workflow for dark-ring EM patterns.
