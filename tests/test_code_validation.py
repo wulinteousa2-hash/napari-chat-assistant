@@ -75,3 +75,15 @@ if selected_layer is not None and selected_layer._type == "shapes":
     )
 
     assert any("selected_layer._type" in error for error in errors)
+
+
+def test_validate_generated_code_rejects_invalid_layer_type_property_check():
+    errors = validate_generated_code(
+        """
+selected_layer = viewer.layers.selection.active
+if selected_layer is not None and selected_layer.type == "image":
+    print(selected_layer.name)
+"""
+    )
+
+    assert any("selected_layer.type" in error for error in errors)

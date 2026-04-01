@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any
 
@@ -49,6 +50,19 @@ def sam2_config_from_ui_state(ui_state: dict[str, Any] | None = None) -> SAM2Bac
         config_path=str(state.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip(),
         device=str(state.get("sam2_device", DEFAULT_UI_STATE["sam2_device"])).strip() or "cuda",
     )
+
+
+def _normalize_config_name(config_path: str) -> str:
+    normalized = str(config_path).replace("\\", "/")
+    marker = "/sam2/configs/"
+    if marker in normalized:
+        return "configs/" + normalized.split(marker, 1)[1]
+    marker = "/configs/"
+    if marker in normalized:
+        return "configs/" + normalized.split(marker, 1)[1]
+    if normalized.startswith("sam2/configs/"):
+        return normalized[len("sam2/") :]
+    return normalized
 
 
 def _wrapper_candidates(project_root: Path) -> list[Path]:
@@ -202,5 +216,131 @@ def segment_image_from_points(
     if binary.shape != np.asarray(image).shape:
         raise ValueError(
             f"SAM2 wrapper returned mask shape {binary.shape}, which does not match image shape {np.asarray(image).shape}."
-        )
+    )
     return (binary > 0).astype(np.int32, copy=False), message
+
+
+def _pick_device_local(device: str | None = None) -> str:
+    requested = str(device or "cuda").strip().lower()
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+    if requested == "cuda" and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+def _prepare_image(image: np.ndarray) -> np.ndarray:
+    array = np.asarray(image)
+    if array.ndim != 2:
+        raise ValueError(f"_prepare_image expects a 2D grayscale image, got ndim={array.ndim}.")
+    if not np.issubdtype(array.dtype, np.number):
+        raise ValueError(f"_prepare_image expects numeric image data, got dtype={array.dtype}.")
+    array = array.astype(np.float32, copy=False)
+    if array.size == 0:
+        raise ValueError("_prepare_image expects a non-empty image.")
+    finite = np.isfinite(array)
+    if not np.any(finite):
+        raise ValueError("_prepare_image image contains no finite values.")
+    valid = array[finite]
+    lo = float(valid.min())
+    hi = float(valid.max())
+    if hi > lo:
+        scaled = (array - lo) / (hi - lo)
+    else:
+        scaled = np.zeros_like(array, dtype=np.float32)
+    rgb = np.stack([scaled, scaled, scaled], axis=-1)
+    return np.clip(rgb * 255.0, 0.0, 255.0).astype(np.uint8, copy=False)
+
+
+def _mask_from_video_output(video_res_masks) -> np.ndarray:
+    masks = video_res_masks
+    if hasattr(masks, "detach"):
+        masks = masks.detach().cpu().numpy()
+    array = np.asarray(masks)
+    while array.ndim > 3:
+        array = np.squeeze(array, axis=0)
+    if array.ndim == 3:
+        array = array[0]
+    if array.ndim != 2:
+        raise ValueError(f"SAM2 video predictor returned unexpected mask ndim={array.ndim}.")
+    return (array > 0).astype(np.int32, copy=False)
+
+
+def propagate_volume_from_points(
+    volume: np.ndarray,
+    *,
+    seed_frame_idx: int,
+    point_coords_xy: np.ndarray,
+    point_labels: np.ndarray,
+    model_name: str | None = None,
+    config: SAM2BackendConfig | None = None,
+) -> tuple[np.ndarray, str]:
+    del model_name
+    resolved = config or sam2_config_from_ui_state()
+    ok, status_message = get_sam2_backend_status(resolved)
+    if not ok:
+        raise RuntimeError(status_message)
+
+    from PIL import Image
+    from sam2.build_sam import build_sam2_video_predictor
+
+    data = np.asarray(volume)
+    if data.ndim != 3:
+        raise ValueError(f"propagate_volume_from_points expects a 3D grayscale volume, got ndim={data.ndim}.")
+    if seed_frame_idx < 0 or seed_frame_idx >= data.shape[0]:
+        raise ValueError(f"seed_frame_idx={seed_frame_idx} is out of range for volume depth={data.shape[0]}.")
+
+    coords = np.asarray(point_coords_xy, dtype=np.float32)
+    labels = np.asarray(point_labels, dtype=np.int32)
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError(f"point_coords_xy must have shape (N, 2), got {coords.shape}")
+    if labels.ndim != 1 or labels.shape[0] != coords.shape[0]:
+        raise ValueError(f"point_labels must have shape ({coords.shape[0]},), got {labels.shape}")
+    if coords.shape[0] == 0:
+        raise ValueError("propagate_volume_from_points requires at least one prompt point.")
+
+    config_name = _normalize_config_name(str(resolved.config_file))
+    resolved_device = _pick_device_local(resolved.device)
+    predictor = build_sam2_video_predictor(config_name, str(resolved.checkpoint_file), device=resolved_device)
+    propagated = np.zeros_like(data, dtype=np.int32)
+
+    with TemporaryDirectory(prefix="sam2_stack_") as tmpdir:
+        for frame_idx in range(data.shape[0]):
+            rgb_slice = _prepare_image(data[frame_idx])
+            Image.fromarray(rgb_slice).save(Path(tmpdir) / f"{frame_idx:05d}.jpg", format="JPEG", quality=95)
+
+        inference_state = predictor.init_state(
+            str(tmpdir),
+            offload_video_to_cpu=(resolved_device != "cuda"),
+            offload_state_to_cpu=(resolved_device != "cuda"),
+        )
+        predictor.reset_state(inference_state)
+        predictor.add_new_points_or_box(
+            inference_state,
+            frame_idx=int(seed_frame_idx),
+            obj_id=1,
+            points=coords,
+            labels=labels,
+            clear_old_points=True,
+            normalize_coords=True,
+        )
+
+        seen_frames: set[int] = set()
+        for reverse in (False, True):
+            for frame_idx, _obj_ids, video_res_masks in predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=int(seed_frame_idx),
+                reverse=reverse,
+            ):
+                propagated[int(frame_idx)] = _mask_from_video_output(video_res_masks)
+                seen_frames.add(int(frame_idx))
+
+    pos_count = int(np.count_nonzero(labels == 1))
+    neg_count = int(np.count_nonzero(labels == 0))
+    return (
+        propagated,
+        f"SAM2 propagation used device={resolved_device} seed_slice={seed_frame_idx} "
+        f"frames={len(seen_frames)} pos_points={pos_count} neg_points={neg_count}.",
+    )

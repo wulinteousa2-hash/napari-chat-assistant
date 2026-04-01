@@ -5,13 +5,17 @@ from scipy import ndimage as ndi
 import napari
 from napari.layers import Labels, Shapes, Image, Points
 from skimage.measure import label as sk_label
-from skimage.measure import regionprops_table
+from skimage.measure import regionprops, regionprops_table
 from skimage.draw import polygon
+from skimage.filters import threshold_otsu
+from skimage.morphology import disk, remove_small_objects
+from skimage.segmentation import clear_border
 
 from napari_chat_assistant.agent.context import find_any_layer, find_image_layer, find_labels_layer
 from napari_chat_assistant.agent.image_ops import fill_holes, keep_largest_component, remove_small_components
 from napari_chat_assistant.agent.sam2_backend import (
     get_sam2_backend_status,
+    propagate_volume_from_points,
     segment_image_from_box,
     segment_image_from_points,
 )
@@ -237,6 +241,40 @@ def _points_prompt_xy_and_labels(layer: Points) -> tuple[np.ndarray, np.ndarray]
     if not coords_xy:
         raise ValueError(f"Points layer [{layer.name}] does not contain usable 2D point prompts.")
     return np.asarray(coords_xy, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
+
+def _points_prompt_slice_xy_and_labels(layer: Points) -> tuple[int, np.ndarray, np.ndarray]:
+    indices = sorted(int(i) for i in (getattr(layer, "selected_data", set()) or set()))
+    if not indices:
+        indices = list(range(len(layer.data)))
+    if not indices:
+        raise ValueError(f"Points layer [{layer.name}] does not contain any prompt points.")
+
+    coords_xy: list[list[float]] = []
+    labels: list[int] = []
+    z_indices: list[int] = []
+    feature_candidates = ("sam_label", "point_label", "prompt_label", "label", "is_positive", "positive")
+    for index in indices:
+        point = np.asarray(layer.data[index], dtype=float)
+        if point.shape[0] < 3:
+            continue
+        z_indices.append(int(round(float(point[0]))))
+        coords_xy.append([float(point[2]), float(point[1])])
+        resolved_label = None
+        for candidate in feature_candidates:
+            resolved_label = _coerce_point_label(_feature_value(layer, candidate, index))
+            if resolved_label is not None:
+                break
+        labels.append(1 if resolved_label is None else resolved_label)
+    if not coords_xy:
+        raise ValueError(f"Points layer [{layer.name}] does not contain usable 3D point prompts.")
+    unique_z = sorted(set(z_indices))
+    if len(unique_z) != 1:
+        raise ValueError(
+            f"Points layer [{layer.name}] must place selected prompts on a single z slice for 3D propagation. "
+            f"Found slices {unique_z}."
+        )
+    return unique_z[0], np.asarray(coords_xy, dtype=np.float32), np.asarray(labels, dtype=np.int32)
 
 
 def _roi_mask_from_layer(roi_layer, target_shape: tuple[int, ...]) -> np.ndarray:
@@ -1012,6 +1050,193 @@ class LabelConnectedComponentsTool:
         )
 
 
+class ExtractAxonInteriorsTool:
+    spec = ToolSpec(
+        name="extract_axon_interiors",
+        display_name="Extract Axon Interiors",
+        category="segmentation",
+        description="Extract candidate axon interiors from a 2D grayscale EM image using dark-ring enclosure and region filtering.",
+        execution_mode="worker",
+        supported_layer_types=("image",),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Optional source EM image layer."),
+            ParamSpec("sigma", "float", description="Gaussian smoothing sigma before dark-ring thresholding.", default=1.0, minimum=0.0, maximum=5.0),
+            ParamSpec("dark_quantile", "float", description="Quantile used to threshold dark myelin-like signal.", default=0.2, minimum=0.01, maximum=0.5),
+            ParamSpec("closing_radius", "int", description="Morphological closing radius for dark rings.", default=2, minimum=0, maximum=12),
+            ParamSpec("min_area", "int", description="Minimum enclosed interior area to keep.", default=100, minimum=1),
+            ParamSpec("max_area", "int", description="Maximum enclosed interior area to keep.", default=500000, minimum=1),
+            ParamSpec("clear_border", "bool", description="Drop candidate interiors that touch the image border.", default=True),
+            ParamSpec("min_solidity", "float", description="Minimum solidity required for a kept candidate.", default=0.2, minimum=0.0, maximum=1.0),
+            ParamSpec("max_eccentricity", "float", description="Maximum eccentricity allowed for a kept candidate.", default=0.995, minimum=0.0, maximum=1.0),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "dark_ring_enclosed_interiors", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for axon-interior extraction."
+        if getattr(image_layer, "rgb", False):
+            return "Axon-interior extraction currently supports grayscale 2D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 2:
+            return f"Axon-interior extraction currently supports 2D image layers only. Got ndim={image_data.ndim}."
+        sigma = normalize_float(args.get("sigma", 1.0), default=1.0, minimum=0.0, maximum=5.0)
+        dark_quantile = normalize_float(args.get("dark_quantile", 0.2), default=0.2, minimum=0.01, maximum=0.5)
+        closing_radius = normalize_int(args.get("closing_radius", 2), default=2, minimum=0, maximum=12)
+        min_area = normalize_int(args.get("min_area", 100), default=100, minimum=1)
+        max_area = normalize_int(args.get("max_area", 500000), default=500000, minimum=min_area)
+        clear_border_flag = bool(args.get("clear_border", True))
+        min_solidity = normalize_float(args.get("min_solidity", 0.2), default=0.2, minimum=0.0, maximum=1.0)
+        max_eccentricity = normalize_float(args.get("max_eccentricity", 0.995), default=0.995, minimum=0.0, maximum=1.0)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "output_name": next_output_name(ctx.viewer, f"{image_layer.name}_axon_interiors"),
+                "data": image_data.astype(np.float32, copy=True),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+                "sigma": sigma,
+                "dark_quantile": dark_quantile,
+                "closing_radius": closing_radius,
+                "min_area": min_area,
+                "max_area": max_area,
+                "clear_border": clear_border_flag,
+                "min_solidity": min_solidity,
+                "max_eccentricity": max_eccentricity,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        image = np.asarray(payload["data"], dtype=np.float32)
+        finite = np.isfinite(image)
+        if not np.any(finite):
+            payload["result"] = np.zeros_like(image, dtype=np.int32)
+            payload["object_count"] = 0
+            payload["candidate_count"] = 0
+            payload["threshold"] = None
+            return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload)
+
+        image = np.where(finite, image, np.nanmedian(image[finite]))
+        image_min = float(image.min())
+        image_max = float(image.max())
+        if image_max > image_min:
+            normalized = (image - image_min) / (image_max - image_min)
+        else:
+            normalized = np.zeros_like(image, dtype=np.float32)
+
+        sigma = float(payload["sigma"])
+        smoothed = ndi.gaussian_filter(normalized, sigma=sigma) if sigma > 0 else normalized
+        support_epsilon = max(1e-6, (image_max - image_min) * 1e-6)
+        support_mask = finite & (image > (image_min + support_epsilon))
+        support_values = smoothed[support_mask]
+        if support_values.size == 0:
+            support_values = smoothed[finite]
+            support_mask = finite
+        quantile_threshold = float(np.quantile(support_values, float(payload["dark_quantile"])))
+        try:
+            otsu_threshold = float(threshold_otsu(support_values))
+        except Exception:
+            otsu_threshold = quantile_threshold
+        dark_threshold = otsu_threshold
+        dark_mask = support_mask & (smoothed <= dark_threshold)
+
+        closing_radius = int(payload["closing_radius"])
+        if closing_radius > 0:
+            dark_mask = ndi.binary_closing(dark_mask, structure=disk(closing_radius))
+
+        enclosed = ndi.binary_fill_holes(dark_mask) & ~dark_mask
+        enclosed = remove_small_objects(enclosed.astype(bool), min_size=max(1, int(payload["min_area"])))
+        if bool(payload["clear_border"]):
+            enclosed = clear_border(enclosed)
+
+        labeled = sk_label(enclosed, connectivity=1).astype(np.int32, copy=False)
+        kept = np.zeros_like(labeled, dtype=np.int32)
+        kept_count = 0
+        candidate_count = 0
+        min_area = int(payload["min_area"])
+        max_area = int(payload["max_area"])
+        min_solidity = float(payload["min_solidity"])
+        max_eccentricity = float(payload["max_eccentricity"])
+        for prop in regionprops(labeled):
+            candidate_count += 1
+            if prop.area < min_area or prop.area > max_area:
+                continue
+            solidity = getattr(prop, "solidity", None)
+            solidity_value = 0.0 if solidity is None else float(solidity)
+            if solidity_value < min_solidity:
+                continue
+            eccentricity = getattr(prop, "eccentricity", None)
+            eccentricity_value = 1.0 if eccentricity is None else float(eccentricity)
+            if eccentricity_value > max_eccentricity:
+                continue
+            kept_count += 1
+            kept[labeled == prop.label] = kept_count
+
+        payload["result"] = kept
+        payload["object_count"] = kept_count
+        payload["candidate_count"] = candidate_count
+        payload["threshold"] = dark_threshold
+        payload["foreground_pixels"] = int(np.count_nonzero(kept))
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "parameters": {
+                    "sigma": payload["sigma"],
+                    "dark_quantile": payload["dark_quantile"],
+                    "closing_radius": payload["closing_radius"],
+                    "min_area": payload["min_area"],
+                    "max_area": payload["max_area"],
+                    "clear_border": payload["clear_border"],
+                    "min_solidity": payload["min_solidity"],
+                    "max_eccentricity": payload["max_eccentricity"],
+                },
+                "input_layer": payload["image_layer_name"],
+                "output_layer": payload["output_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        labels_layer = ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        labels_layer.metadata = dict(getattr(labels_layer, "metadata", {}) or {})
+        labels_layer.metadata["axon_interior_extraction"] = {
+            "source_layer": payload["image_layer_name"],
+            "object_count": int(payload["object_count"]),
+            "candidate_count": int(payload["candidate_count"]),
+            "threshold": payload["threshold"],
+            "sigma": payload["sigma"],
+            "dark_quantile": payload["dark_quantile"],
+            "closing_radius": payload["closing_radius"],
+            "min_area": payload["min_area"],
+            "max_area": payload["max_area"],
+            "clear_border": payload["clear_border"],
+            "min_solidity": payload["min_solidity"],
+            "max_eccentricity": payload["max_eccentricity"],
+        }
+        return (
+            f"Extracted candidate axon interiors from [{payload['image_layer_name']}] into [{payload['output_name']}]. "
+            f"kept={payload['object_count']} candidates={payload['candidate_count']} "
+            f"foreground_pixels={payload['foreground_pixels']} dark_threshold={payload['threshold']:.6g}."
+        )
+
+
 class MeasureLabelsTableTool:
     spec = ToolSpec(
         name="measure_labels_table",
@@ -1659,6 +1884,118 @@ class SAMSegmentFromPointsTool:
         )
 
 
+class SAMPropagatePoints3DTool:
+    spec = ToolSpec(
+        name="sam_propagate_points_3d",
+        display_name="SAM Propagate Points 3D",
+        category="segmentation",
+        description="Run SAM2 propagation through a 3D grayscale volume from positive and negative points placed on one seed slice.",
+        execution_mode="worker",
+        supported_layer_types=("image", "points"),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Target 3D grayscale image layer."),
+            ParamSpec("points_layer", "string", description="3D Points prompt layer placed on one seed slice."),
+            ParamSpec("model_name", "string", description="Optional SAM2 wrapper/model identifier."),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "sam2_video_propagation", "deterministic": False},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for 3D SAM2 propagation."
+        if getattr(image_layer, "rgb", False):
+            return "3D SAM2 propagation currently supports grayscale 3D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 3:
+            return f"3D SAM2 propagation currently supports 3D image layers only. Got ndim={image_data.ndim}."
+        points_layer = _resolve_points_layer(ctx.viewer, args.get("points_layer"))
+        if points_layer is None:
+            return "No valid Points prompt layer available for 3D SAM2 propagation."
+        try:
+            seed_slice, point_coords_xy, point_labels = _points_prompt_slice_xy_and_labels(points_layer)
+        except Exception as exc:
+            return str(exc)
+        if seed_slice < 0 or seed_slice >= image_data.shape[0]:
+            return f"Prompt seed slice {seed_slice} is out of range for image depth {image_data.shape[0]}."
+
+        ready, status_message = get_sam2_backend_status()
+        if not ready:
+            return status_message
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "points_layer_name": points_layer.name,
+                "output_name": next_output_name(ctx.viewer, f"{image_layer.name}_sam2_propagated"),
+                "model_name": str(args.get("model_name") or "").strip() or None,
+                "data": image_data.copy(),
+                "seed_slice": int(seed_slice),
+                "point_coords_xy": point_coords_xy,
+                "point_labels": point_labels,
+                "positive_points": int(np.count_nonzero(point_labels == 1)),
+                "negative_points": int(np.count_nonzero(point_labels == 0)),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        mask_volume, backend_message = propagate_volume_from_points(
+            np.asarray(payload["data"]),
+            seed_frame_idx=int(payload["seed_slice"]),
+            point_coords_xy=np.asarray(payload["point_coords_xy"], dtype=np.float32),
+            point_labels=np.asarray(payload["point_labels"], dtype=np.int32),
+            model_name=payload.get("model_name"),
+        )
+        payload["result"] = mask_volume
+        payload["backend_message"] = backend_message
+        payload["foreground_voxels"] = int(np.count_nonzero(mask_volume))
+        payload["tracked_slices"] = int(np.count_nonzero(np.any(mask_volume > 0, axis=(1, 2))))
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "parameters": {
+                    "seed_slice": int(payload["seed_slice"]),
+                    "point_count": int(len(payload["point_labels"])),
+                    "positive_points": payload["positive_points"],
+                    "negative_points": payload["negative_points"],
+                    "model_name": payload.get("model_name"),
+                },
+                "input_layer": payload["image_layer_name"],
+                "points_layer": payload["points_layer_name"],
+                "output_layer": payload["output_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        suffix = f" {payload['backend_message']}" if payload.get("backend_message") else ""
+        return (
+            f"Propagated SAM2 through 3D image [{payload['image_layer_name']}] using [{payload['points_layer_name']}] "
+            f"seed_slice={payload['seed_slice']} positive_points={payload['positive_points']} "
+            f"negative_points={payload['negative_points']} as [{payload['output_name']}]. "
+            f"tracked_slices={payload['tracked_slices']} foreground_voxels={payload['foreground_voxels']}.{suffix}"
+        )
+
+
 def workbench_scaffold_tools():
     return [
         GaussianDenoiseTool(),
@@ -1668,6 +2005,7 @@ def workbench_scaffold_tools():
         LabelConnectedComponentsTool(),
         MeasureLabelsTableTool(),
         ProjectMaxIntensityTool(),
+        ExtractAxonInteriorsTool(),
         CropToLayerBBoxTool(),
         ShowImageLayersInGridTool(),
         HideImageGridViewTool(),
@@ -1677,6 +2015,7 @@ def workbench_scaffold_tools():
         ExtractROIValuesTool(),
         SAMSegmentFromBoxTool(),
         SAMSegmentFromPointsTool(),
+        SAMPropagatePoints3DTool(),
         PlaceholderTool(
             ToolSpec(
                 name="sam_refine_mask",

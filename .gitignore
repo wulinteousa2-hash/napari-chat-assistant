@@ -12,5 +12,7 @@ env/
 .pytest_cache/
 .mypy_cache/
 .coverage
+coverage.xml
 htmlcov/
 .DS_Store
+.private/

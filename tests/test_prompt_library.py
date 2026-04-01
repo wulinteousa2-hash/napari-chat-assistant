@@ -113,3 +113,12 @@ def test_merged_code_records_keeps_built_in_demo_visible_when_recent_duplicate_e
 
     assert any(item["source"] == "recent" and item["code"] == code for item in merged)
     assert any(item["source"] == "built_in" and item["code"] == code and item["title"] == built_in["title"] for item in merged)
+
+
+def test_upsert_recent_code_preserves_code_formatting():
+    state = {"code_recent": []}
+    code = "if True:\n    print('x')\n"
+
+    lib.upsert_recent_code(state, code)
+
+    assert state["code_recent"][0]["code"] == code

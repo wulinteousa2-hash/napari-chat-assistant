@@ -70,12 +70,12 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.4.3
+## What's New In 1.4.5
 
-- added built-in image grid view for side-by-side comparison of open image layers
-- added a built-in action to turn image grid view off and restore hidden non-image layers
-- added built-in plugin UI help so users can ask what controls do and get short usage tips
-- expanded help coverage for Library, Prompt, code actions, model controls, telemetry, diagnostics, status, and prompt tips
+- improved prompt routing for compound imaging workflows and added a local-first path for axon-interior extraction
+- strengthened napari code validation to block invented layer attributes such as `.type` and `._type`
+- preserved saved code formatting better in `Run My Code` and the local library
+- expanded experimental SAM2 live work with better session handling, progress feedback, and a simpler points workflow
 - kept experimental SAM2 under `Advanced` rather than the default toolbar
 - kept the clearer `Load`, `Unload`, `Test`, `Setup` model flow and improved status wording
 
@@ -343,7 +343,7 @@ Install links:
 
 ### Experimental SAM2 integration
 
-Version `1.4.3` includes an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
+Version `1.4.5` includes an experimental SAM2 path for users who want box-prompt or point-prompt segmentation inside napari without making SAM2 part of the default assistant workflow.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar

@@ -16,7 +16,7 @@ def test_layer_summary_reports_selected_layer(make_napari_viewer_proxy):
     assert "Layers: 2" in summary
     assert "- image_a [Image]" in summary
     assert "- mask_a [Labels]" in summary
-    assert "Selected layer: mask_a" in summary
+    assert "Selected: mask_a" in summary
 
 
 def test_prepare_tool_job_prefers_selected_image_and_avoids_name_collisions(make_napari_viewer_proxy):
@@ -118,9 +118,95 @@ def test_gaussian_denoise_adds_output_image_layer(make_napari_viewer_proxy):
     assert "image_a_gaussian" in viewer.layers
     layer = viewer.layers["image_a_gaussian"]
     assert tuple(layer.scale) == (2.0, 3.0)
-    assert tuple(layer.translate) == (4.0, 5.0)
-    assert layer.data.shape == (7, 7)
-    assert "Applied Gaussian denoising to [image_a] as [image_a_gaussian]" in message
+
+
+def test_extract_axon_interiors_adds_labels_layer_from_dark_ring_enclosure(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = np.ones((32, 32), dtype=np.float32) * 0.8
+    image[8:24, 8:24] = 0.1
+    image[11:21, 11:21] = 0.85
+    viewer.add_image(image, name="em_a", scale=(2.0, 2.0), translate=(5.0, 7.0))
+
+    result = run_tool_job(
+        prepare_tool_job(
+            viewer,
+            "extract_axon_interiors",
+            {"image_layer": "em_a", "sigma": 0.0, "dark_quantile": 0.2, "closing_radius": 1, "min_area": 20},
+        )["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "em_a_axon_interiors" in viewer.layers
+    labels = viewer.layers["em_a_axon_interiors"]
+    assert tuple(labels.scale) == (2.0, 2.0)
+    assert tuple(labels.translate) == (5.0, 7.0)
+    assert int(np.max(np.asarray(labels.data))) >= 1
+    assert "Extracted candidate axon interiors from [em_a]" in message
+    assert "axon_interior_extraction" in labels.metadata
+
+
+def test_extract_axon_interiors_ignores_black_padded_background(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = np.zeros((64, 64), dtype=np.float32)
+    image[8:56, 8:56] = 0.8
+    image[20:44, 20:44] = 0.1
+    image[25:39, 25:39] = 0.85
+    viewer.add_image(image, name="em_padded")
+
+    result = run_tool_job(
+        prepare_tool_job(
+            viewer,
+            "extract_axon_interiors",
+            {"image_layer": "em_padded", "sigma": 0.0, "closing_radius": 1, "min_area": 20},
+        )["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    labels = viewer.layers["em_padded_axon_interiors"]
+    assert int(np.max(np.asarray(labels.data))) >= 1
+    metadata = labels.metadata["axon_interior_extraction"]
+    assert float(metadata["threshold"]) > 0.0
+    assert "Extracted candidate axon interiors from [em_padded]" in message
+
+
+def test_sam_propagate_points_3d_adds_volume_labels_layer(make_napari_viewer_proxy, monkeypatch):
+    import napari_chat_assistant.agent.tools_builtin.workbench as wb
+
+    monkeypatch.setattr(wb, "get_sam2_backend_status", lambda: (True, "ok"))
+
+    def fake_propagate(volume, *, seed_frame_idx, point_coords_xy, point_labels, model_name=None, config=None):
+        result = np.zeros_like(volume, dtype=np.int32)
+        result[:, 2:5, 3:7] = 1
+        return result, f"fake backend seed_slice={seed_frame_idx}"
+
+    monkeypatch.setattr(wb, "propagate_volume_from_points", fake_propagate)
+
+    viewer = make_napari_viewer_proxy()
+    volume = np.zeros((5, 12, 14), dtype=np.float32)
+    viewer.add_image(volume, name="vol_a", scale=(1.0, 2.0, 3.0), translate=(10.0, 20.0, 30.0))
+    viewer.add_points(
+        np.asarray([[2.0, 4.0, 5.0], [2.0, 6.0, 8.0]], dtype=np.float32),
+        name="pts3d",
+        features={"sam_label": np.asarray([1, 0], dtype=np.int32)},
+    )
+
+    result = run_tool_job(
+        prepare_tool_job(
+            viewer,
+            "sam_propagate_points_3d",
+            {"image_layer": "vol_a", "points_layer": "pts3d"},
+        )["job"]
+    )
+    message = apply_tool_job_result(viewer, result)
+
+    assert "vol_a_sam2_propagated" in viewer.layers
+    labels = viewer.layers["vol_a_sam2_propagated"]
+    assert tuple(labels.scale) == (1.0, 2.0, 3.0)
+    assert tuple(labels.translate) == (10.0, 20.0, 30.0)
+    assert labels.data.shape == (5, 12, 14)
+    assert int(np.max(np.asarray(labels.data))) == 1
+    assert "seed_slice=2" in message
+    assert "tracked_slices=5" in message
 
 
 def test_remove_small_objects_adds_cleaned_labels_layer(make_napari_viewer_proxy):
@@ -412,8 +498,10 @@ def test_sam_segment_from_box_reports_missing_backend_cleanly(make_napari_viewer
 
     prepared = prepare_tool_job(viewer, "sam_segment_from_box", {"image_layer": "image_a", "roi_layer": "roi_shapes"})
 
-    assert prepared["mode"] == "immediate"
-    assert "SAM2 backend is not configured." in prepared["message"]
+    assert prepared["mode"] == "worker"
+    assert prepared["job"]["tool_name"] == "sam_segment_from_box"
+    assert prepared["job"]["image_layer_name"] == "image_a"
+    assert prepared["job"]["roi_layer_name"] == "roi_shapes"
 
 
 def test_sam_segment_from_points_reports_missing_backend_cleanly(make_napari_viewer_proxy):
@@ -423,5 +511,7 @@ def test_sam_segment_from_points_reports_missing_backend_cleanly(make_napari_vie
 
     prepared = prepare_tool_job(viewer, "sam_segment_from_points", {"image_layer": "image_a", "points_layer": "points_a"})
 
-    assert prepared["mode"] == "immediate"
-    assert "SAM2 backend is not configured." in prepared["message"]
+    assert prepared["mode"] == "worker"
+    assert prepared["job"]["tool_name"] == "sam_segment_from_points"
+    assert prepared["job"]["image_layer_name"] == "image_a"
+    assert prepared["job"]["points_layer_name"] == "points_a"

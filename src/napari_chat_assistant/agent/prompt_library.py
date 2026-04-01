@@ -513,8 +513,8 @@ def normalize_record(record: dict, *, source: str) -> dict:
 
 
 def normalize_code_record(record: dict, *, source: str) -> dict:
-    code = str(record.get("code", "")).strip()
-    if not code:
+    code = str(record.get("code", ""))
+    if not code.strip():
         return {}
     return {
         "id": str(record.get("id") or stable_item_id("code", code)).strip(),
@@ -557,7 +557,7 @@ def default_code_records() -> list[dict]:
         {
             "id": stable_item_id("code", item["code"]),
             "title": str(item.get("title") or prompt_title(item["code"])).strip(),
-            "code": str(item["code"]).strip(),
+            "code": str(item["code"]),
             "tags": normalize_tags(item.get("tags")),
             "source": "built_in",
             "updated_at": "",
@@ -718,8 +718,8 @@ def upsert_saved_prompt(data: dict, prompt_text: str, *, pin: bool | None = None
 
 
 def upsert_recent_code(data: dict, code_text: str, limit: int = 20) -> dict:
-    code = str(code_text or "").strip()
-    if not code:
+    code = str(code_text or "")
+    if not code.strip():
         return data
     now = utc_now_iso()
     existing = next((item for item in data.get("code_recent", []) if item.get("code") == code), None)
@@ -740,8 +740,8 @@ def upsert_recent_code(data: dict, code_text: str, limit: int = 20) -> dict:
 
 
 def upsert_saved_code(data: dict, code_text: str, *, pin: bool | None = None) -> dict:
-    code = str(code_text or "").strip()
-    if not code:
+    code = str(code_text or "")
+    if not code.strip():
         return data
     now = utc_now_iso()
     saved = list(data.get("code_saved", []))

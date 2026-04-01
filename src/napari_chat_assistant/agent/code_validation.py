@@ -270,14 +270,15 @@ def _is_uint8_expr(node: ast.AST) -> bool:
 
 
 def _validate_layer_attribute_access(node: ast.Attribute) -> str | None:
-    if str(node.attr or "").strip() != "_type":
+    attr_name = str(node.attr or "").strip()
+    if attr_name not in {"_type", "type"}:
         return None
     if isinstance(node.value, ast.Name):
         target_name = node.value.id
     else:
         target_name = "layer"
     return (
-        f"Invalid napari layer attribute access: [{target_name}._type] is not a supported napari API. "
+        f"Invalid napari layer attribute access: [{target_name}.{attr_name}] is not a supported napari API. "
         "Use isinstance(..., napari.layers.Shapes/Labels/Image/Points) or inspect the layer class instead."
     )
 

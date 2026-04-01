@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.4.5
+
+- Added local prompt routing for compound imaging requests and a built-in axon-interior extraction workflow for dark-ring EM patterns.
+- Strengthened napari code validation to reject invented layer attributes such as `.type` and `._type` before execution.
+- Improved `Run My Code` and prompt-library handling so saved code keeps its original formatting more reliably.
+- Added a telemetry report CLI and supporting documentation for tested models and telemetry result snapshots.
+- Improved experimental SAM2 Live behavior with a non-modal dialog, status/progress feedback, 3D propagation support, and a simpler SAM2-managed points workflow.
+
 ## 1.4.3
 
 - Added built-in image grid view for side-by-side comparison of currently loaded image layers.

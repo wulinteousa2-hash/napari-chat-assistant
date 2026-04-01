@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QProgressBar,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -68,6 +69,7 @@ from napari_chat_assistant.agent.prompt_library import (
     upsert_saved_code,
     upsert_saved_prompt,
 )
+from napari_chat_assistant.agent.prompt_routing import route_local_workflow_prompt
 from napari_chat_assistant.agent.sam2_backend import get_sam2_backend_status, sam2_config_from_ui_state
 from napari_chat_assistant.agent.session_memory import (
     add_memory_item,
@@ -479,8 +481,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def wait_indicator_text() -> str:
         frames = (".", "..", "...")
         elapsed = max(0.0, time.perf_counter() - float(wait_indicator["started_at"]))
+        phase = str(wait_indicator["phase"] or "thinking").strip() or "thinking"
+        if elapsed >= 2.0:
+            return f"Status: {phase}... {int(elapsed)}s"
         frame = frames[int(elapsed * 4) % len(frames)]
-        return f"Status: {wait_indicator['phase']} {frame}"
+        return f"Status: {phase} {frame}"
 
     def start_wait_indicator(*, phase: str = "thinking"):
         wait_indicator["active"] = True
@@ -489,6 +494,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
         connection_status.setStyleSheet(wait_indicator["style"])
         connection_status.setText(wait_indicator_text())
         wait_timer.start()
+
+    def set_wait_indicator_phase(phase: str):
+        wait_indicator["phase"] = str(phase or wait_indicator.get("phase", "thinking")).strip() or "thinking"
+        if wait_indicator["active"]:
+            connection_status.setText(wait_indicator_text())
 
     def stop_wait_indicator():
         wait_indicator["active"] = False
@@ -609,19 +619,22 @@ def chat_widget(napari_viewer=None) -> QWidget:
         code_library_list.setFont(font)
 
     def format_code_block(code_text: str) -> str:
-        stripped = str(code_text or "").strip()
-        return f"```python\n{stripped}\n```" if stripped else "```python\n# empty\n```"
+        code = str(code_text or "")
+        return f"```python\n{code}\n```" if code.strip() else "```python\n# empty\n```"
 
     def strip_code_fences(code_text: str) -> str:
-        source = str(code_text or "").strip()
-        if not source.startswith("```"):
+        source = str(code_text or "")
+        if not source.strip():
+            return ""
+        trimmed = source.strip()
+        if not trimmed.startswith("```"):
             return source
-        lines = source.splitlines()
+        lines = trimmed.splitlines()
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        return "\n".join(lines).strip()
+        return "\n".join(lines)
 
     def extract_manual_code_submission(text: str) -> str:
         source = str(text or "").strip()
@@ -1492,8 +1505,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
         dialog_layout = QVBoxLayout(dialog)
 
         hint = QLabel(
-            "Live SAM2 preview for 2D grayscale images. Use a Shapes layer for Box mode or a Points layer for Points mode. "
-            "Turn on Auto-update to refresh the preview while editing prompts."
+            "Live SAM2 preview for grayscale images. "
+            "Use a Shapes layer for 2D Box mode, or initialize a SAM2-managed points session for points prompting. "
+            "For 3D propagation, initialize on the current seed slice and place prompts there before propagating."
         )
         hint.setWordWrap(True)
         dialog_layout.addWidget(hint)
@@ -1503,11 +1517,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
         mode_combo = QComboBox()
         mode_combo.addItems(["Box", "Points"])
         prompt_layer_combo = QComboBox()
+        polarity_combo = QComboBox()
+        polarity_combo.addItems(["Positive", "Negative"])
         auto_update_check = QCheckBox("Auto-update")
         auto_update_check.setChecked(True)
         form.addRow("Image:", image_combo)
         form.addRow("Mode:", mode_combo)
         form.addRow("Prompt Layer:", prompt_layer_combo)
+        form.addRow("Polarity:", polarity_combo)
         form.addRow("", auto_update_check)
         dialog_layout.addLayout(form)
 
@@ -1516,12 +1533,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
         status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
         dialog_layout.addWidget(status_label)
 
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 0)
+        progress_bar.setVisible(False)
+        dialog_layout.addWidget(progress_bar)
+
         button_row = QWidget()
         button_layout = QHBoxLayout(button_row)
+        init_btn = QPushButton("Initialize")
         preview_btn = QPushButton("Run Preview")
         apply_btn = QPushButton("Apply")
         clear_btn = QPushButton("Clear Preview")
         close_btn = QPushButton("Close")
+        button_layout.addWidget(init_btn)
         button_layout.addWidget(preview_btn)
         button_layout.addWidget(apply_btn)
         button_layout.addWidget(clear_btn)
@@ -1529,12 +1553,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
         dialog_layout.addWidget(button_row)
 
         preview_layer_name = "__sam2_preview__"
+        combined_points_layer_name = "__sam2_live_points__"
         live_state = {
             "request_id": 0,
             "busy": False,
             "rerun": False,
             "last_payload": None,
             "connections": [],
+            "initialized": False,
+            "seed_slice": None,
+            "managed_points_layer": None,
         }
         debounce_timer = QTimer(dialog)
         debounce_timer.setSingleShot(True)
@@ -1549,27 +1577,238 @@ def chat_widget(napari_viewer=None) -> QWidget:
             else:
                 status_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
 
-        def current_prompt_tool_name() -> str:
-            return "sam_segment_from_box" if mode_combo.currentText().strip() == "Box" else "sam_segment_from_points"
+        def set_live_progress(active: bool):
+            progress_bar.setVisible(bool(active))
 
-        def image_layer_names_2d() -> list[str]:
+        def set_form_row_visible(field_widget, visible: bool):
+            try:
+                label_widget = form.labelForField(field_widget)
+                if label_widget is not None:
+                    label_widget.setVisible(bool(visible))
+            except Exception:
+                pass
+            field_widget.setVisible(bool(visible))
+
+        def current_image_layer():
+            image_name = image_combo.currentText().strip()
+            if viewer is None or not image_name or image_name not in viewer.layers:
+                return None
+            layer = viewer.layers[image_name]
+            return layer if isinstance(layer, napari.layers.Image) else None
+
+        def current_image_ndim() -> int | None:
+            layer = current_image_layer()
+            return None if layer is None else int(np.asarray(layer.data).ndim)
+
+        def current_prompt_tool_name() -> str | None:
+            image_layer = current_image_layer()
+            if image_layer is None:
+                return None
+            image_data = np.asarray(image_layer.data)
+            mode = mode_combo.currentText().strip()
+            if image_data.ndim == 2:
+                return "sam_segment_from_box" if mode == "Box" else "sam_segment_from_points"
+            if image_data.ndim == 3 and mode == "Points":
+                return "sam_propagate_points_3d"
+            return None
+
+        def image_layer_names_sam2() -> list[str]:
             names = []
             for layer in viewer.layers if viewer is not None else []:
                 if isinstance(layer, napari.layers.Image) and not getattr(layer, "rgb", False):
                     data = np.asarray(layer.data)
-                    if data.ndim == 2:
+                    if data.ndim in (2, 3):
                         names.append(layer.name)
             return names
 
         def prompt_layer_names_for_mode() -> list[str]:
             mode = mode_combo.currentText().strip()
+            image_ndim = current_image_ndim()
             names = []
             for layer in viewer.layers if viewer is not None else []:
-                if mode == "Box" and isinstance(layer, napari.layers.Shapes):
-                    names.append(layer.name)
-                if mode == "Points" and isinstance(layer, napari.layers.Points):
+                if mode == "Box" and image_ndim == 2 and isinstance(layer, napari.layers.Shapes):
                     names.append(layer.name)
             return names
+
+        def point_layer_names_for_ndim(ndim: int | None) -> list[str]:
+            names = []
+            for layer in viewer.layers if viewer is not None else []:
+                if not isinstance(layer, napari.layers.Points):
+                    continue
+                if layer.name == combined_points_layer_name:
+                    continue
+                data = np.asarray(layer.data)
+                if ndim == 2 and data.ndim == 2 and data.shape[1] >= 2:
+                    names.append(layer.name)
+                if ndim == 3 and data.ndim == 2 and data.shape[1] >= 3:
+                    names.append(layer.name)
+            return names
+
+        def current_seed_slice() -> int | None:
+            if viewer is None or current_image_ndim() != 3:
+                return None
+            try:
+                return int(round(float(viewer.dims.point[0])))
+            except Exception:
+                return None
+
+        def managed_points_layer_name() -> str | None:
+            image_layer = current_image_layer()
+            if image_layer is None:
+                return None
+            return f"{image_layer.name}_sam2_prompts"
+
+        def active_polarity_label() -> int:
+            return 1 if polarity_combo.currentText().strip() == "Positive" else 0
+
+        def apply_points_polarity_defaults(layer):
+            label_value = active_polarity_label()
+            try:
+                layer.feature_defaults = {"sam_label": label_value}
+            except Exception:
+                pass
+            try:
+                layer.current_properties = {"sam_label": np.asarray([label_value], dtype=np.int32)}
+            except Exception:
+                pass
+            color = "#4caf50" if label_value == 1 else "#ef5350"
+            try:
+                layer.current_face_color = color
+            except Exception:
+                pass
+            try:
+                layer.current_border_color = "white"
+            except Exception:
+                pass
+
+        def ensure_managed_points_layer():
+            if viewer is None:
+                return None
+            image_layer = current_image_layer()
+            if image_layer is None:
+                set_live_status("Select an image layer first before initializing SAM2 prompts.", ok=False)
+                return None
+            ndim = current_image_ndim()
+            if ndim not in {2, 3}:
+                set_live_status("SAM2 prompts currently support 2D or 3D grayscale images only.", ok=False)
+                return None
+            layer_name = managed_points_layer_name()
+            if not layer_name:
+                return None
+            if layer_name in viewer.layers:
+                layer = viewer.layers[layer_name]
+                if isinstance(layer, napari.layers.Points):
+                    apply_points_polarity_defaults(layer)
+                    live_state["managed_points_layer"] = layer.name
+                    return layer
+            empty = np.empty((0, ndim), dtype=np.float32)
+            layer = viewer.add_points(
+                empty,
+                name=layer_name,
+                features={"sam_label": np.empty((0,), dtype=np.int32)},
+                face_color="#4caf50",
+                border_color="white",
+                size=10,
+            )
+            layer.metadata = dict(getattr(layer, "metadata", {}) or {})
+            layer.metadata["sam2_managed_points"] = True
+            apply_points_polarity_defaults(layer)
+            live_state["managed_points_layer"] = layer.name
+            return layer
+
+        def initialize_live_session(*_args):
+            image_layer = current_image_layer()
+            if image_layer is None:
+                set_live_status("Select an image layer before initializing SAM2 Live.", ok=False)
+                return
+            if mode_combo.currentText().strip() == "Points":
+                points_layer = ensure_managed_points_layer()
+                if points_layer is None:
+                    return
+                live_state["initialized"] = True
+                live_state["managed_points_layer"] = points_layer.name
+                live_state["seed_slice"] = current_seed_slice() if current_image_ndim() == 3 else None
+                if current_image_ndim() == 3:
+                    set_live_status(
+                        f"SAM2 Live initialized for [{image_layer.name}]. "
+                        f"Seed slice={live_state['seed_slice'] if live_state['seed_slice'] is not None else '?'}. "
+                        f"Use [{points_layer.name}] in {polarity_combo.currentText().strip().lower()} mode, then click Propagate.",
+                        ok=True,
+                    )
+                else:
+                    set_live_status(
+                        f"SAM2 Live initialized for [{image_layer.name}]. "
+                        f"Use [{points_layer.name}] in {polarity_combo.currentText().strip().lower()} mode, then run preview.",
+                        ok=True,
+                    )
+                try:
+                    viewer.layers.selection.active = points_layer
+                except Exception:
+                    pass
+            else:
+                live_state["initialized"] = True
+                live_state["managed_points_layer"] = None
+                live_state["seed_slice"] = None
+                set_live_status(
+                    f"SAM2 Live initialized for [{image_layer.name}] in Box mode. "
+                    "Choose or draw a Shapes prompt, then run preview.",
+                    ok=True,
+                )
+
+        def sync_combined_points_layer() -> str | None:
+            if viewer is None:
+                return None
+            ndim = current_image_ndim()
+            if ndim not in {2, 3}:
+                return None
+            layer_name = str(live_state.get("managed_points_layer") or "").strip()
+            if not layer_name or layer_name not in viewer.layers:
+                return None
+            layer = viewer.layers[layer_name]
+            if not isinstance(layer, napari.layers.Points):
+                return None
+            data = np.asarray(layer.data, dtype=np.float32)
+            if data.ndim != 2 or data.shape[1] < ndim or data.shape[0] == 0:
+                return None
+            merged_points = data[:, :ndim]
+            labels = np.ones((data.shape[0],), dtype=np.int32)
+            try:
+                features = getattr(layer, "features", None)
+                if features is not None and "sam_label" in features:
+                    column = features["sam_label"]
+                    try:
+                        labels = np.asarray(column.to_numpy(), dtype=np.int32)
+                    except Exception:
+                        labels = np.asarray(column, dtype=np.int32)
+            except Exception:
+                pass
+            if ndim == 3 and live_state.get("seed_slice") is not None:
+                seed_slice = int(live_state["seed_slice"])
+                z_values = np.rint(merged_points[:, 0]).astype(int)
+                keep = z_values == seed_slice
+                if not np.any(keep):
+                    return None
+                merged_points = merged_points[keep]
+                labels = labels[keep]
+            if combined_points_layer_name in viewer.layers:
+                layer = viewer.layers[combined_points_layer_name]
+                if isinstance(layer, napari.layers.Points):
+                    layer.data = merged_points
+                    layer.features = {"sam_label": labels}
+                    layer.visible = False
+                    return combined_points_layer_name
+            layer = viewer.add_points(
+                merged_points,
+                name=combined_points_layer_name,
+                features={"sam_label": labels},
+                face_color="transparent",
+                border_color="transparent",
+                size=1,
+                visible=False,
+            )
+            layer.metadata = dict(getattr(layer, "metadata", {}) or {})
+            layer.metadata["sam2_managed_combined"] = True
+            return combined_points_layer_name
 
         def clear_event_connections():
             for emitter, callback in live_state["connections"]:
@@ -1602,19 +1841,68 @@ def chat_widget(napari_viewer=None) -> QWidget:
             prompt_layer = viewer.layers[prompt_name] if viewer is not None and prompt_name in viewer.layers else None
             if image_layer is not None:
                 _connect_if_present(image_layer, "data", schedule_preview)
-            if prompt_layer is not None:
-                _connect_if_present(prompt_layer, "data", schedule_preview)
-                _connect_if_present(prompt_layer, "features", schedule_preview)
+            if mode_combo.currentText().strip() == "Box":
+                if prompt_layer is not None:
+                    _connect_if_present(prompt_layer, "data", schedule_preview)
+                    _connect_if_present(prompt_layer, "features", schedule_preview)
+            else:
+                layer_name = str(live_state.get("managed_points_layer") or "").strip()
+                layer = viewer.layers[layer_name] if viewer is not None and layer_name in viewer.layers else None
+                if layer is not None:
+                    _connect_if_present(layer, "data", schedule_preview)
+                    _connect_if_present(layer, "features", schedule_preview)
 
         def refresh_live_controls(*_args):
             current_image = image_combo.currentText().strip()
-            image_names = image_layer_names_2d()
+            image_names = image_layer_names_sam2()
             image_combo.blockSignals(True)
             image_combo.clear()
             image_combo.addItems(image_names)
             if current_image in image_names:
                 image_combo.setCurrentText(current_image)
             image_combo.blockSignals(False)
+
+            managed_name = str(live_state.get("managed_points_layer") or "").strip()
+            expected_name = managed_points_layer_name() or ""
+            if managed_name and managed_name != expected_name:
+                live_state["initialized"] = False
+                live_state["managed_points_layer"] = None
+                live_state["seed_slice"] = None
+
+            image_layer = current_image_layer()
+            image_ndim = np.asarray(image_layer.data).ndim if image_layer is not None else None
+            if image_ndim == 3 and mode_combo.currentText().strip() == "Box":
+                mode_combo.blockSignals(True)
+                mode_combo.setCurrentText("Points")
+                mode_combo.blockSignals(False)
+            if image_ndim == 2:
+                hint.setText(
+                    "Live SAM2 preview for 2D grayscale images. Use a Shapes layer for Box mode "
+                    "or click Initialize to start a SAM2-managed points session."
+                )
+                preview_btn.setText("Run Preview")
+                apply_btn.setText("Save Labels")
+                auto_update_check.setEnabled(True)
+                auto_update_check.setText("Auto-update")
+            elif image_ndim == 3:
+                hint.setText(
+                    "Live SAM2 propagation for 3D grayscale images. Click Initialize on the desired seed slice, "
+                    "place positive/negative prompts on that slice, then click Propagate."
+                )
+                preview_btn.setText("Propagate")
+                apply_btn.setText("Save Labels")
+                auto_update_check.setChecked(False)
+                auto_update_check.setEnabled(False)
+                auto_update_check.setText("Auto-update disabled for 3D")
+            else:
+                hint.setText(
+                    "Live SAM2 preview for grayscale images. Use a Shapes layer for 2D Box mode or initialize a "
+                    "SAM2-managed points session for 2D/3D points prompting."
+                )
+                preview_btn.setText("Run Preview")
+                apply_btn.setText("Save Labels")
+                auto_update_check.setEnabled(True)
+                auto_update_check.setText("Auto-update")
 
             current_prompt = prompt_layer_combo.currentText().strip()
             prompt_names = prompt_layer_names_for_mode()
@@ -1624,7 +1912,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if current_prompt in prompt_names:
                 prompt_layer_combo.setCurrentText(current_prompt)
             prompt_layer_combo.blockSignals(False)
+
+            is_points_mode = mode_combo.currentText().strip() == "Points"
+            set_form_row_visible(prompt_layer_combo, not is_points_mode)
+            set_form_row_visible(polarity_combo, is_points_mode)
+            if is_points_mode and live_state.get("managed_points_layer"):
+                layer_name = str(live_state["managed_points_layer"])
+                if viewer is not None and layer_name in viewer.layers:
+                    layer = viewer.layers[layer_name]
+                    if isinstance(layer, napari.layers.Points):
+                        apply_points_polarity_defaults(layer)
             refresh_prompt_watchers()
+
+        def on_polarity_changed(*_args):
+            layer_name = str(live_state.get("managed_points_layer") or "").strip()
+            if viewer is not None and layer_name in viewer.layers:
+                layer = viewer.layers[layer_name]
+                if isinstance(layer, napari.layers.Points):
+                    apply_points_polarity_defaults(layer)
+                    try:
+                        viewer.layers.selection.active = layer
+                    except Exception:
+                        pass
+            set_live_status(
+                f"SAM2 prompt polarity set to {polarity_combo.currentText().strip().lower()}.",
+                ok=None,
+            )
 
         def upsert_preview_layer(mask: np.ndarray, *, image_name: str, scale, translate):
             if viewer is None:
@@ -1642,16 +1955,35 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if viewer is None:
                 return
             image_name = image_combo.currentText().strip()
-            prompt_name = prompt_layer_combo.currentText().strip()
-            if not image_name or not prompt_name:
-                set_live_status("Select both an image layer and a prompt layer.", ok=False)
-                return
             tool_name = current_prompt_tool_name()
+            if not tool_name:
+                set_live_status("Current SAM2 Live mode is not supported for this image dimensionality.", ok=False)
+                return
             arguments = {"image_layer": image_name}
             if tool_name == "sam_segment_from_box":
+                prompt_name = prompt_layer_combo.currentText().strip()
+                if not image_name or not prompt_name:
+                    set_live_status("Select both an image layer and a box prompt layer.", ok=False)
+                    return
                 arguments["roi_layer"] = prompt_name
+                prompt_summary = prompt_name
             else:
-                arguments["points_layer"] = prompt_name
+                if not live_state.get("initialized"):
+                    set_live_status("Click Initialize before adding prompts and running SAM2 Live.", ok=False)
+                    return
+                combined_name = sync_combined_points_layer()
+                if not image_name or not combined_name:
+                    set_live_status(
+                        "Click Initialize, then add prompt points on the managed SAM2 layer before running preview or propagation.",
+                        ok=False,
+                    )
+                    return
+                arguments["points_layer"] = combined_name
+                prompt_layer_name = str(live_state.get("managed_points_layer") or "-")
+                seed_info = ""
+                if current_image_ndim() == 3 and live_state.get("seed_slice") is not None:
+                    seed_info = f" seed_slice={int(live_state['seed_slice'])}"
+                prompt_summary = f"prompts=[{prompt_layer_name}]{seed_info}"
             prepared = prepare_tool_job(viewer, tool_name, arguments)
             if prepared.get("mode") == "immediate":
                 set_live_status(str(prepared.get("message", "")), ok=False)
@@ -1660,9 +1992,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 live_state["rerun"] = True
                 return
             live_state["busy"] = True
+            set_live_progress(True)
             live_state["request_id"] += 1
             request_id = int(live_state["request_id"])
-            set_live_status(f"Running live preview with {tool_name}...", ok=None)
+            action_label = "Propagating" if current_image_ndim() == 3 and tool_name == "sam_propagate_points_3d" else "Running live preview"
+            set_live_status(f"{action_label} with {tool_name}...", ok=None)
 
             @thread_worker(ignore_errors=True)
             def run_live_job():
@@ -1675,6 +2009,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 if worker in active_workers:
                     active_workers.remove(worker)
                 live_state["busy"] = False
+                set_live_progress(False)
                 if live_state["rerun"]:
                     live_state["rerun"] = False
                     run_live_preview()
@@ -1695,8 +2030,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 upsert_preview_layer(payload, image_name=image_name, scale=scale, translate=translate)
                 live_state["last_payload"] = {"mask": np.asarray(payload, dtype=np.int32).copy(), "image_name": image_name, "scale": scale, "translate": translate}
                 backend_message = str(result.get("backend_message") or "").strip()
+                status_prefix = "SAM2 propagation updated" if current_image_ndim() == 3 and tool_name == "sam_propagate_points_3d" else "SAM2 live preview updated"
                 set_live_status(
-                    f"SAM2 live preview updated for [{image_name}] using [{prompt_name}]."
+                    f"{status_prefix} for [{image_name}] using {prompt_summary} via [{tool_name}]."
                     + (f" {backend_message}" if backend_message else ""),
                     ok=True,
                 )
@@ -1724,8 +2060,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 scale=payload["scale"],
                 translate=payload["translate"],
             )
-            set_live_status(f"Applied SAM2 live preview as [{output_name}].", ok=True)
-            append_log(f"Applied SAM2 live preview as {output_name}.")
+            set_live_status(f"Saved SAM2 result as [{output_name}].", ok=True)
+            append_log(f"Saved SAM2 result as {output_name}.")
             refresh_context()
 
         def clear_live_preview(*_args):
@@ -1741,21 +2077,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
         def cleanup_live_dialog():
             clear_event_connections()
             debounce_timer.stop()
+            set_live_progress(False)
 
+        init_btn.clicked.connect(initialize_live_session)
         debounce_timer.timeout.connect(run_live_preview)
         preview_btn.clicked.connect(run_live_preview)
         apply_btn.clicked.connect(apply_live_preview)
         clear_btn.clicked.connect(clear_live_preview)
         close_btn.clicked.connect(dialog.accept)
-        image_combo.currentTextChanged.connect(refresh_prompt_watchers)
+        image_combo.currentTextChanged.connect(refresh_live_controls)
         prompt_layer_combo.currentTextChanged.connect(refresh_prompt_watchers)
         mode_combo.currentTextChanged.connect(refresh_live_controls)
-        auto_update_check.toggled.connect(lambda checked: set_live_status("Auto-update enabled." if checked else "Auto-update disabled.", ok=None))
+        polarity_combo.currentTextChanged.connect(on_polarity_changed)
+        auto_update_check.toggled.connect(
+            lambda checked: set_live_status(
+                "Auto-update enabled." if checked else ("Auto-update disabled for 3D." if current_image_ndim() == 3 else "Auto-update disabled."),
+                ok=None,
+            )
+        )
         dialog.finished.connect(lambda *_args: cleanup_live_dialog())
         refresh_live_controls()
         append_log("Opened SAM2 live dialog.")
         set_status("Status: SAM2 live opened", ok=None)
-        dialog.exec_()
+        dialog.setModal(False)
+        setattr(root, "_sam2_live_dialog", dialog)
+        dialog.destroyed.connect(lambda *_args: setattr(root, "_sam2_live_dialog", None))
+        dialog.show()
 
     def unload_model(*_args):
         base_url = base_url_edit.text().strip().rstrip("/")
@@ -1915,6 +2262,84 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("assistant", "Model settings are incomplete. Fill in Model Connection first.")
             set_status("Status: missing saved model settings", ok=False)
             return
+        local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
+        if isinstance(local_workflow_route, dict):
+            tool_name = str(local_workflow_route.get("tool", "")).strip()
+            arguments = local_workflow_route.get("arguments", {})
+            tool_message = str(local_workflow_route.get("message", "")).strip()
+            prepared = prepare_tool_job(viewer, tool_name, arguments if isinstance(arguments, dict) else {})
+            if prepared.get("mode") == "immediate":
+                result_message = str(prepared.get("message", "")).strip() or f"Could not run [{tool_name}]."
+                append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
+                append_log(f"Handled request via local workflow route: {tool_name}")
+                set_status(f"Status: {tool_name} completed", ok=True)
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "tool",
+                        "tool_name": tool_name,
+                        "tool_success": True,
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+            else:
+                job = prepared["job"]
+                start_wait_indicator(phase=f"processing {tool_name}")
+                set_status(f"Status: running tool {tool_name}", ok=None)
+
+                @thread_worker(ignore_errors=True)
+                def run_local_workflow_tool():
+                    return run_tool_job(job)
+
+                tool_worker = run_local_workflow_tool()
+                active_workers.append(tool_worker)
+
+                def local_tool_finish():
+                    stop_wait_indicator()
+                    if tool_worker in active_workers:
+                        active_workers.remove(tool_worker)
+
+                def local_tool_returned(tool_result):
+                    refresh_context()
+                    result_message = apply_tool_job_result(viewer, tool_result)
+                    append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    append_log(f"Handled request via local workflow route: {tool_name}")
+                    set_status(f"Status: {tool_name} completed", ok=True)
+                    record_telemetry(
+                        "turn_completed",
+                        {
+                            "turn_id": turn_id,
+                            "model": "local_workflow_router",
+                            "base_url": "",
+                            "prompt_hash": prompt_hash(text),
+                            "prompt_category": "local_workflow_route",
+                            "response_action": "tool",
+                            "tool_name": tool_name,
+                            "tool_success": True,
+                            "pending_code_generated": False,
+                            **selected_layer_snapshot(),
+                        },
+                    )
+                    local_tool_finish()
+
+                def local_tool_error(*args):
+                    error_text = format_worker_error(*args)
+                    logger.exception("Local workflow route failed: %s | %s", tool_name, error_text)
+                    append_chat_message("assistant", f"{tool_name} failed:\n{error_text}")
+                    append_log(f"Local workflow route failed: {tool_name} | {error_text}")
+                    set_status(f"Status: {tool_name} failed", ok=False)
+                    local_tool_finish()
+
+                tool_worker.returned.connect(local_tool_returned)
+                tool_worker.errored.connect(local_tool_error)
+                tool_worker.start()
+            return
         saved_settings["base_url"] = base_url
         saved_settings["model"] = model_name
         turn_prompt_hash = prompt_hash(text)
@@ -2025,6 +2450,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     return
 
                 job = prepared["job"]
+                set_wait_indicator_phase(f"processing {tool_name}")
                 set_status(f"Status: running tool {tool_name}", ok=None)
 
                 @thread_worker(ignore_errors=True)
@@ -2441,7 +2867,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def load_library_code(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}
-        code_text = str(record.get("code", "")).strip()
+        code_text = str(record.get("code", ""))
         prompt.setPlainText(code_text)
         prompt.setFocus()
         append_log(f"Loaded code from library: {record.get('title', 'Untitled Code')}")
@@ -2449,8 +2875,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def run_library_code(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}
-        code_text = str(record.get("code", "")).strip()
-        if not code_text:
+        code_text = str(record.get("code", ""))
+        if not code_text.strip():
             set_status("Status: selected code is empty", ok=False)
             append_log("Run code skipped: selected library code is empty.")
             return
