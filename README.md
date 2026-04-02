@@ -72,14 +72,11 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.6.0
+## What's New In 1.6.1
 
-- added `Refine My Code` so users can repair pasted or failed viewer-bound Python directly inside the plugin, using the current napari session context
-- added direct layer visibility controls for showing, hiding, isolating, and restoring layers without manual layer toggling
-- redesigned the dock around a compact model/status bar and a cleaner main workflow that keeps chat, prompt writing, and library access in focus
-- replaced the old context area with `Layer Context`, which now includes a copyable summary view plus per-layer `Insert` and `Copy` actions for faster prompt building
-- made `Layer Context` refresh live from napari layer and selection changes instead of relying on manual refreshes
-- improved library usability with a collapsed template tree by default, clearer tab tooltips, and darker prompt/code list styling
+- added interactive ROI intensity, line-profile, and group-comparison tools with dedicated measurement/statistics widgets
+- added workspace save/load support so users can restore recoverable layer state later
+- improved Shapes-aware routing, templates, and assistant workflows for ROI-driven analysis
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 

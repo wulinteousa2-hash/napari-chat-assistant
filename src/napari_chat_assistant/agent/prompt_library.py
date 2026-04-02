@@ -563,7 +563,7 @@ def default_code_records() -> list[dict]:
             "updated_at": "",
         }
         for item in DEFAULT_CODE_SNIPPETS
-        if str(item.get("code", "")).strip()
+        if str(item.get("code", "")).strip() and not str(item.get("title", "")).strip().startswith("Demo Pack:")
     ]
 
 

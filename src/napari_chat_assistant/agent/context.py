@@ -264,6 +264,24 @@ def find_labels_layer(viewer: napari.Viewer, name: str | None = None):
     return None
 
 
+def find_shapes_layer(viewer: napari.Viewer, name: str | None = None):
+    if viewer is None:
+        return None
+    if name:
+        try:
+            layer = viewer.layers[name]
+            return layer if isinstance(layer, napari.layers.Shapes) else None
+        except KeyError:
+            return None
+    selected = viewer.layers.selection.active
+    if isinstance(selected, napari.layers.Shapes):
+        return selected
+    for layer in viewer.layers:
+        if isinstance(layer, napari.layers.Shapes):
+            return layer
+    return None
+
+
 def find_all_labels_layers(viewer: napari.Viewer):
     if viewer is None:
         return []

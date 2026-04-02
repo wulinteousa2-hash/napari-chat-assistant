@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -108,7 +109,10 @@ from napari_chat_assistant.agent.telemetry_summary import (
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_help import answer_ui_question
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
+from napari_chat_assistant.agent.workspace_state import load_workspace_manifest, save_workspace_manifest
+from napari_chat_assistant.widgets.intensity_metrics_widget import open_intensity_metrics_widget
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
+from napari_chat_assistant.widgets.line_profile_widget import open_line_profile_gaussian_fit_widget
 
 
 class ChatInput(QTextEdit):
@@ -387,7 +391,36 @@ def chat_widget(napari_viewer=None) -> QWidget:
     diagnostics_layout.addWidget(diagnostics_hint)
     diagnostics_layout.addWidget(diagnostics_btn_row)
     diagnostics_layout.addStretch(1)
+    workspace_tab = QWidget()
+    workspace_layout = QVBoxLayout(workspace_tab)
+    workspace_hint = QLabel("Save or restore a lightweight workspace manifest so layer order and display state can be recovered later.")
+    workspace_hint.setWordWrap(True)
+    workspace_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    workspace_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    workspace_layout.addWidget(workspace_hint)
+    workspace_path_label = QLabel("Workspace file: [none]")
+    workspace_path_label.setWordWrap(True)
+    workspace_layout.addWidget(workspace_path_label)
+    workspace_clear_checkbox = QCheckBox("Clear current layers before load")
+    workspace_clear_checkbox.setChecked(True)
+    workspace_layout.addWidget(workspace_clear_checkbox)
+    workspace_btn_row = QWidget()
+    workspace_btn_layout = QHBoxLayout(workspace_btn_row)
+    save_workspace_btn = QPushButton("Save Workspace")
+    save_workspace_as_btn = QPushButton("Save As")
+    load_workspace_btn = QPushButton("Load Workspace")
+    restore_workspace_btn = QPushButton("Restore Last")
+    workspace_btn_layout.addWidget(save_workspace_btn)
+    workspace_btn_layout.addWidget(save_workspace_as_btn)
+    workspace_btn_layout.addWidget(load_workspace_btn)
+    workspace_btn_layout.addWidget(restore_workspace_btn)
+    workspace_layout.addWidget(workspace_btn_row)
+    workspace_status = QLabel("Workspace manifest saves file-backed layers plus recoverable geometry layers such as Shapes.")
+    workspace_status.setWordWrap(True)
+    workspace_layout.addWidget(workspace_status)
+    workspace_layout.addStretch(1)
     log_tabs.addTab(activity_tab, "Activity")
+    log_tabs.addTab(workspace_tab, "Workspace")
     log_tabs.addTab(telemetry_tab, "Telemetry")
     log_tabs.addTab(diagnostics_tab, "Diagnostics")
     log_layout.addWidget(log_tabs)
@@ -439,6 +472,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     input_group = QGroupBox("Prompt")
     input_group_layout = QVBoxLayout(input_group)
     prompt = ChatInput()
+    prompt.setObjectName("napariChatAssistantPrompt")
     prompt.setPlaceholderText("Ask about the current napari session...")
     prompt.setMinimumHeight(120)
     prompt.setStyleSheet("QTextEdit { background: #10182b; color: #d6deeb; border: 1px solid #30415f; padding: 8px; }")
@@ -550,6 +584,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
     }
     wait_timer = QTimer(root)
     wait_timer.setInterval(250)
+
+    def refresh_workspace_path_label() -> None:
+        current_path = str(ui_state.get("last_workspace_path", "")).strip()
+        workspace_path_label.setText(f"Workspace file: {current_path if current_path else '[none]'}")
+
+    refresh_workspace_path_label()
 
     base_url_edit.setText(saved_settings["base_url"])
     model_combo.addItem(saved_settings["model"])
@@ -1110,7 +1150,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- You can inspect ROI context or extract grayscale image values inside an ROI.\n"
             "- Example: `Extract ROI values from image_a using roi_shapes`\n\n"
             "**Demo Data**\n"
-            "- Use the Library `Code` tab to load built-in demo packs for testing.\n"
+            "- Use the Library `Templates` tab to load built-in demo packs for testing.\n"
             "- Available demo packs include EM 2D/3D SNR sweeps, RGB cells 2D/3D SNR sweeps, and messy masks 2D/3D.\n"
             "- These demos create named layers so you can test tools quickly and repeatably.\n\n"
             "**Example Pipeline**\n"
@@ -1321,6 +1361,95 @@ def chat_widget(napari_viewer=None) -> QWidget:
         connection_status.setStyleSheet(style)
         connection_status.setText(text)
 
+    def workspace_default_path() -> str:
+        current = str(ui_state.get("last_workspace_path", "")).strip()
+        if current:
+            return current
+        return "napari_workspace.json"
+
+    def save_workspace_common(*, choose_path: bool) -> None:
+        destination = workspace_default_path()
+        if choose_path or not destination.strip():
+            selected, _ = QFileDialog.getSaveFileName(
+                root,
+                "Save Workspace Manifest",
+                destination or "napari_workspace.json",
+                "JSON Files (*.json)",
+            )
+            if not selected:
+                return
+            destination = selected
+        try:
+            result = save_workspace_manifest(viewer, destination)
+        except Exception as exc:
+            append_log(f"Save workspace failed: {exc}")
+            set_status("Status: save workspace failed", ok=False)
+            workspace_status.setText(f"Save failed: {exc}")
+            return
+        ui_state["last_workspace_path"] = str(result["path"])
+        save_ui_state(ui_state)
+        refresh_workspace_path_label()
+        skipped = result.get("skipped_layers", []) or []
+        if skipped:
+            workspace_status.setText(
+                f"Saved {result['saved_layers']} layer(s). Skipped {len(skipped)} layer(s) without recoverable source or inline state."
+            )
+        else:
+            workspace_status.setText(f"Saved {result['saved_layers']} layer(s) to {result['path']}.")
+        append_log(
+            f"Saved workspace manifest: {result['path']} | saved_layers={result['saved_layers']} skipped={len(skipped)}"
+        )
+        set_status("Status: workspace saved", ok=True)
+
+    def load_workspace_common(*, choose_path: bool) -> None:
+        source_path = workspace_default_path()
+        if choose_path or not source_path.strip():
+            selected, _ = QFileDialog.getOpenFileName(
+                root,
+                "Load Workspace Manifest",
+                source_path or "",
+                "JSON Files (*.json)",
+            )
+            if not selected:
+                return
+            source_path = selected
+        if not source_path.strip():
+            workspace_status.setText("Choose a workspace file first.")
+            set_status("Status: no workspace file selected", ok=False)
+            return
+        try:
+            result = load_workspace_manifest(
+                viewer,
+                source_path,
+                clear_existing=bool(workspace_clear_checkbox.isChecked()),
+            )
+        except Exception as exc:
+            append_log(f"Load workspace failed: {exc}")
+            set_status("Status: load workspace failed", ok=False)
+            workspace_status.setText(f"Load failed: {exc}")
+            return
+        ui_state["last_workspace_path"] = str(result["path"])
+        save_ui_state(ui_state)
+        refresh_workspace_path_label()
+        refresh_context()
+        skipped = result.get("skipped_layers", []) or []
+        restored_count = len(result.get("restored_layers", []) or [])
+        if skipped:
+            workspace_status.setText(
+                f"Restored {restored_count} layer(s). Skipped {len(skipped)} layer(s) that could not be reopened."
+            )
+        else:
+            workspace_status.setText(f"Restored {restored_count} layer(s) from {result['path']}.")
+        append_log(
+            f"Loaded workspace manifest: {result['path']} | restored_layers={restored_count} skipped={len(skipped)}"
+        )
+        set_status("Status: workspace loaded", ok=True)
+
+    save_workspace_btn.clicked.connect(lambda _checked=False: save_workspace_common(choose_path=False))
+    save_workspace_as_btn.clicked.connect(lambda _checked=False: save_workspace_common(choose_path=True))
+    load_workspace_btn.clicked.connect(lambda _checked=False: load_workspace_common(choose_path=True))
+    restore_workspace_btn.clicked.connect(lambda _checked=False: load_workspace_common(choose_path=False))
+
     def set_model_controls_enabled(enabled: bool):
         for widget in (
             base_url_edit,
@@ -1506,6 +1635,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         tags = [str(tag).strip() for tag in record.get("tags", []) if str(tag).strip()]
         best_for = str(record.get("best_for", "")).strip()
         followup = str(record.get("suggested_followup", "")).strip()
+        ui_mode = str(record.get("ui_mode", "")).strip()
         runtime = record.get("runtime", {})
         runtime_flags: list[str] = []
         if isinstance(runtime, dict):
@@ -1526,6 +1656,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
             lines.extend(["", f"Best for: {best_for}"])
         if followup:
             lines.extend(["", f"Suggested follow-up: {followup}"])
+        if ui_mode == "widget":
+            lines.extend(
+                [
+                    "",
+                    "UI:",
+                    "This template opens a dedicated measurement widget when you use `Run Template`.",
+                    "Use `Load Template` to inspect the launch code in the Prompt box.",
+                ]
+            )
+            return "\n".join(lines).strip()
         lines.extend(
             [
                 "",
@@ -1537,6 +1677,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
             ]
         )
         return "\n".join(lines).strip()
+
+    def launch_widget_template(record: dict) -> bool:
+        template_id = str(record.get("id", "")).strip()
+        if template_id == "measure_roi_intensity_metrics":
+            open_intensity_metrics_widget(viewer)
+            append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
+            set_status("Status: measurement widget opened", ok=True)
+            return True
+        if template_id == "measure_line_profile_gaussian_fit":
+            open_line_profile_gaussian_fit_widget(viewer)
+            append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
+            set_status("Status: measurement widget opened", ok=True)
+            return True
+        return False
 
     def show_template_preview(item: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None = None):
         del _previous
@@ -1557,6 +1711,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no template selected", ok=False)
             append_log("Template load skipped: no template record selected.")
             return
+        if str(record.get("ui_mode", "")).strip() == "widget":
+            if run_now:
+                if not launch_widget_template(record):
+                    set_status("Status: widget template failed to open", ok=False)
+                    append_log(f"Widget template failed to open: {record.get('title', 'Untitled Template')}")
+                return
         code_text = str(record.get("code", ""))
         if not code_text.strip():
             set_status("Status: selected template is empty", ok=False)
@@ -1564,6 +1724,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         prompt.setPlainText(code_text)
         prompt.setFocus()
+        if str(record.get("ui_mode", "")).strip() == "widget":
+            append_log(
+                f"Loaded widget template code: {record.get('title', 'Untitled Template')} | Use Run Template to open it."
+            )
+            set_status("Status: widget template code loaded", ok=None)
+            return
         append_log(f"Loaded template: {record.get('title', 'Untitled Template')}")
         set_status("Status: template loaded", ok=None)
         if run_now:

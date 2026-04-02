@@ -8,6 +8,7 @@ DEFAULT_UI_STATE = {
     "welcome_dismissed": False,
     "telemetry_enabled": False,
     "assistant_splitter_ratio": 0.45,
+    "last_workspace_path": "",
     "sam2_project_path": str(Path.home() / "Projects" / "napari" / "Sam2"),
     "sam2_checkpoint_path": "checkpoints/sam2.1_hiera_large.pt",
     "sam2_config_path": "configs/sam2.1/sam2.1_hiera_l.yaml",
@@ -33,6 +34,7 @@ def load_ui_state() -> dict:
         "assistant_splitter_ratio": float(
             payload.get("assistant_splitter_ratio", DEFAULT_UI_STATE["assistant_splitter_ratio"])
         ),
+        "last_workspace_path": str(payload.get("last_workspace_path", DEFAULT_UI_STATE["last_workspace_path"])).strip(),
         "sam2_project_path": str(payload.get("sam2_project_path", DEFAULT_UI_STATE["sam2_project_path"])).strip(),
         "sam2_checkpoint_path": str(payload.get("sam2_checkpoint_path", DEFAULT_UI_STATE["sam2_checkpoint_path"])).strip(),
         "sam2_config_path": str(payload.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip(),
@@ -49,6 +51,7 @@ def save_ui_state(data: dict) -> None:
         "assistant_splitter_ratio": float(
             data.get("assistant_splitter_ratio", DEFAULT_UI_STATE["assistant_splitter_ratio"])
         ),
+        "last_workspace_path": str(data.get("last_workspace_path", DEFAULT_UI_STATE["last_workspace_path"])).strip(),
         "sam2_project_path": str(data.get("sam2_project_path", DEFAULT_UI_STATE["sam2_project_path"])).strip(),
         "sam2_checkpoint_path": str(data.get("sam2_checkpoint_path", DEFAULT_UI_STATE["sam2_checkpoint_path"])).strip(),
         "sam2_config_path": str(data.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip(),

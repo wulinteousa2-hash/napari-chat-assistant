@@ -197,98 +197,47 @@ else:
 """.strip(),
     },
     {
-        "id": "measure_line_profile_gaussian_fit",
-        "title": "Line Profile Gaussian Fit",
+        "id": "measure_roi_intensity_metrics",
+        "title": "ROI Intensity Metrics",
         "category": "Measure",
-        "description": "Generate a synthetic blob image, place a line ROI, sample the intensity profile, and fit a Gaussian to estimate sigma and FWHM.",
-        "tags": ["measure", "profile", "gaussian-fit", "roi", "synthetic", "plot"],
-        "best_for": "Teaching intensity-profile measurement, Gaussian fitting, and line-based ROI analysis.",
-        "suggested_followup": "Ask chat to adapt this from synthetic data to the selected layer or to use an existing line ROI.",
+        "description": "Open a floating ROI measurement widget that tracks one or more editable shapes on the current image layer, shows a live histogram above the table, and updates intensity statistics for the current displayed slice in stacks.",
+        "tags": ["measure", "roi", "intensity", "histogram", "widget", "table", "interactive"],
+        "best_for": "Interactive ROI intensity measurement with renameable ROI labels, absolute or percent views, copy-to-chat, and CSV export from a floating widget.",
+        "suggested_followup": "Ask chat to add more statistics, change the percent normalization logic, or format Insert to Chat as a cleaner summary.",
         "runtime": {
             "plugin_runtime_required": True,
             "uses_viewer": True,
-            "uses_selected_layer": False,
+            "uses_selected_layer": True,
             "uses_run_in_background": False,
         },
+        "ui_mode": "widget",
         "code": """
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.ndimage import map_coordinates
-from scipy.optimize import curve_fit
+from napari_chat_assistant.widgets.intensity_metrics_widget import open_intensity_metrics_widget
 
 
-def make_synthetic_image(
-    shape=(128, 128),
-    center=(60, 70),
-    sigma=8.0,
-    amplitude=180.0,
-    background=20.0,
-    noise_sd=6.0,
-    seed=42,
-):
-    rng = np.random.default_rng(seed)
-    y, x = np.indices(shape)
-    cy, cx = center
-    blob = amplitude * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
-    noise = rng.normal(0.0, noise_sd, shape)
-    image = background + blob + noise
-    return image.astype(np.float32)
+open_intensity_metrics_widget(viewer)
+""".strip(),
+    },
+    {
+        "id": "measure_line_profile_gaussian_fit",
+        "title": "Line Profile Gaussian Fit",
+        "category": "Measure",
+        "description": "Open a floating measurement widget that tracks one or more line ROIs on the current image layer, shows a live profile-plus-fit plot above the table, and updates Gaussian-fit results for the current displayed slice in stacks.",
+        "tags": ["measure", "profile", "gaussian-fit", "roi", "interactive", "multi-line", "widget", "table"],
+        "best_for": "Interactive line-profile measurement with live Gaussian fitting, absolute or percent readouts, renameable ROI labels, copy-to-chat, and CSV export from a floating widget.",
+        "suggested_followup": "Ask chat to add more fit statistics, improve the normalized percent view, or format Insert to Chat as a cleaner narrative summary.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": True,
+            "uses_run_in_background": False,
+        },
+        "ui_mode": "widget",
+        "code": """
+from napari_chat_assistant.widgets.line_profile_widget import open_line_profile_gaussian_fit_widget
 
 
-def line_profile(image, x0, y0, x1, y1):
-    length = np.hypot(x1 - x0, y1 - y0)
-    n_samples = int(length) + 1
-    x = np.linspace(x0, x1, n_samples)
-    y = np.linspace(y0, y1, n_samples)
-    profile = map_coordinates(image, [y, x], order=1)
-    distance = np.linspace(0.0, length, n_samples)
-    return distance, profile
-
-
-def gaussian(x, baseline, amplitude, mean, sigma):
-    return baseline + amplitude * np.exp(-((x - mean) ** 2) / (2 * sigma**2))
-
-
-image = make_synthetic_image()
-viewer.add_image(image, name="template_profile_blob", colormap="gray")
-
-x0, y0 = 30, 90
-x1, y1 = 95, 35
-viewer.add_shapes(
-    [[[y0, x0], [y1, x1]]],
-    shape_type="line",
-    edge_color="red",
-    edge_width=3,
-    name="template_profile_line",
-)
-
-dist, prof = line_profile(image, x0, y0, x1, y1)
-p0 = [
-    float(np.min(prof)),
-    float(np.max(prof) - np.min(prof)),
-    float(dist[np.argmax(prof)]),
-    5.0,
-]
-params, _ = curve_fit(gaussian, dist, prof, p0=p0)
-baseline, amplitude, mean, sigma = params
-fwhm = 2.3548 * sigma
-
-print("Gaussian fit results")
-print(f"Baseline: {baseline:.4f}")
-print(f"Amplitude: {amplitude:.4f}")
-print(f"Mean: {mean:.4f}")
-print(f"Sigma: {sigma:.4f}")
-print(f"FWHM: {fwhm:.4f}")
-
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(dist, prof, "o", label="Measured")
-ax.plot(dist, gaussian(dist, *params), "-", label="Gaussian fit")
-ax.legend()
-ax.set_xlabel("Distance (pixels)")
-ax.set_ylabel("Intensity")
-ax.set_title("Line profile Gaussian fit")
-fig.tight_layout()
-plt.show()
+open_line_profile_gaussian_fit_widget(viewer)
 """.strip(),
     },
     {

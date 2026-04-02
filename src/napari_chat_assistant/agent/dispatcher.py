@@ -11,6 +11,7 @@ from .context import (
     find_all_labels_layers,
     find_image_layer,
     find_labels_layer,
+    find_shapes_layer,
     layer_detail_summary,
     layer_summary,
     mask_measurement_summary,
@@ -30,6 +31,8 @@ from .tools import (
     normalize_polarity,
     save_mask_snapshot,
 )
+from ..widgets.intensity_metrics_widget import open_intensity_metrics_widget
+from ..widgets.group_comparison_widget import open_group_comparison_widget
 from .tools_builtin import builtin_tools
 
 
@@ -68,6 +71,58 @@ def _format_intensity_summary(layer_name: str, stats: dict) -> str:
         f"Median: {stats['median']:.6g}\n"
         f"Min: {stats['min']:.6g}\n"
         f"Max: {stats['max']:.6g}"
+    )
+
+
+def _selected_image_plane(viewer: napari.Viewer, layer: napari.layers.Image) -> np.ndarray:
+    data = np.asarray(layer.data, dtype=np.float32)
+    if data.ndim < 2:
+        raise ValueError(f"Layer [{layer.name}] must have at least 2 dimensions.")
+    if data.ndim == 2:
+        return data
+    current_step = tuple(int(step) for step in viewer.dims.current_step[: data.ndim])
+    leading_shape = data.shape[:-2]
+    leading_indices = []
+    for axis, axis_size in enumerate(leading_shape):
+        step_index = current_step[axis] if axis < len(current_step) else 0
+        leading_indices.append(int(np.clip(step_index, 0, axis_size - 1)))
+    plane = data[tuple(leading_indices) + (slice(None), slice(None))]
+    return np.asarray(plane, dtype=np.float32)
+
+
+def _shape_label(layer: napari.layers.Shapes, index: int) -> str:
+    features = getattr(layer, "features", None)
+    if features is not None and "label" in features:
+        try:
+            values = list(features["label"])
+            if index < len(values):
+                label = str(values[index]).strip()
+                if label:
+                    return label
+        except Exception:
+            pass
+    return f"Shape {index + 1}"
+
+
+def _format_centroid(point_yx: np.ndarray | None) -> str:
+    if point_yx is None or len(point_yx) < 2:
+        return "n/a"
+    return f"(y={float(point_yx[0]):.2f}, x={float(point_yx[1]):.2f})"
+
+
+def _format_bbox_yx(mins: np.ndarray | None, maxs: np.ndarray | None) -> str:
+    if mins is None or maxs is None or len(mins) < 2 or len(maxs) < 2:
+        return "n/a"
+    return f"y=[{float(mins[0]):.2f}, {float(maxs[0]):.2f}] x=[{float(mins[1]):.2f}, {float(maxs[1]):.2f}]"
+
+
+def _format_roi_intensity_stats(values: np.ndarray) -> str:
+    if values.size == 0:
+        return "intensity: no finite pixels"
+    return (
+        f"intensity: pixels={int(values.size)} mean={float(np.mean(values)):.2f} "
+        f"std={float(np.std(values)):.2f} median={float(np.median(values)):.2f} "
+        f"min={float(np.min(values)):.2f} max={float(np.max(values)):.2f}"
     )
 
 
@@ -208,6 +263,93 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
         if not labels_layers:
             return {"mode": "immediate", "message": "No labels layers available for batch measurement."}
         return {"mode": "immediate", "message": "\n".join(mask_measurement_summary(layer) for layer in labels_layers)}
+
+    if tool_name == "measure_shapes_roi_stats":
+        roi_layer = find_shapes_layer(viewer, args.get("roi_layer"))
+        if roi_layer is None:
+            return {"mode": "immediate", "message": "No valid Shapes ROI layer available. Select or name a Shapes layer."}
+        total_shapes = len(getattr(roi_layer, "data", []))
+        if total_shapes == 0:
+            return {"mode": "immediate", "message": f"Shapes layer [{roi_layer.name}] contains no shapes."}
+        selected_indices = sorted(int(i) for i in getattr(roi_layer, "selected_data", set()) if 0 <= int(i) < total_shapes)
+        indices = selected_indices or list(range(total_shapes))
+        image_layer = find_image_layer(viewer, args.get("image_layer"))
+        image_plane = None
+        if image_layer is not None:
+            try:
+                image_plane = _selected_image_plane(viewer, image_layer)
+            except Exception:
+                image_plane = None
+        masks = roi_layer.to_masks(mask_shape=None if image_plane is None else image_plane.shape)
+        lines = [
+            f'Shapes ROI stats for "{roi_layer.name}"',
+            f"Measured {len(indices)} shape(s)" + (" (selected only)." if selected_indices else "."),
+        ]
+        if image_layer is not None:
+            lines.append(f'Intensity source: "{image_layer.name}"')
+        lines.append("")
+        for index in indices:
+            verts = np.asarray(roi_layer.data[index], dtype=float)
+            mins = np.min(verts, axis=0) if verts.ndim == 2 and len(verts) else None
+            maxs = np.max(verts, axis=0) if verts.ndim == 2 and len(verts) else None
+            centroid = np.mean(verts, axis=0) if verts.ndim == 2 and len(verts) else None
+            shape_type = str(list(getattr(roi_layer, "shape_type", []))[index] if index < len(list(getattr(roi_layer, "shape_type", []))) else "polygon")
+            line = [f"- {_shape_label(roi_layer, index)}"]
+            line.append(f"type={shape_type}")
+            line.append(f"centroid={_format_centroid(centroid)}")
+            line.append(f"bbox={_format_bbox_yx(mins, maxs)}")
+            area = None
+            try:
+                mask = np.asarray(masks[index], dtype=bool)
+                area = int(np.sum(mask))
+            except Exception:
+                mask = None
+            if area is not None:
+                line.append(f"area={area} px^2")
+            if image_plane is not None and mask is not None and mask.shape == image_plane.shape:
+                values = image_plane[mask]
+                values = values[np.isfinite(values)]
+                line.append(_format_roi_intensity_stats(values))
+            lines.append(" | ".join(line))
+        lines.extend(
+            [
+                "",
+                "If you want an interactive table with renameable ROIs, histogram, percent view, chat insertion, and CSV export, open the ROI Intensity Metrics widget.",
+            ]
+        )
+        return {"mode": "immediate", "message": "\n".join(lines)}
+
+    if tool_name == "open_intensity_metrics_table":
+        image_layer = find_image_layer(viewer, args.get("layer_name"))
+        if image_layer is None:
+            image_layers = find_all_image_layers(viewer)
+            image_layer = image_layers[-1] if image_layers else None
+        if image_layer is None:
+            return {"mode": "immediate", "message": "No valid image layer available for ROI intensity measurement."}
+        open_intensity_metrics_widget(viewer)
+        return {
+            "mode": "immediate",
+            "message": (
+                f"Opened ROI Intensity Metrics for [{image_layer.name}].\n\n"
+                "Use the Shapes ROI layer to draw or edit one or more regions, then the widget updates the histogram and table live.\n"
+                "Absolute view shows raw measurements such as pixels, mean, std, median, min, max, and sum.\n"
+                "Percent or Normalized view rescales those values relative to the image intensity range or image totals so different ROIs are easier to compare.\n"
+                "You can rename ROIs, copy rows to chat, and export CSV from the same widget."
+            ),
+        }
+
+    if tool_name == "open_group_comparison_widget":
+        open_group_comparison_widget(viewer)
+        return {
+            "mode": "immediate",
+            "message": (
+                "Opened Group Comparison Stats.\n\n"
+                "Set the two group prefixes, choose Whole Image or ROI-based analysis, then run the comparison.\n"
+                "The widget shows the per-sample table, descriptive statistics, assumption checks, and the selected test.\n"
+                "For the plot, choose Box + Points for a more scientific distribution view or Bar + Error for a compact summary view.\n"
+                "You can also insert the stats summary into chat or export the dataset to CSV."
+            ),
+        }
 
     if tool_name == "summarize_intensity":
         image_layer = find_image_layer(viewer, args.get("layer_name"))

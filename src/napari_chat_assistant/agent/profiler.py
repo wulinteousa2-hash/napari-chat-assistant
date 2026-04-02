@@ -16,6 +16,7 @@ PHASE1_SEMANTIC_TYPES = {
     "rgb",
     "spectral",
     "label_mask",
+    "roi_shapes",
     "probability_map",
     "unknown",
 }
@@ -73,6 +74,7 @@ class RuleFacts:
     wavelengths: list[str]
     channel_metadata_present: bool
     wavelength_metadata_present: bool
+    shape_types: list[str]
     sampled: np.ndarray | None
     finite_sample: np.ndarray | None
     value_range_01: bool
@@ -152,6 +154,7 @@ def profile_layer(layer) -> dict[str, Any]:
 def operation_classes_for_semantic_type(semantic_type: str) -> tuple[list[str], list[str]]:
     recommended_map = {
         "label_mask": ["mask_measurement", "morphology", "roi_qc"],
+        "roi_shapes": ["roi_measurement", "annotation", "geometry_review"],
         "rgb": ["visual_review", "annotation"],
         "2d_intensity": ["contrast_enhancement", "thresholding", "annotation"],
         "3d_intensity": ["contrast_enhancement", "thresholding", "volume_review"],
@@ -163,6 +166,7 @@ def operation_classes_for_semantic_type(semantic_type: str) -> tuple[list[str], 
     }
     discouraged_map = {
         "label_mask": ["clahe_on_labels", "rgb_interpretation"],
+        "roi_shapes": ["intensity_interpretation_without_image", "label_morphology"],
         "rgb": ["single_channel_quantification", "label_morphology"],
         "2d_intensity": ["rgb_interpretation"],
         "3d_intensity": ["rgb_interpretation"],
@@ -192,6 +196,7 @@ def _build_rule_facts(layer) -> RuleFacts:
     time_calibration_present = _has_any_key(metadata, {"frame_interval", "time_increment", "dt", "fps", "timestamps"})
     channel_names = _extract_channel_names(metadata)
     wavelengths = _extract_wavelengths(metadata)
+    shape_types = [str(item).strip().lower() for item in getattr(layer, "shape_type", [])] if isinstance(layer, napari.layers.Shapes) else []
     sampled = _sample_numeric_array(data_obj)
     finite_sample = None
     value_range_01 = False
@@ -221,6 +226,7 @@ def _build_rule_facts(layer) -> RuleFacts:
         wavelengths=wavelengths,
         channel_metadata_present=bool(channel_names),
         wavelength_metadata_present=bool(wavelengths),
+        shape_types=shape_types,
         sampled=sampled,
         finite_sample=finite_sample,
         value_range_01=value_range_01,
@@ -242,6 +248,8 @@ def _collect_evidence_buckets(facts: RuleFacts) -> dict[str, list[str]]:
     evidence["semantic_napari"].append(f"Layer class is {facts.layer.__class__.__name__}.")
     if isinstance(facts.layer, napari.layers.Image):
         evidence["semantic_napari"].append(f"napari rgb flag is {bool(getattr(facts.layer, 'rgb', False))}.")
+    if isinstance(facts.layer, napari.layers.Shapes):
+        evidence["semantic_napari"].append(f"Shape types are {facts.shape_types or ['unknown']}.")
     if facts.pixel_scale_present:
         evidence["semantic_napari"].append("Non-unit pixel or voxel scale is present.")
 
@@ -274,6 +282,7 @@ def _score_hypotheses(facts: RuleFacts) -> dict[str, HypothesisState]:
     states = {name: HypothesisState() for name in PHASE1_SEMANTIC_TYPES if name != "unknown"}
     for rule in (
         _rule_label_mask,
+        _rule_roi_shapes,
         _rule_rgb,
         _rule_spectral,
         _rule_time_series,
@@ -296,6 +305,16 @@ def _rule_label_mask(facts: RuleFacts, states: dict[str, HypothesisState]) -> No
                 pass
         if facts.binary_like:
             states["label_mask"].add(0.1, "Sampled labels look binary or ID-like.")
+
+
+def _rule_roi_shapes(facts: RuleFacts, states: dict[str, HypothesisState]) -> None:
+    if not isinstance(facts.layer, napari.layers.Shapes):
+        return
+    states["roi_shapes"].add(1.2, "napari layer type is Shapes, which carries ROI or annotation geometry semantics.")
+    if facts.shape_types:
+        states["roi_shapes"].add(0.25, f"Shapes layer reports geometry types {facts.shape_types}.")
+    if getattr(facts.layer, "ndim", None) == 2:
+        states["roi_shapes"].add(0.1, "Shapes layer is 2D geometry, consistent with ROI annotations.")
 
 
 def _rule_rgb(facts: RuleFacts, states: dict[str, HypothesisState]) -> None:
@@ -400,6 +419,8 @@ def _source_kind(layer) -> str:
         return "napari_image_layer"
     if isinstance(layer, napari.layers.Labels):
         return "napari_labels_layer"
+    if isinstance(layer, napari.layers.Shapes):
+        return "napari_shapes_layer"
     return "unknown"
 
 
@@ -417,6 +438,8 @@ def _detect_axes(layer, metadata: dict[str, Any], shape: list[int] | None) -> st
     if ndim is None:
         return ""
     if isinstance(layer, napari.layers.Labels):
+        return {2: "YX", 3: "ZYX", 4: "TZYX"}.get(ndim, "unknown")
+    if isinstance(layer, napari.layers.Shapes):
         return {2: "YX", 3: "ZYX", 4: "TZYX"}.get(ndim, "unknown")
     if bool(getattr(layer, "rgb", False)):
         return {2: "YXC", 3: "ZYXC", 4: "TZYXC"}.get(ndim, "unknown")

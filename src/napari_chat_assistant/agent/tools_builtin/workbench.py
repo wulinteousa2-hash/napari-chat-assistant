@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage as ndi
+from scipy import stats
 import napari
 from napari.layers import Labels, Shapes, Image, Points
 from skimage.measure import label as sk_label
@@ -294,6 +295,97 @@ def _format_bbox(bbox: tuple[tuple[int, int], ...]) -> str:
     if not bbox:
         return "none"
     return ", ".join(f"dim{axis}=[{lo}:{hi}]" for axis, (lo, hi) in enumerate(bbox))
+
+
+def _normalize_prefix(text: object) -> str:
+    return str(text or "").strip()
+
+
+def _strip_prefix_token(name: str, prefix: str) -> str:
+    base = str(name or "").strip()
+    token = str(prefix or "").strip()
+    if token and base.startswith(token):
+        base = base[len(token):]
+    return base.lstrip(" _-.")
+
+
+def _current_image_plane(layer: Image, viewer) -> np.ndarray:
+    data = np.asarray(layer.data)
+    if data.ndim < 2:
+        raise ValueError(f"Image layer [{layer.name}] must have at least 2 dimensions.")
+    if data.ndim == 2:
+        return data
+    current_step = tuple(int(step) for step in viewer.dims.current_step[: data.ndim])
+    leading_shape = data.shape[:-2]
+    leading_indices = []
+    for axis, axis_size in enumerate(leading_shape):
+        step_index = current_step[axis] if axis < len(current_step) else 0
+        leading_indices.append(int(np.clip(step_index, 0, axis_size - 1)))
+    return np.asarray(data[tuple(leading_indices) + (slice(None), slice(None))])
+
+
+def _resolve_group_image_layers(viewer, prefix: str) -> list[Image]:
+    token = _normalize_prefix(prefix)
+    if not token:
+        return []
+    return [layer for layer in viewer.layers if isinstance(layer, Image) and str(layer.name).startswith(token)]
+
+
+def _resolve_matching_roi_layer(viewer, image_layer: Image, roi_kind: str = "auto"):
+    requested = str(roi_kind or "auto").strip().lower()
+    candidates = []
+    for layer in viewer.layers:
+        if layer is image_layer:
+            continue
+        name = str(getattr(layer, "name", ""))
+        if not name.startswith(str(image_layer.name)):
+            continue
+        if requested in {"auto", "labels"} and isinstance(layer, Labels):
+            candidates.append(layer)
+        if requested in {"auto", "shapes"} and isinstance(layer, Shapes):
+            candidates.append(layer)
+    if requested == "auto":
+        for layer in candidates:
+            if isinstance(layer, Shapes):
+                return layer
+        for layer in candidates:
+            if isinstance(layer, Labels):
+                return layer
+    return candidates[0] if candidates else None
+
+
+def _metric_value(values: np.ndarray, metric: str) -> float:
+    metric_name = str(metric or "mean").strip().lower()
+    if metric_name == "mean":
+        return float(np.mean(values))
+    if metric_name == "median":
+        return float(np.median(values))
+    if metric_name == "sum":
+        return float(np.sum(values))
+    if metric_name == "std":
+        return float(np.std(values, ddof=1)) if values.size > 1 else 0.0
+    if metric_name == "area":
+        return float(values.size)
+    raise ValueError(f"Unsupported ROI metric [{metric_name}].")
+
+
+def _group_descriptive(values: list[float]) -> dict[str, float | int]:
+    arr = np.asarray(values, dtype=float)
+    return {
+        "n": int(arr.size),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+        "median": float(np.median(arr)),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+    }
+
+
+def _format_group_descriptive(name: str, stats_dict: dict[str, float | int]) -> str:
+    return (
+        f"{name}: n={stats_dict['n']} mean={stats_dict['mean']:.4g} std={stats_dict['std']:.4g} "
+        f"median={stats_dict['median']:.4g} min={stats_dict['min']:.4g} max={stats_dict['max']:.4g}"
+    )
 
 
 def _resolve_presentation_layers(viewer, layer_names: object | None = None) -> list[object]:
@@ -1849,6 +1941,484 @@ class ExtractROIValuesTool:
         )
 
 
+class CompareROIGroupsTool:
+    spec = ToolSpec(
+        name="compare_roi_groups",
+        display_name="Compare ROI Groups",
+        category="statistics",
+        description="Extract one ROI metric per image for two groups, run descriptive stats and assumption checks, then compare the groups.",
+        execution_mode="worker",
+        supported_layer_types=("image", "labels", "shapes"),
+        parameter_schema=(
+            ParamSpec("group_a_prefix", "string", description="Prefix for group A image layers.", required=True),
+            ParamSpec("group_b_prefix", "string", description="Prefix for group B image layers.", required=True),
+            ParamSpec("metric", "string", description="ROI metric to extract: mean, median, sum, std, or area.", default="mean"),
+            ParamSpec("roi_kind", "string", description="ROI layer type: auto, shapes, or labels.", default="auto"),
+            ParamSpec("pair_mode", "string", description="paired_suffix or unpaired.", default="paired_suffix"),
+            ParamSpec("alpha", "float", description="Significance threshold.", default=0.05, minimum=1e-6, maximum=0.5),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Statistics"},
+        provenance_metadata={"algorithm": "roi_group_compare", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        prefix_a = _normalize_prefix(args.get("group_a_prefix"))
+        prefix_b = _normalize_prefix(args.get("group_b_prefix"))
+        if not prefix_a or not prefix_b:
+            return "ROI group comparison requires group_a_prefix and group_b_prefix."
+        metric = str(args.get("metric", "mean")).strip().lower() or "mean"
+        if metric not in {"mean", "median", "sum", "std", "area"}:
+            return f"Unsupported ROI metric [{metric}]. Use mean, median, sum, std, or area."
+        roi_kind = str(args.get("roi_kind", "auto")).strip().lower() or "auto"
+        if roi_kind not in {"auto", "shapes", "labels"}:
+            return f"Unsupported roi_kind [{roi_kind}]. Use auto, shapes, or labels."
+        pair_mode = str(args.get("pair_mode", "paired_suffix")).strip().lower() or "paired_suffix"
+        if pair_mode not in {"paired_suffix", "unpaired"}:
+            return f"Unsupported pair_mode [{pair_mode}]. Use paired_suffix or unpaired."
+
+        images_a = _resolve_group_image_layers(ctx.viewer, prefix_a)
+        images_b = _resolve_group_image_layers(ctx.viewer, prefix_b)
+        if not images_a or not images_b:
+            return (
+                f"Could not resolve both image groups. group_a={len(images_a)} images for prefix [{prefix_a}], "
+                f"group_b={len(images_b)} images for prefix [{prefix_b}]."
+            )
+
+        items: list[dict[str, object]] = []
+        missing_roi: list[str] = []
+        for group_name, prefix, layers in (("A", prefix_a, images_a), ("B", prefix_b, images_b)):
+            for image_layer in layers:
+                if getattr(image_layer, "rgb", False):
+                    continue
+                roi_layer = _resolve_matching_roi_layer(ctx.viewer, image_layer, roi_kind=roi_kind)
+                if roi_layer is None:
+                    missing_roi.append(image_layer.name)
+                    continue
+                try:
+                    image_plane = _current_image_plane(image_layer, ctx.viewer)
+                except Exception:
+                    continue
+                pair_key = _strip_prefix_token(image_layer.name, prefix)
+                item = {
+                    "group": group_name,
+                    "pair_key": pair_key or image_layer.name,
+                    "image_layer_name": image_layer.name,
+                    "roi_layer_name": roi_layer.name,
+                    "roi_kind": roi_layer.__class__.__name__,
+                    "image_data": np.asarray(image_plane).copy(),
+                    "roi_data": np.asarray(getattr(roi_layer, "data", None), dtype=object if isinstance(roi_layer, Labels) else None).copy()
+                    if isinstance(roi_layer, Labels)
+                    else [np.asarray(shape, dtype=float).copy() for shape in roi_layer.data],
+                    "roi_shape_type": list(getattr(roi_layer, "shape_type", [])) if isinstance(roi_layer, Shapes) else None,
+                    "roi_selected": sorted(int(i) for i in getattr(roi_layer, "selected_data", set())) if isinstance(roi_layer, Shapes) else None,
+                }
+                items.append(item)
+
+        if missing_roi:
+            return (
+                "Could not find matching ROI layers for some images: "
+                + ", ".join(f"[{name}]" for name in missing_roi[:8])
+                + ("..." if len(missing_roi) > 8 else "")
+            )
+        if len(items) < 2:
+            return "Not enough image/ROI pairs were resolved for ROI group comparison."
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "group_a_prefix": prefix_a,
+                "group_b_prefix": prefix_b,
+                "metric": metric,
+                "roi_kind": roi_kind,
+                "pair_mode": pair_mode,
+                "alpha": normalize_float(args.get("alpha", 0.05), 0.05, minimum=1e-6, maximum=0.5),
+                "items": items,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        metric = str(payload["metric"])
+        rows: list[dict[str, object]] = []
+        for item in payload["items"]:
+            image_data = np.asarray(item["image_data"])
+            if item["roi_kind"] == "Labels":
+                roi_layer = Labels(np.asarray(item["roi_data"]).astype(np.int32, copy=False))
+            else:
+                roi_layer = Shapes(data=list(item["roi_data"]), shape_type=item["roi_shape_type"] or "polygon")
+                if item["roi_selected"]:
+                    roi_layer.selected_data = set(item["roi_selected"])
+            roi_mask = _roi_mask_from_layer(roi_layer, image_data.shape)
+            values = image_data[roi_mask]
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                continue
+            rows.append(
+                {
+                    "group": item["group"],
+                    "pair_key": item["pair_key"],
+                    "image_layer_name": item["image_layer_name"],
+                    "roi_layer_name": item["roi_layer_name"],
+                    "metric": metric,
+                    "value": _metric_value(values, metric),
+                    "roi_pixels": int(values.size),
+                }
+            )
+
+        values_a = [float(row["value"]) for row in rows if row["group"] == "A"]
+        values_b = [float(row["value"]) for row in rows if row["group"] == "B"]
+        if len(values_a) < 2 or len(values_b) < 2:
+            return ToolResult(
+                tool_name=self.spec.name,
+                kind=job.kind,
+                payload={**payload, "rows": rows, "comparison_error": "Each group needs at least 2 valid ROI samples."},
+            )
+
+        group_stats = {"A": _group_descriptive(values_a), "B": _group_descriptive(values_b)}
+        pair_mode = str(payload["pair_mode"])
+        normality = {}
+        variance = {}
+        selected_test = "Welch t-test"
+        result_stats: dict[str, object] = {}
+
+        arr_a = np.asarray(values_a, dtype=float)
+        arr_b = np.asarray(values_b, dtype=float)
+
+        if pair_mode == "paired_suffix":
+            rows_a = {str(row["pair_key"]): float(row["value"]) for row in rows if row["group"] == "A"}
+            rows_b = {str(row["pair_key"]): float(row["value"]) for row in rows if row["group"] == "B"}
+            shared = sorted(set(rows_a) & set(rows_b))
+            if len(shared) < 2:
+                return ToolResult(
+                    tool_name=self.spec.name,
+                    kind=job.kind,
+                    payload={**payload, "rows": rows, "comparison_error": "Paired comparison needs at least 2 matched suffix pairs."},
+                )
+            paired_a = np.asarray([rows_a[key] for key in shared], dtype=float)
+            paired_b = np.asarray([rows_b[key] for key in shared], dtype=float)
+            diffs = paired_a - paired_b
+            if diffs.size >= 3:
+                shapiro = stats.shapiro(diffs)
+                normality["paired_differences"] = {"statistic": float(shapiro.statistic), "pvalue": float(shapiro.pvalue)}
+            if diffs.size >= 3 and normality["paired_differences"]["pvalue"] < float(payload["alpha"]):
+                selected_test = "Wilcoxon signed-rank"
+                test = stats.wilcoxon(paired_a, paired_b, zero_method="wilcox", correction=False)
+            else:
+                selected_test = "Paired t-test"
+                test = stats.ttest_rel(paired_a, paired_b, nan_policy="omit")
+            result_stats = {
+                "matched_pairs": int(len(shared)),
+                "statistic": float(test.statistic),
+                "pvalue": float(test.pvalue),
+                "delta_mean": float(np.mean(paired_a) - np.mean(paired_b)),
+            }
+        else:
+            if arr_a.size >= 3:
+                shapiro_a = stats.shapiro(arr_a)
+                normality["A"] = {"statistic": float(shapiro_a.statistic), "pvalue": float(shapiro_a.pvalue)}
+            if arr_b.size >= 3:
+                shapiro_b = stats.shapiro(arr_b)
+                normality["B"] = {"statistic": float(shapiro_b.statistic), "pvalue": float(shapiro_b.pvalue)}
+            if arr_a.size >= 2 and arr_b.size >= 2:
+                lev = stats.levene(arr_a, arr_b, center="median")
+                variance = {"statistic": float(lev.statistic), "pvalue": float(lev.pvalue)}
+            normal_pass = all(info.get("pvalue", 1.0) >= float(payload["alpha"]) for info in normality.values()) if normality else False
+            equal_var = variance.get("pvalue", 0.0) >= float(payload["alpha"]) if variance else False
+            if normal_pass:
+                if equal_var:
+                    selected_test = "Student t-test"
+                    test = stats.ttest_ind(arr_a, arr_b, equal_var=True, nan_policy="omit")
+                else:
+                    selected_test = "Welch t-test"
+                    test = stats.ttest_ind(arr_a, arr_b, equal_var=False, nan_policy="omit")
+            else:
+                selected_test = "Mann-Whitney U"
+                test = stats.mannwhitneyu(arr_a, arr_b, alternative="two-sided")
+            result_stats = {
+                "statistic": float(test.statistic),
+                "pvalue": float(test.pvalue),
+                "delta_mean": float(np.mean(arr_a) - np.mean(arr_b)),
+            }
+
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload={
+                **payload,
+                "rows": rows,
+                "group_stats": group_stats,
+                "normality": normality,
+                "variance": variance,
+                "selected_test": selected_test,
+                "result_stats": result_stats,
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        if payload.get("comparison_error"):
+            return str(payload["comparison_error"])
+        metric = str(payload["metric"])
+        lines = [
+            f"ROI group comparison using metric [{metric}]",
+            f"Group A prefix: [{payload['group_a_prefix']}]",
+            f"Group B prefix: [{payload['group_b_prefix']}]",
+            _format_group_descriptive("Group A", payload["group_stats"]["A"]),
+            _format_group_descriptive("Group B", payload["group_stats"]["B"]),
+        ]
+        if payload["normality"]:
+            lines.append("")
+            lines.append("Normality checks:")
+            for name, info in payload["normality"].items():
+                lines.append(f"- {name}: Shapiro-Wilk W={info['statistic']:.4g}, p={info['pvalue']:.4g}")
+        if payload["variance"]:
+            lines.append(f"- Variance check: Levene statistic={payload['variance']['statistic']:.4g}, p={payload['variance']['pvalue']:.4g}")
+        lines.extend(
+            [
+                "",
+                f"Selected test: {payload['selected_test']}",
+                f"Statistic={payload['result_stats']['statistic']:.4g}, p={payload['result_stats']['pvalue']:.4g}, "
+                f"delta_mean={payload['result_stats']['delta_mean']:.4g}",
+            ]
+        )
+        if payload["selected_test"] in {"Paired t-test", "Wilcoxon signed-rank"}:
+            lines.append(f"Matched pairs={payload['result_stats']['matched_pairs']}")
+        lines.extend(
+            [
+                "",
+                "Each sample is one per-image ROI summary, which is the correct unit for group comparison.",
+            ]
+        )
+        return "\n".join(lines)
+
+
+class CompareImageGroupsTool:
+    spec = ToolSpec(
+        name="compare_image_groups",
+        display_name="Compare Image Groups",
+        category="statistics",
+        description="Extract one whole-image metric per image for two groups, run descriptive stats and assumption checks, then compare the groups.",
+        execution_mode="worker",
+        supported_layer_types=("image",),
+        parameter_schema=(
+            ParamSpec("group_a_prefix", "string", description="Prefix for group A image layers.", required=True),
+            ParamSpec("group_b_prefix", "string", description="Prefix for group B image layers.", required=True),
+            ParamSpec("metric", "string", description="Whole-image metric: mean, median, sum, std.", default="mean"),
+            ParamSpec("pair_mode", "string", description="paired_suffix or unpaired.", default="paired_suffix"),
+            ParamSpec("alpha", "float", description="Significance threshold.", default=0.05, minimum=1e-6, maximum=0.5),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Statistics"},
+        provenance_metadata={"algorithm": "image_group_compare", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        prefix_a = _normalize_prefix(args.get("group_a_prefix"))
+        prefix_b = _normalize_prefix(args.get("group_b_prefix"))
+        if not prefix_a or not prefix_b:
+            return "Image group comparison requires group_a_prefix and group_b_prefix."
+        metric = str(args.get("metric", "mean")).strip().lower() or "mean"
+        if metric not in {"mean", "median", "sum", "std"}:
+            return f"Unsupported image metric [{metric}]. Use mean, median, sum, or std."
+        pair_mode = str(args.get("pair_mode", "paired_suffix")).strip().lower() or "paired_suffix"
+        if pair_mode not in {"paired_suffix", "unpaired"}:
+            return f"Unsupported pair_mode [{pair_mode}]. Use paired_suffix or unpaired."
+
+        images_a = _resolve_group_image_layers(ctx.viewer, prefix_a)
+        images_b = _resolve_group_image_layers(ctx.viewer, prefix_b)
+        if not images_a or not images_b:
+            return (
+                f"Could not resolve both image groups. group_a={len(images_a)} images for prefix [{prefix_a}], "
+                f"group_b={len(images_b)} images for prefix [{prefix_b}]."
+            )
+
+        items: list[dict[str, object]] = []
+        for group_name, prefix, layers in (("A", prefix_a, images_a), ("B", prefix_b, images_b)):
+            for image_layer in layers:
+                if getattr(image_layer, "rgb", False):
+                    continue
+                try:
+                    image_plane = _current_image_plane(image_layer, ctx.viewer)
+                except Exception:
+                    continue
+                items.append(
+                    {
+                        "group": group_name,
+                        "pair_key": _strip_prefix_token(image_layer.name, prefix) or image_layer.name,
+                        "image_layer_name": image_layer.name,
+                        "image_data": np.asarray(image_plane).copy(),
+                    }
+                )
+        if len(items) < 2:
+            return "Not enough valid image layers were resolved for image group comparison."
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "group_a_prefix": prefix_a,
+                "group_b_prefix": prefix_b,
+                "metric": metric,
+                "pair_mode": pair_mode,
+                "alpha": normalize_float(args.get("alpha", 0.05), 0.05, minimum=1e-6, maximum=0.5),
+                "items": items,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        metric = str(payload["metric"])
+        rows: list[dict[str, object]] = []
+        for item in payload["items"]:
+            values = np.asarray(item["image_data"], dtype=float)
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                continue
+            rows.append(
+                {
+                    "group": item["group"],
+                    "pair_key": item["pair_key"],
+                    "image_layer_name": item["image_layer_name"],
+                    "metric": metric,
+                    "value": _metric_value(values, metric),
+                    "pixels": int(values.size),
+                }
+            )
+
+        values_a = [float(row["value"]) for row in rows if row["group"] == "A"]
+        values_b = [float(row["value"]) for row in rows if row["group"] == "B"]
+        if len(values_a) < 2 or len(values_b) < 2:
+            return ToolResult(
+                tool_name=self.spec.name,
+                kind=job.kind,
+                payload={**payload, "rows": rows, "comparison_error": "Each group needs at least 2 valid image samples."},
+            )
+
+        group_stats = {"A": _group_descriptive(values_a), "B": _group_descriptive(values_b)}
+        pair_mode = str(payload["pair_mode"])
+        normality = {}
+        variance = {}
+        selected_test = "Welch t-test"
+        result_stats: dict[str, object] = {}
+        arr_a = np.asarray(values_a, dtype=float)
+        arr_b = np.asarray(values_b, dtype=float)
+
+        if pair_mode == "paired_suffix":
+            rows_a = {str(row["pair_key"]): float(row["value"]) for row in rows if row["group"] == "A"}
+            rows_b = {str(row["pair_key"]): float(row["value"]) for row in rows if row["group"] == "B"}
+            shared = sorted(set(rows_a) & set(rows_b))
+            if len(shared) < 2:
+                return ToolResult(
+                    tool_name=self.spec.name,
+                    kind=job.kind,
+                    payload={**payload, "rows": rows, "comparison_error": "Paired comparison needs at least 2 matched suffix pairs."},
+                )
+            paired_a = np.asarray([rows_a[key] for key in shared], dtype=float)
+            paired_b = np.asarray([rows_b[key] for key in shared], dtype=float)
+            diffs = paired_a - paired_b
+            if diffs.size >= 3:
+                shapiro = stats.shapiro(diffs)
+                normality["paired_differences"] = {"statistic": float(shapiro.statistic), "pvalue": float(shapiro.pvalue)}
+            if diffs.size >= 3 and normality["paired_differences"]["pvalue"] < float(payload["alpha"]):
+                selected_test = "Wilcoxon signed-rank"
+                test = stats.wilcoxon(paired_a, paired_b, zero_method="wilcox", correction=False)
+            else:
+                selected_test = "Paired t-test"
+                test = stats.ttest_rel(paired_a, paired_b, nan_policy="omit")
+            result_stats = {
+                "matched_pairs": int(len(shared)),
+                "statistic": float(test.statistic),
+                "pvalue": float(test.pvalue),
+                "delta_mean": float(np.mean(paired_a) - np.mean(paired_b)),
+            }
+        else:
+            if arr_a.size >= 3:
+                shapiro_a = stats.shapiro(arr_a)
+                normality["A"] = {"statistic": float(shapiro_a.statistic), "pvalue": float(shapiro_a.pvalue)}
+            if arr_b.size >= 3:
+                shapiro_b = stats.shapiro(arr_b)
+                normality["B"] = {"statistic": float(shapiro_b.statistic), "pvalue": float(shapiro_b.pvalue)}
+            if arr_a.size >= 2 and arr_b.size >= 2:
+                lev = stats.levene(arr_a, arr_b, center="median")
+                variance = {"statistic": float(lev.statistic), "pvalue": float(lev.pvalue)}
+            normal_pass = all(info.get("pvalue", 1.0) >= float(payload["alpha"]) for info in normality.values()) if normality else False
+            equal_var = variance.get("pvalue", 0.0) >= float(payload["alpha"]) if variance else False
+            if normal_pass:
+                if equal_var:
+                    selected_test = "Student t-test"
+                    test = stats.ttest_ind(arr_a, arr_b, equal_var=True, nan_policy="omit")
+                else:
+                    selected_test = "Welch t-test"
+                    test = stats.ttest_ind(arr_a, arr_b, equal_var=False, nan_policy="omit")
+            else:
+                selected_test = "Mann-Whitney U"
+                test = stats.mannwhitneyu(arr_a, arr_b, alternative="two-sided")
+            result_stats = {
+                "statistic": float(test.statistic),
+                "pvalue": float(test.pvalue),
+                "delta_mean": float(np.mean(arr_a) - np.mean(arr_b)),
+            }
+
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload={
+                **payload,
+                "rows": rows,
+                "group_stats": group_stats,
+                "normality": normality,
+                "variance": variance,
+                "selected_test": selected_test,
+                "result_stats": result_stats,
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        if payload.get("comparison_error"):
+            return str(payload["comparison_error"])
+        metric = str(payload["metric"])
+        lines = [
+            f"Whole-image group comparison using metric [{metric}]",
+            f"Group A prefix: [{payload['group_a_prefix']}]",
+            f"Group B prefix: [{payload['group_b_prefix']}]",
+            _format_group_descriptive("Group A", payload["group_stats"]["A"]),
+            _format_group_descriptive("Group B", payload["group_stats"]["B"]),
+        ]
+        if payload["normality"]:
+            lines.append("")
+            lines.append("Normality checks:")
+            for name, info in payload["normality"].items():
+                lines.append(f"- {name}: Shapiro-Wilk W={info['statistic']:.4g}, p={info['pvalue']:.4g}")
+        if payload["variance"]:
+            lines.append(f"- Variance check: Levene statistic={payload['variance']['statistic']:.4g}, p={payload['variance']['pvalue']:.4g}")
+        lines.extend(
+            [
+                "",
+                f"Selected test: {payload['selected_test']}",
+                f"Statistic={payload['result_stats']['statistic']:.4g}, p={payload['result_stats']['pvalue']:.4g}, "
+                f"delta_mean={payload['result_stats']['delta_mean']:.4g}",
+            ]
+        )
+        if payload["selected_test"] in {"Paired t-test", "Wilcoxon signed-rank"}:
+            lines.append(f"Matched pairs={payload['result_stats']['matched_pairs']}")
+        lines.extend(
+            [
+                "",
+                "Each sample is one whole-image summary, not all pixels pooled together.",
+            ]
+        )
+        return "\n".join(lines)
+
+
 class SAMSegmentFromBoxTool:
     spec = ToolSpec(
         name="sam_segment_from_box",
@@ -2212,6 +2782,8 @@ def workbench_scaffold_tools():
         InspectROIContextTool(),
         MeasureShapesROIAreaTool(),
         ExtractROIValuesTool(),
+        CompareROIGroupsTool(),
+        CompareImageGroupsTool(),
         SAMSegmentFromBoxTool(),
         SAMSegmentFromPointsTool(),
         SAMPropagatePoints3DTool(),

@@ -2,6 +2,18 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.6.1
+
+- Added interactive ROI measurement tools with a new `ROI Intensity Metrics` widget for live shape-based measurement, histogram and table views, renameable ROI labels, chat insertion, and CSV export.
+- Added an interactive `Line Profile Gaussian Fit` widget for line-based measurements with live profile plotting, Gaussian fitting, renameable line labels, chat insertion, and CSV export.
+- Added a new `Group Comparison Stats` widget for whole-image and ROI-based group comparisons with descriptive statistics, assumption checks, test selection, plots, and CSV export.
+- Added workspace manifest save/load support so users can restore layer order and recoverable display state from a lightweight workspace file.
+- Added routing and dispatcher support so chat can open the new measurement and statistics widgets directly from user requests.
+- Added new built-in ROI-group and image-group comparison tools in the workbench tool registry.
+- Improved layer profiling and context handling for `Shapes` layers so ROI geometry is recognized more explicitly in assistant workflows.
+- Expanded template support for widget-style measurement workflows and clarified the separation between `Code` snippets and runnable `Templates`.
+- Updated chat UI, help text, and saved UI state handling to support workspace persistence and the newer measurement/statistics workflows.
+
 ## 1.6.0
 
 - Added `Refine My Code` as a first-class recovery workflow beside `Run My Code`, so users can repair pasted or failed viewer-bound Python for the current napari plugin environment without leaving the dock.

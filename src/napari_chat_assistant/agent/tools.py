@@ -32,6 +32,8 @@ ASSISTANT_TOOL_NAMES = {
     "open_nd2_converter",
     "open_spectral_viewer",
     "open_spectral_analysis",
+    "compare_roi_groups",
+    "compare_image_groups",
     "apply_clahe",
     "apply_clahe_batch",
     "gaussian_denoise",
@@ -41,6 +43,9 @@ ASSISTANT_TOOL_NAMES = {
     "apply_threshold_batch",
     "measure_mask",
     "measure_mask_batch",
+    "measure_shapes_roi_stats",
+    "open_intensity_metrics_table",
+    "open_group_comparison_widget",
     "inspect_roi_context",
     "keep_largest_component",
     "label_connected_components",
@@ -157,6 +162,8 @@ def assistant_system_prompt() -> str:
         '- open_nd2_converter: {}\n'
         '- open_spectral_viewer: {}\n'
         '- open_spectral_analysis: {}\n'
+        '- compare_roi_groups: {"group_a_prefix": string, "group_b_prefix": string, "metric": optional "mean|median|sum|std|area", "roi_kind": optional "auto|shapes|labels", "pair_mode": optional "paired_suffix|unpaired", "alpha": optional float}\n'
+        '- compare_image_groups: {"group_a_prefix": string, "group_b_prefix": string, "metric": optional "mean|median|sum|std", "pair_mode": optional "paired_suffix|unpaired", "alpha": optional float}\n'
         '- apply_clahe: {"layer_name": optional string, "kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
         '- apply_clahe_batch: {"kernel_size": optional int or list, "clip_limit": optional float, "nbins": optional int}\n'
         '- gaussian_denoise: {"layer_name": optional string, "sigma": optional float or list, "preserve_range": optional bool}\n'
@@ -166,6 +173,9 @@ def assistant_system_prompt() -> str:
         '- apply_threshold_batch: {"polarity": "auto|bright|dim"}\n'
         '- measure_mask: {"layer_name": optional string}\n'
         '- measure_mask_batch: {}\n'
+        '- measure_shapes_roi_stats: {"roi_layer": optional string, "image_layer": optional string}\n'
+        '- open_intensity_metrics_table: {"layer_name": optional string}\n'
+        '- open_group_comparison_widget: {}\n'
         '- inspect_roi_context: {"roi_layer": optional string}\n'
         '- keep_largest_component: {"layer_name": optional string}\n'
         '- label_connected_components: {"layer_name": optional string, "connectivity": optional int}\n'
@@ -200,6 +210,9 @@ def assistant_system_prompt() -> str:
         "- If the user asks to open the ND2 converter, ND2 exporter, batch exporter, or OME-Zarr converter, use open_nd2_converter.\n"
         "- If the user asks for a spectral viewer, spectral rendering, pseudocolor viewer, or visible/truecolor spectral display, use open_spectral_viewer.\n"
         "- If the user asks for PCA, spectral ratio analysis, Welch t-test, ANOVA, or spectral statistics, use open_spectral_analysis.\n"
+        "- If the user asks to compare two groups of ROI-based image measurements such as wt vs mutant, with image names grouped by prefixes and one ROI summary per image, use compare_roi_groups.\n"
+        "- If the user asks to compare two groups of whole images with one summary value per image and no ROI, use compare_image_groups.\n"
+        "- If the user asks for an interactive widget, popup, table, or plot-based interface for group statistics or two-group comparison, use open_group_comparison_widget.\n"
         "- The viewer_context includes deterministic per-layer dataset profiles with semantic_type, confidence, axes_detected, and recommendation classes. Use those fields instead of guessing from the prompt.\n"
         "- The user_payload may include code_repair_context when the user pastes existing Python and asks to fix, refine, debug, improve, or explain it.\n"
         "- code_repair_context contains the user's original code, a normalized_code_candidate from local repair heuristics, and local_validation errors/warnings/notes.\n"
@@ -218,7 +231,7 @@ def assistant_system_prompt() -> str:
         "- For thresholding or mask creation, use preview_threshold first unless they explicitly ask to apply.\n"
         "- If the user explicitly wants the threshold result added as a labels layer, use apply_threshold. The built-in threshold tools already create labels output layers and are preferred over generated code.\n"
         "- If the user asks about an ROI, subregion, region of interest, labels ROI, or shapes ROI and wants to know what region is currently defined, use inspect_roi_context.\n"
-        "- If the user asks to measure or extract values from an image inside a labels ROI or shapes ROI, use extract_roi_values.\n"
+        "- If the user asks to measure or extract values from an image inside a labels ROI or shapes ROI, use extract_roi_values unless they explicitly want centroid, bounding box, area, or direct shape stats, in which case use measure_shapes_roi_stats.\n"
         "- If the user explicitly mentions SAM or Segment Anything, prefer the SAM segmentation tool family.\n"
         "- If the user asks for segmentation from a box, rectangle, polygon ROI, prompt points, clicks, or mask refinement and SAM is available, prefer the corresponding SAM tool.\n"
         "- If the user asks to propagate SAM2 through a 3D image, track through z slices, or extend point prompts across a 3D volume, use sam_propagate_points_3d.\n"
@@ -228,6 +241,11 @@ def assistant_system_prompt() -> str:
         "- If a profile indicates label_mask or probability_map, avoid treating that layer as a generic intensity image unless the user explicitly asks.\n"
         "- If a profile indicates rgb, avoid grayscale-only operations such as CLAHE unless the user asks for a conversion workflow.\n"
         "- If the user asks for measurement, area, volume, or object count on a mask, use measure_mask.\n"
+        "- If the user asks for stats of an ROI shape, selected shape stats, shape area, shape centroid, shape bounding box, or shape intensity stats inside an ROI, prefer measure_shapes_roi_stats only when they clearly want a text summary in chat.\n"
+        "- If the user asks to measure an ROI in a practical or interactive way, or mentions a table, widget, popup, histogram, export, renameable ROI labels, percent view, or repeated measurement workflow, use open_intensity_metrics_table.\n"
+        "- If the user asks for group comparison after ROI extraction, including normality checks, variance checks, Student t-test, Welch t-test, Mann-Whitney, paired suffix matching, or wt-versus-mutant style ROI statistics, use compare_roi_groups.\n"
+        "- If the user asks for group comparison across whole images, such as 3 images versus 3 images with no ROI and one mean or median intensity per image, use compare_image_groups.\n"
+        "- If the user asks for an interactive group-comparison workflow with box plot, bar plot, per-sample table, descriptive stats, or exportable comparison results, use open_group_comparison_widget.\n"
         "- If the user asks for per-object measurements, a measurement table, region properties, centroids, bounding boxes, or mean intensity by label, use measure_labels_table.\n"
         "- If the user asks to remove small mask objects, tiny components, or speckle-like labels noise from a labels layer, use remove_small_objects.\n"
         "- If the user asks to fill holes inside a mask or segmentation, use fill_mask_holes.\n"
