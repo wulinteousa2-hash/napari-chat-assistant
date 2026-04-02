@@ -43,6 +43,7 @@ from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, 
 from napari_chat_assistant.agent.code_validation import (
     ValidationMode,
     ValidationReport,
+    build_code_repair_context,
     normalize_generated_code_if_needed,
     validate_generated_code,
 )
@@ -135,6 +136,62 @@ def chat_widget(napari_viewer=None) -> QWidget:
     header = QLabel("Local Chat Assistant")
     layout.addWidget(header)
 
+    model_bar = QWidget()
+    model_bar_layout = QHBoxLayout(model_bar)
+    model_bar_layout.setContentsMargins(0, 0, 0, 0)
+
+    model_label = QLabel("Model:")
+    model_bar_layout.addWidget(model_label)
+
+    model_combo = QComboBox()
+    model_combo.setEditable(True)
+    model_combo.setMinimumContentsLength(18)
+    model_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    model_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+    model_bar_layout.addWidget(model_combo, 1)
+
+    connection_status = QLabel("Status: not connected")
+    connection_status.setWordWrap(True)
+    connection_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    connection_status.setStyleSheet("QLabel { background: #243447; color: #f5f7fa; padding: 6px; }")
+    model_bar_layout.addWidget(connection_status, 2)
+
+    save_btn = QPushButton("Load")
+    save_btn.setToolTip("Load the selected model into Ollama now so the first chat request starts faster.")
+    unload_btn = QPushButton("Unload")
+    unload_btn.setToolTip("Unload the selected model from Ollama and free RAM or VRAM.")
+    connection_toggle_btn = QPushButton("Connection")
+    connection_toggle_btn.setCheckable(True)
+    connection_toggle_btn.setToolTip("Show or hide connection details such as Base URL, Test, and Setup.")
+    model_bar_layout.addWidget(save_btn)
+    model_bar_layout.addWidget(unload_btn)
+    model_bar_layout.addWidget(connection_toggle_btn)
+    layout.addWidget(model_bar)
+
+    connection_details = QGroupBox("Connection Details")
+    connection_details.setVisible(False)
+    connection_details_layout = QFormLayout(connection_details)
+    provider_combo = QComboBox()
+    provider_combo.addItems(["Local (Ollama-style)"])
+    provider_combo.setEnabled(False)
+    connection_details_layout.addRow("Provider:", provider_combo)
+    base_url_edit = QLineEdit("http://127.0.0.1:11434")
+    connection_details_layout.addRow("Base URL:", base_url_edit)
+    model_hint = QLabel("Type an Ollama model tag or pick one already installed locally.")
+    model_hint.setWordWrap(True)
+    model_hint.setStyleSheet("QLabel { color: #9fb3c8; padding: 2px 0 6px 0; }")
+    connection_details_layout.addRow(model_hint)
+    config_btn_row = QWidget()
+    config_btn_layout = QHBoxLayout(config_btn_row)
+    test_btn = QPushButton("Test")
+    test_btn.setToolTip("Check that Ollama is reachable and confirm the selected model tag is installed locally.")
+    config_btn_layout.addWidget(test_btn)
+    pull_btn = QPushButton("Setup")
+    pull_btn.setToolTip("Show Ollama setup steps, including how to start Ollama and pull the selected model tag.")
+    config_btn_layout.addWidget(pull_btn)
+    connection_details_layout.addRow(config_btn_row)
+    layout.addWidget(connection_details)
+
     splitter = QSplitter(Qt.Horizontal)
     layout.addWidget(splitter, 1)
 
@@ -148,67 +205,38 @@ def chat_widget(napari_viewer=None) -> QWidget:
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
 
-    config_group = QGroupBox("Model Connection")
-    config_layout = QFormLayout(config_group)
-
-    provider_combo = QComboBox()
-    provider_combo.addItems(["Local (Ollama-style)"])
-    provider_combo.setEnabled(False)
-    config_layout.addRow("Provider:", provider_combo)
-
-    base_url_edit = QLineEdit("http://127.0.0.1:11434")
-    config_layout.addRow("Base URL:", base_url_edit)
-
-    model_combo = QComboBox()
-    model_combo.setEditable(True)
-    model_combo.setMinimumContentsLength(18)
-    model_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-    model_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-    config_layout.addRow("Model:", model_combo)
-
-    model_hint = QLabel("Type an Ollama model tag or pick one already installed locally.")
-    model_hint.setWordWrap(True)
-    model_hint.setStyleSheet("QLabel { color: #9fb3c8; padding: 2px 0 6px 0; }")
-    config_layout.addRow(model_hint)
-
-    connection_status = QLabel("Status: not connected")
-    connection_status.setWordWrap(True)
-    connection_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-    connection_status.setStyleSheet("QLabel { background: #243447; color: #f5f7fa; padding: 6px; }")
-    config_layout.addRow(connection_status)
-
-    config_btn_row = QWidget()
-    config_btn_layout = QHBoxLayout(config_btn_row)
-    save_btn = QPushButton("Load")
-    save_btn.setToolTip("Load the selected model into Ollama now so the first chat request starts faster.")
-    unload_btn = QPushButton("Unload")
-    unload_btn.setToolTip("Unload the selected model from Ollama and free RAM or VRAM.")
-    test_btn = QPushButton("Test")
-    test_btn.setToolTip("Check that Ollama is reachable and confirm the selected model tag is installed locally.")
-    config_btn_layout.addWidget(save_btn)
-    config_btn_layout.addWidget(unload_btn)
-    config_btn_layout.addWidget(test_btn)
-    pull_btn = QPushButton("Setup")
-    pull_btn.setToolTip("Show Ollama setup steps, including how to start Ollama and pull the selected model tag.")
-    config_btn_layout.addWidget(pull_btn)
-    config_layout.addRow(config_btn_row)
-    left_layout.addWidget(config_group)
-
-    context_group = QGroupBox("Current Context")
+    context_group = QGroupBox("Layer Context")
     context_layout = QVBoxLayout(context_group)
-    context_label = QLabel()
-    context_label.setTextInteractionFlags(context_label.textInteractionFlags())
-    context_label.setWordWrap(True)
-    context_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-    context_label.setStyleSheet("QLabel { background: #101820; color: #e6edf3; padding: 8px; }")
-    context_layout.addWidget(context_label)
+    context_layout.setContentsMargins(6, 6, 6, 6)
+    context_tabs = QTabWidget()
+    context_layout.addWidget(context_tabs)
 
-    context_btn_row = QWidget()
-    context_btn_layout = QHBoxLayout(context_btn_row)
-    refresh_btn = QPushButton("Refresh Context")
-    context_btn_layout.addWidget(refresh_btn)
-    context_layout.addWidget(context_btn_row)
-    left_layout.addWidget(context_group, 1)
+    context_summary_tab = QWidget()
+    context_summary_layout = QVBoxLayout(context_summary_tab)
+    context_summary_layout.setContentsMargins(0, 0, 0, 0)
+    context_summary_box = QTextEdit()
+    context_summary_box.setReadOnly(True)
+    context_summary_box.setAcceptRichText(False)
+    context_summary_box.setPlaceholderText("Copyable layer context will appear here.")
+    context_summary_box.setMinimumHeight(120)
+    context_summary_box.setMaximumHeight(180)
+    context_summary_box.setStyleSheet(
+        "QTextEdit { background: #101820; color: #e6edf3; border: 1px solid #22304a; padding: 8px; }"
+    )
+    context_summary_layout.addWidget(context_summary_box)
+
+    context_layers_tab = QWidget()
+    context_layers_layout = QVBoxLayout(context_layers_tab)
+    context_layers_layout.setContentsMargins(0, 0, 0, 0)
+    context_layers_list = QListWidget()
+    context_layers_list.setSelectionMode(QAbstractItemView.NoSelection)
+    context_layers_list.setFocusPolicy(Qt.NoFocus)
+    context_layers_list.setStyleSheet("QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
+    context_layers_layout.addWidget(context_layers_list)
+
+    context_tabs.addTab(context_summary_tab, "Summary")
+    context_tabs.addTab(context_layers_tab, "Layers")
+    left_layout.addWidget(context_group, 0)
 
     prompt_library_group = QGroupBox("Library")
     prompt_library_layout = QVBoxLayout(prompt_library_group)
@@ -226,12 +254,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     prompt_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     prompt_library_list.setWordWrap(True)
+    prompt_library_list.setStyleSheet(
+        "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; } "
+        "QListWidget::item:selected { background: #1d2a44; color: #e8f1ff; }"
+    )
     code_library_list = QListWidget()
     code_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
     code_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
     code_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     code_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     code_library_list.setWordWrap(True)
+    code_library_list.setStyleSheet(
+        "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; } "
+        "QListWidget::item:selected { background: #1d2a44; color: #e8f1ff; }"
+    )
     prompt_library_font = prompt_library_list.font()
     if prompt_library_font.pointSize() > 0:
         prompt_library_font.setPointSize(prompt_library_font.pointSize() + 1)
@@ -270,6 +306,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
     library_tabs.addTab(prompt_library_list, "Prompts")
     library_tabs.addTab(code_library_list, "Code")
     library_tabs.addTab(template_tab, "Templates")
+    library_tabs.setTabToolTip(0, "Reusable natural-language prompts you can load, save, pin, and send.")
+    library_tabs.setTabToolTip(1, "Saved or recent Python snippets for Run My Code and code refinement.")
+    library_tabs.setTabToolTip(2, "Built-in starter templates organized by category for loading or immediate execution.")
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
     save_prompt_btn = QPushButton("Save")
@@ -292,6 +331,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     left_layout.addWidget(prompt_library_group, 2)
 
     log_group = QGroupBox("Session")
+    log_group.setCheckable(True)
+    log_group.setChecked(False)
     log_layout = QVBoxLayout(log_group)
     log_tabs = QTabWidget()
     log_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
@@ -350,6 +391,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     log_tabs.addTab(telemetry_tab, "Telemetry")
     log_tabs.addTab(diagnostics_tab, "Diagnostics")
     log_layout.addWidget(log_tabs)
+    log_tabs.setVisible(False)
     left_layout.addWidget(log_group, 0)
 
     transcript_group = QGroupBox("Chat")
@@ -378,13 +420,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_code_btn = QPushButton("Run Code")
     run_my_code_btn = QPushButton("Run My Code")
     run_my_code_btn.setToolTip("Paste your own Python in the Prompt box and click to run it directly, without opening QtConsole.")
+    refine_my_code_btn = QPushButton("Refine My Code")
+    refine_my_code_btn.setToolTip("Ask the assistant to repair prompt-box code or the last failed Run My Code submission for this plugin environment.")
     copy_code_btn = QPushButton("Copy Code")
     run_code_btn.setEnabled(False)
     copy_code_btn.setEnabled(False)
+    refine_my_code_btn.setEnabled(False)
     code_btn_layout.addWidget(pending_code_label, 1)
     code_btn_layout.addWidget(run_code_btn)
     code_btn_layout.addWidget(copy_code_btn)
     code_btn_layout.addWidget(run_my_code_btn)
+    code_btn_layout.addWidget(refine_my_code_btn)
     code_btn_layout.addWidget(reject_memory_btn)
     code_btn_layout.addWidget(advanced_btn)
     code_btn_layout.addWidget(help_btn)
@@ -481,6 +527,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
         "validation_mode": "strict",
         "code_source": "assistant",
     }
+    last_user_code_failure = {
+        "code": "",
+        "error": "",
+    }
     last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
     session_memory_state = load_session_memory()
     last_memory_candidate_ids: list[str] = []
@@ -573,9 +623,97 @@ def chat_widget(napari_viewer=None) -> QWidget:
         return True
 
     def refresh_context(*_args):
-        if widget_is_alive(context_label):
-            context_label.setText(layer_summary(viewer))
+        summary_text = layer_summary(viewer)
+        if widget_is_alive(context_summary_box):
+            context_summary_box.setPlainText(summary_text)
+        if widget_is_alive(context_layers_list):
+            context_layers_list.clear()
+            if viewer is not None:
+                for layer in viewer.layers:
+                    layer_type = layer.__class__.__name__
+                    data = getattr(layer, "data", None)
+                    shape = getattr(data, "shape", None)
+                    dtype = getattr(data, "dtype", None)
+                    semantic = "n/a"
+                    try:
+                        from napari_chat_assistant.agent.profiler import profile_layer
+
+                        semantic = str(profile_layer(layer).get("semantic_type", "n/a"))
+                    except Exception:
+                        pass
+                    line = (
+                        f"- {layer.name} [{layer_type}] "
+                        f"shape={tuple(shape) if shape is not None else 'n/a'} "
+                        f"dtype={dtype if dtype is not None else 'n/a'} semantic={semantic}"
+                    )
+                    item = QListWidgetItem()
+                    context_layers_list.addItem(item)
+                    row_widget = QWidget()
+                    row_layout = QHBoxLayout(row_widget)
+                    row_layout.setContentsMargins(6, 4, 6, 4)
+                    row_layout.setSpacing(8)
+                    row_label = QLabel(line)
+                    row_label.setWordWrap(True)
+                    row_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    copy_btn = QPushButton("Copy")
+                    copy_btn.setMaximumWidth(56)
+                    insert_btn = QPushButton("Insert")
+                    insert_btn.setMaximumWidth(56)
+                    insert_btn.setToolTip("Append this layer summary line to the Prompt box.")
+                    copy_btn.setToolTip("Copy this layer summary line to the clipboard.")
+                    copy_btn.clicked.connect(lambda _checked=False, text=line: QApplication.clipboard().setText(text))
+                    insert_btn.clicked.connect(lambda _checked=False, text=line: append_text_to_prompt(text))
+                    row_layout.addWidget(row_label, 1)
+                    row_layout.addWidget(insert_btn, 0)
+                    row_layout.addWidget(copy_btn, 0)
+                    item.setSizeHint(row_widget.sizeHint())
+                    context_layers_list.setItemWidget(item, row_widget)
+                selected = viewer.layers.selection.active if viewer is not None else None
+                if selected is not None:
+                    item = QListWidgetItem()
+                    context_layers_list.addItem(item)
+                    row_widget = QWidget()
+                    row_layout = QHBoxLayout(row_widget)
+                    row_layout.setContentsMargins(6, 4, 6, 4)
+                    row_layout.setSpacing(8)
+                    line = f"Selected: {selected.name}"
+                    row_label = QLabel(line)
+                    row_label.setWordWrap(True)
+                    row_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    copy_btn = QPushButton("Copy")
+                    copy_btn.setMaximumWidth(56)
+                    insert_btn = QPushButton("Insert")
+                    insert_btn.setMaximumWidth(56)
+                    insert_btn.setToolTip("Append this selected-layer line to the Prompt box.")
+                    copy_btn.setToolTip("Copy this selected-layer line to the clipboard.")
+                    copy_btn.clicked.connect(lambda _checked=False, text=line: QApplication.clipboard().setText(text))
+                    insert_btn.clicked.connect(lambda _checked=False, text=line: append_text_to_prompt(text))
+                    row_layout.addWidget(row_label, 1)
+                    row_layout.addWidget(insert_btn, 0)
+                    row_layout.addWidget(copy_btn, 0)
+                    item.setSizeHint(row_widget.sizeHint())
+                    context_layers_list.setItemWidget(item, row_widget)
         refresh_analysis_controls()
+
+    def append_text_to_prompt(text: str):
+        content = str(text or "").strip()
+        if not content:
+            return
+        current = prompt.toPlainText().rstrip()
+        prompt.setPlainText(f"{current}\n{content}" if current else content)
+        prompt.setFocus()
+
+    def connect_viewer_context_events():
+        if viewer is None:
+            return
+        try:
+            viewer.layers.events.inserted.connect(refresh_context)
+            viewer.layers.events.removed.connect(refresh_context)
+            viewer.layers.events.reordered.connect(refresh_context)
+            viewer.layers.selection.events.active.connect(refresh_context)
+            viewer.layers.selection.events.changed.connect(refresh_context)
+        except Exception:
+            pass
 
     def image_layer_names() -> list[str]:
         if viewer is None:
@@ -701,6 +839,37 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return ""
         payload = source[len(matched):].lstrip(" :\n\t")
         return strip_code_fences(payload)
+
+    def looks_like_python_code(text: str) -> bool:
+        source = str(text or "").strip()
+        if not source:
+            return False
+        signals = (
+            "viewer.",
+            "selected_layer",
+            "import ",
+            "from ",
+            "def ",
+            "for ",
+            "if ",
+            "while ",
+            "np.",
+            "napari",
+            "run_in_background",
+        )
+        return any(signal in source for signal in signals)
+
+    def prompt_code_candidate() -> str:
+        code_text = strip_code_fences(prompt.toPlainText()).strip()
+        if not code_text:
+            return ""
+        return code_text if looks_like_python_code(code_text) else ""
+
+    def refresh_code_action_buttons():
+        has_prompt_code = bool(prompt_code_candidate())
+        has_failed_code = bool(str(last_user_code_failure.get("code", "")).strip())
+        run_my_code_btn.setEnabled(has_prompt_code)
+        refine_my_code_btn.setEnabled(has_prompt_code or has_failed_code)
 
     def append_log(message: str):
         item = QListWidgetItem(message)
@@ -859,6 +1028,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
         source = " ".join(str(text or "").strip().lower().split())
         if not source:
             return "unknown"
+        if build_code_repair_context(text, viewer=viewer) is not None:
+            return "code_repair"
         if "clahe" in source:
             return "clahe"
         if "threshold" in source and "preview" in source:
@@ -1151,7 +1322,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
         connection_status.setText(text)
 
     def set_model_controls_enabled(enabled: bool):
-        for widget in (base_url_edit, model_combo, test_btn, save_btn, pull_btn, unload_btn, prompt, refresh_btn):
+        for widget in (
+            base_url_edit,
+            model_combo,
+            test_btn,
+            save_btn,
+            pull_btn,
+            unload_btn,
+            prompt,
+            connection_toggle_btn,
+        ):
             widget.setEnabled(enabled)
 
     def set_pending_code(
@@ -1307,7 +1487,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             child.setData(0, Qt.UserRole, record)
             parent.addChild(child)
         for index in range(template_tree.topLevelItemCount()):
-            template_tree.topLevelItem(index).setExpanded(True)
+            template_tree.topLevelItem(index).setExpanded(False)
         template_tree.setCurrentItem(None)
         template_preview.clear()
         refresh_library_controls()
@@ -2866,7 +3046,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         base_url = base_url_edit.text().strip().rstrip("/") or str(saved_settings["base_url"]).rstrip("/")
         model_name = model_combo.currentText().strip() or str(saved_settings["model"]).strip()
         if not base_url or not model_name:
-            append_chat_message("assistant", "Model settings are incomplete. Fill in Model Connection first.")
+            append_chat_message("assistant", "Model settings are incomplete. Choose a model and open Connection if you need to adjust the Base URL.")
             set_status("Status: missing saved model settings", ok=False)
             return
         local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
@@ -2971,6 +3151,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         @thread_worker(ignore_errors=True)
         def run_chat():
             viewer_payload = layer_context_json(viewer)
+            code_repair_context = build_code_repair_context(text, viewer=viewer)
             return chat_ollama(
                 base_url,
                 model_name,
@@ -2978,6 +3159,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 user_payload={
                     "viewer_context": viewer_payload,
                     "session_memory": build_session_memory_payload(session_memory_state, viewer_payload.get("selected_layer_profile")),
+                    "code_repair_context": code_repair_context,
                     "user_message": text,
                 },
                 options=dict(generation_defaults),
@@ -3313,8 +3495,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
         code_source: str = "assistant",
         disable_pending_buttons: bool = False,
     ) -> bool:
+        normalized_code_text = str(code_text or "").strip()
         validation_report = preflight_generated_code(code_text)
         if validation_report.has_blocking_issues(validation_mode):
+            if code_source == "user":
+                last_user_code_failure["code"] = normalized_code_text
+                last_user_code_failure["error"] = format_validation_report(
+                    validation_report,
+                    mode=validation_mode,
+                    heading=f"{code_label.capitalize()} failed local validation.",
+                )
+                refresh_code_action_buttons()
             append_chat_message(
                 "assistant",
                 format_validation_report(
@@ -3418,6 +3609,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
         except Exception as exc:
             logger.exception("%s failed during execution.", code_label.capitalize())
             error_text = format_code_execution_error(exc)
+            if code_source == "user":
+                last_user_code_failure["code"] = normalized_code_text
+                last_user_code_failure["error"] = error_text
+                refresh_code_action_buttons()
             append_chat_message("assistant", f"{code_label.capitalize()} failed:\n{error_text}")
             record_telemetry(
                 "code_execution",
@@ -3437,6 +3632,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return False
 
         refresh_context()
+        if code_source == "user":
+            last_user_code_failure["code"] = ""
+            last_user_code_failure["error"] = ""
+            refresh_code_action_buttons()
         stdout_text = stdout_buffer.getvalue().strip()
         result_message = f"{code_label.capitalize()} executed."
         if background_state["launched"]:
@@ -3479,6 +3678,31 @@ def chat_widget(napari_viewer=None) -> QWidget:
             model_name="manual",
             code_source="user",
         )
+
+    def refine_prompt_code(*_args):
+        code_text = prompt_code_candidate()
+        error_text = ""
+        if code_text:
+            if code_text == str(last_user_code_failure.get("code", "")).strip():
+                error_text = str(last_user_code_failure.get("error", "")).strip()
+        else:
+            code_text = str(last_user_code_failure.get("code", "")).strip()
+            error_text = str(last_user_code_failure.get("error", "")).strip()
+        if not code_text:
+            set_status("Status: no code available to refine", ok=False)
+            append_log("Refine My Code skipped: no prompt-box code or failed user code was available.")
+            return
+        request_lines = [
+            "Refine this code so it runs in the current napari plugin environment.",
+            "Preserve the original intent, explain the main fix briefly, and return corrected runnable Python.",
+        ]
+        if error_text:
+            request_lines.extend(["", "Latest error or validation failure:", error_text])
+        request_lines.extend(["", "Code:", format_code_block(code_text)])
+        prompt.setPlainText("\n".join(request_lines))
+        append_log("Queued Refine My Code request from prompt-box or failed user code.")
+        set_status("Status: refining user code", ok=None)
+        send_message()
 
     def load_library_prompt(item: QListWidgetItem):
         record = item.data(Qt.UserRole) or {}
@@ -3610,6 +3834,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     crash_log_btn.clicked.connect(show_crash_log)
     run_code_btn.clicked.connect(run_pending_code)
     run_my_code_btn.clicked.connect(run_prompt_code)
+    refine_my_code_btn.clicked.connect(refine_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
     reject_memory_btn.clicked.connect(reject_last_memory)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
@@ -3628,6 +3853,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_list.customContextMenuRequested.connect(show_library_context_menu)
     code_library_list.itemClicked.connect(load_library_code)
     code_library_list.itemDoubleClicked.connect(run_library_code)
+    prompt.textChanged.connect(refresh_code_action_buttons)
     code_library_list.customContextMenuRequested.connect(show_library_context_menu)
     template_tree.currentItemChanged.connect(show_template_preview)
     template_tree.itemDoubleClicked.connect(run_template_tree_item)
@@ -3640,13 +3866,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_font_down_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(-1))
     prompt_font_up_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(1))
     prompt.sendRequested.connect(send_message)
-    refresh_btn.clicked.connect(refresh_context)
+    connection_toggle_btn.toggled.connect(connection_details.setVisible)
+    log_group.toggled.connect(log_tabs.setVisible)
     wait_timer.timeout.connect(tick_wait_indicator)
     root.destroyed.connect(cleanup_workers)
 
+    connect_viewer_context_events()
     refresh_telemetry_controls()
     refresh_context()
     set_pending_code()
+    refresh_code_action_buttons()
     refresh_models()
     refresh_sam2_actions()
     refresh_prompt_library()
@@ -3664,7 +3893,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "🤖 Connect a local model for chat, tool use, and generated napari code inside the viewer.\n"
             "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it directly without opening QtConsole.\n"
             "▶️ Use `Run Code` for assistant-generated code after review.\n"
-            "🧭 Current Context shows your open layers and the selected layer.\n"
+            "🧭 Viewer state is read live when you send requests, and the summary strip shows what is currently open.\n"
             "📚 Library tabs keep reusable prompts and code close to the workflow.\n"
             "📝 Action Log tracks local actions. Telemetry is optional and stays off unless you enable it.\n\n"
             "Ask about your selected layer, thresholding, CLAHE, measurements, histograms, comparisons, or code.\n\n"

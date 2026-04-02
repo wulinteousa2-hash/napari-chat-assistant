@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from napari_chat_assistant.agent.code_validation import validate_generated_code
+from napari_chat_assistant.agent.code_validation import build_code_repair_context, validate_generated_code
 
 
 def test_validate_generated_code_rejects_uint8_inplace_randint_add():
@@ -120,3 +120,38 @@ def test_validate_generated_code_warns_on_invalid_viewer_keyword():
     assert report.errors == []
     assert report.has_blocking_issues("strict")
     assert not report.has_blocking_issues("permissive")
+
+
+def test_build_code_repair_context_extracts_fenced_code_and_detects_repair_intent():
+    context = build_code_repair_context(
+        """
+Please fix this code so it runs here:
+
+```python
+selected_layer = viewer.layers.selection.active
+print(selected_layer.type)
+```
+"""
+    )
+
+    assert context is not None
+    assert context["intent"] == "repair"
+    assert "selected_layer = viewer.layers.selection.active" in context["original_code"]
+    assert any("selected_layer.type" in warning for warning in context["local_validation"]["warnings"])
+
+
+def test_build_code_repair_context_detects_explain_only_intent():
+    context = build_code_repair_context(
+        """
+Why does this code not work?
+viewer.add_histogram(data)
+"""
+    )
+
+    assert context is not None
+    assert context["intent"] == "explain"
+    assert "viewer.add_histogram(data)" in context["original_code"]
+
+
+def test_build_code_repair_context_ignores_regular_non_code_requests():
+    assert build_code_repair_context("show all images in grid") is None

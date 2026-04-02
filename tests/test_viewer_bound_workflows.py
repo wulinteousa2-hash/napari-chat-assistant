@@ -404,6 +404,70 @@ def test_hide_image_grid_view_disables_grid_and_restores_non_image_layers(make_n
     assert "Disabled image grid view." == message
 
 
+def test_show_layers_makes_named_layers_visible(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    image_a.visible = False
+    mask_a.visible = False
+
+    prepared = prepare_tool_job(viewer, "show_layers", {"layer_names": ["image_a"]})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert image_a.visible is True
+    assert mask_a.visible is False
+    assert "Showed 1 layer(s): [image_a]." == message
+
+
+def test_hide_layers_hides_named_layers(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    image_a.visible = True
+    mask_a.visible = True
+
+    prepared = prepare_tool_job(viewer, "hide_layers", {"layer_names": ["mask_a"]})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert image_a.visible is True
+    assert mask_a.visible is False
+    assert "Hid 1 layer(s): [mask_a]." == message
+
+
+def test_show_only_layers_hides_everything_else(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    image_b = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="image_b")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+
+    prepared = prepare_tool_job(viewer, "show_only_layers", {"layer_names": ["image_b"]})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert image_a.visible is False
+    assert image_b.visible is True
+    assert mask_a.visible is False
+    assert "Showing only 1 layer(s): [image_b]." == message
+
+
+def test_show_all_layers_restores_all_visibility(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    image_b = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="image_b")
+    image_a.visible = False
+    image_b.visible = False
+
+    prepared = prepare_tool_job(viewer, "show_all_layers", {})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert image_a.visible is True
+    assert image_b.visible is True
+    assert "Showed all 2 layer(s)." == message
+
+
 def test_inspect_roi_context_reports_labels_roi(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     mask = np.zeros((10, 10), dtype=np.uint8)

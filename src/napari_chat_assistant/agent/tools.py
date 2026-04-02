@@ -54,6 +54,10 @@ ASSISTANT_TOOL_NAMES = {
     "crop_to_layer_bbox",
     "show_image_layers_in_grid",
     "hide_image_grid_view",
+    "show_layers",
+    "hide_layers",
+    "show_only_layers",
+    "show_all_layers",
     "arrange_layers_for_presentation",
     "extract_roi_values",
     "sam_segment_from_box",
@@ -175,6 +179,10 @@ def assistant_system_prompt() -> str:
         '- crop_to_layer_bbox: {"source_layer": string, "reference_layer": string, "padding": optional int or list}\n'
         '- show_image_layers_in_grid: {"layer_names": optional list, "spacing": optional float}\n'
         '- hide_image_grid_view: {}\n'
+        '- show_layers: {"layer_names": list}\n'
+        '- hide_layers: {"layer_names": list}\n'
+        '- show_only_layers: {"layer_names": list}\n'
+        '- show_all_layers: {}\n'
         '- arrange_layers_for_presentation: {"layer_names": optional list, "layout": optional "row|column|grid|pairs", "spacing": optional float, "columns": optional int, "group_size": optional int, "use_copies": optional bool, "match_origin": optional bool}\n'
         '- extract_roi_values: {"image_layer": optional string, "roi_layer": optional string}\n'
         '- sam_segment_from_box: {"image_layer": optional string, "roi_layer": optional string, "shape_index": optional int, "multimask_output": optional bool, "model_name": optional string}\n'
@@ -193,6 +201,13 @@ def assistant_system_prompt() -> str:
         "- If the user asks for a spectral viewer, spectral rendering, pseudocolor viewer, or visible/truecolor spectral display, use open_spectral_viewer.\n"
         "- If the user asks for PCA, spectral ratio analysis, Welch t-test, ANOVA, or spectral statistics, use open_spectral_analysis.\n"
         "- The viewer_context includes deterministic per-layer dataset profiles with semantic_type, confidence, axes_detected, and recommendation classes. Use those fields instead of guessing from the prompt.\n"
+        "- The user_payload may include code_repair_context when the user pastes existing Python and asks to fix, refine, debug, improve, or explain it.\n"
+        "- code_repair_context contains the user's original code, a normalized_code_candidate from local repair heuristics, and local_validation errors/warnings/notes.\n"
+        "- If the user asks to fix, refine, repair, debug, or make pasted code run in this plugin, prefer action=code with corrected Python that fits the current napari plugin environment.\n"
+        "- If the user asks only why pasted code failed or asks for an explanation without requesting a rewrite, use action=reply and explain the main failure clearly.\n"
+        "- When repairing pasted code, preserve the user's intent and structure where practical instead of replacing it with an unrelated solution.\n"
+        "- Repaired code must run in the current plugin environment using the provided viewer globals: viewer, selected_layer, np/numpy, napari, and run_in_background.\n"
+        "- When code_repair_context.local_validation contains blocking issues, fix those issues in the returned code instead of repeating the same invalid pattern.\n"
         "- The payload may include session_memory with approved prior decisions. Use it only as secondary context. If session_memory conflicts with the current selected_layer_profile or viewer_context, follow the current viewer data.\n"
         "- If the user asks for CLAHE, adaptive histogram equalization, local contrast enhancement, or EM contrast enhancement, use apply_clahe or apply_clahe_batch.\n"
         "- CLAHE parameters are kernel_size, clip_limit, and nbins.\n"
@@ -223,6 +238,10 @@ def assistant_system_prompt() -> str:
         "- If the user asks to crop one layer to the foreground bounding box of another layer or crop to a mask bounding box, use crop_to_layer_bbox.\n"
         "- If the user asks to compare all open images side by side, show layers in a grid, tile the open images, split open images so they do not overlap, or turn on side-by-side image comparison, use show_image_layers_in_grid.\n"
         "- If the user asks to turn grid view off, return to normal overlap view, or disable tiled image comparison, use hide_image_grid_view.\n"
+        "- If the user asks to show, reveal, turn on, or make specific layers visible without hiding others, use show_layers.\n"
+        "- If the user asks to hide, turn off, or make specific layers invisible, use hide_layers.\n"
+        "- If the user asks to show only one or more layers, isolate a layer, or keep only specified layers visible, use show_only_layers.\n"
+        "- If the user asks to show everything again, restore all layers, or turn all layers back on, use show_all_layers.\n"
         "- If the user asks to arrange layers for presentation, place images next to masks, show layers side by side, stack layers in a row or column, make a grid, or align display copies for visual comparison, use arrange_layers_for_presentation.\n"
         "- If the user asks to compare two image layers with a Student t-test or Welch t-test, use compare_image_layers_ttest when the populations are the image intensities from those layers.\n"
         "- If the user asks for area, total area, or per-shape ROI area from a Shapes layer, use measure_shapes_roi_area.\n"

@@ -54,6 +54,36 @@ def normalize_generated_code_if_needed(code_text: str, *, viewer=None) -> tuple[
     return normalized, normalized_errors
 
 
+def build_code_repair_context(user_text: str, *, viewer=None) -> dict | None:
+    source = str(user_text or "")
+    if not source.strip():
+        return None
+    code = _extract_code_candidate(source)
+    if not code:
+        return None
+    lowered = " ".join(source.strip().lower().split())
+    if not _looks_like_code_help_request(lowered, code):
+        return None
+    normalized_code, report = normalize_generated_code_if_needed(code, viewer=viewer)
+    intent = "repair"
+    explain_signals = ("why", "explain", "what is wrong", "why it does not work", "why doesn't it work")
+    repair_signals = ("fix", "refine", "repair", "improve", "make it run", "make this run", "debug")
+    if any(signal in lowered for signal in explain_signals) and not any(signal in lowered for signal in repair_signals):
+        intent = "explain"
+    elif not any(signal in lowered for signal in repair_signals):
+        intent = "analyze"
+    return {
+        "intent": intent,
+        "original_code": code,
+        "normalized_code_candidate": normalized_code,
+        "local_validation": {
+            "errors": list(report.errors),
+            "warnings": list(report.warnings),
+            "notes": list(report.notes),
+        },
+    }
+
+
 def _repair_generated_code(code: str) -> tuple[str, list[str]]:
     text = str(code or "")
     repair_notes: list[str] = []
@@ -71,6 +101,73 @@ def _repair_generated_code(code: str) -> tuple[str, list[str]]:
     repair_notes.extend(data_access_notes)
 
     return repaired, repair_notes
+
+
+def _extract_code_candidate(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+    fenced = re.search(r"```(?:python)?\s*(.*?)```", source, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+    if _looks_like_python_text(source):
+        return source
+    marker_patterns = (
+        r"(?is)(?:code|python)\s*:\s*(.+)$",
+        r"(?is)(?:fix|debug|refine|repair|explain)\s+this\s+code\s*:?\s*(.+)$",
+    )
+    for pattern in marker_patterns:
+        match = re.search(pattern, source)
+        if match:
+            candidate = str(match.group(1) or "").strip()
+            if _looks_like_python_text(candidate):
+                return candidate
+    return ""
+
+
+def _looks_like_code_help_request(lowered_text: str, code: str) -> bool:
+    if not code.strip():
+        return False
+    help_signals = (
+        "fix",
+        "repair",
+        "refine",
+        "improve",
+        "debug",
+        "broken",
+        "does not work",
+        "doesn't work",
+        "make it run",
+        "make this run",
+        "why",
+        "explain",
+        "error",
+        "traceback",
+    )
+    if any(signal in lowered_text for signal in help_signals):
+        return True
+    return False
+
+
+def _looks_like_python_text(text: str) -> bool:
+    source = str(text or "").strip()
+    if not source:
+        return False
+    python_signals = (
+        "viewer.",
+        "selected_layer",
+        "import ",
+        "from ",
+        "def ",
+        "for ",
+        "if ",
+        "while ",
+        "np.",
+        "napari",
+        "run_in_background",
+    )
+    line_count = len([line for line in source.splitlines() if line.strip()])
+    return any(signal in source for signal in python_signals) and line_count >= 1
 
 
 def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:

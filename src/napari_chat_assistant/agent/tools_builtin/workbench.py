@@ -444,6 +444,26 @@ def _hide_non_image_layers(viewer) -> list[str]:
     return hidden
 
 
+def _parse_layer_names_argument(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _resolve_existing_layers(viewer, names: list[str]) -> list[object]:
+    resolved: list[object] = []
+    seen: set[str] = set()
+    for name in names:
+        layer = find_any_layer(viewer, name)
+        if layer is None or layer.name in seen:
+            continue
+        resolved.append(layer)
+        seen.add(layer.name)
+    return resolved
+
+
 class ShowImageLayersInGridTool:
     spec = ToolSpec(
         name="show_image_layers_in_grid",
@@ -553,6 +573,169 @@ class HideImageGridViewTool:
         if hasattr(ctx.viewer, "reset_view"):
             ctx.viewer.reset_view()
         return "Disabled image grid view."
+
+
+class ShowLayersTool:
+    spec = ToolSpec(
+        name="show_layers",
+        display_name="Show Layers",
+        category="visualization",
+        description="Show specific layers without changing the visibility of other layers.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Layer names to show."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        names = _parse_layer_names_argument((arguments or {}).get("layer_names"))
+        if not names:
+            return "Provide at least one layer name to show."
+        layers = _resolve_existing_layers(ctx.viewer, names)
+        if not layers:
+            return "No matching layers were found to show."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_names": [layer.name for layer in layers]},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layers = _resolve_existing_layers(ctx.viewer, _parse_layer_names_argument(result.payload.get("layer_names", [])))
+        if not layers:
+            return "No usable layers were available to show."
+        for layer in layers:
+            layer.visible = True
+        shown = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Showed {len(layers)} layer(s): {shown}."
+
+
+class HideLayersTool:
+    spec = ToolSpec(
+        name="hide_layers",
+        display_name="Hide Layers",
+        category="visualization",
+        description="Hide specific layers without changing the visibility of other layers.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Layer names to hide."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        names = _parse_layer_names_argument((arguments or {}).get("layer_names"))
+        if not names:
+            return "Provide at least one layer name to hide."
+        layers = _resolve_existing_layers(ctx.viewer, names)
+        if not layers:
+            return "No matching layers were found to hide."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_names": [layer.name for layer in layers]},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layers = _resolve_existing_layers(ctx.viewer, _parse_layer_names_argument(result.payload.get("layer_names", [])))
+        if not layers:
+            return "No usable layers were available to hide."
+        for layer in layers:
+            layer.visible = False
+        hidden = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Hid {len(layers)} layer(s): {hidden}."
+
+
+class ShowOnlyLayersTool:
+    spec = ToolSpec(
+        name="show_only_layers",
+        display_name="Show Only Layers",
+        category="visualization",
+        description="Show only the specified layers and hide all other layers.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Layer names to keep visible."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        names = _parse_layer_names_argument((arguments or {}).get("layer_names"))
+        if not names:
+            return "Provide at least one layer name to show exclusively."
+        layers = _resolve_existing_layers(ctx.viewer, names)
+        if not layers:
+            return "No matching layers were found to show exclusively."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_names": [layer.name for layer in layers]},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layers = _resolve_existing_layers(ctx.viewer, _parse_layer_names_argument(result.payload.get("layer_names", [])))
+        if not layers:
+            return "No usable layers were available to show exclusively."
+        selected = {layer.name for layer in layers}
+        for layer in ctx.viewer.layers:
+            layer.visible = layer.name in selected
+        shown = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Showing only {len(layers)} layer(s): {shown}."
+
+
+class ShowAllLayersTool:
+    spec = ToolSpec(
+        name="show_all_layers",
+        display_name="Show All Layers",
+        category="visualization",
+        description="Show every layer in the current viewer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        if len(ctx.viewer.layers) == 0:
+            return "No layers are open to show."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        for layer in ctx.viewer.layers:
+            layer.visible = True
+        return f"Showed all {len(ctx.viewer.layers)} layer(s)."
 
 
 class ArrangeLayersForPresentationTool:
@@ -2021,6 +2204,10 @@ def workbench_scaffold_tools():
         CropToLayerBBoxTool(),
         ShowImageLayersInGridTool(),
         HideImageGridViewTool(),
+        ShowLayersTool(),
+        HideLayersTool(),
+        ShowOnlyLayersTool(),
+        ShowAllLayersTool(),
         ArrangeLayersForPresentationTool(),
         InspectROIContextTool(),
         MeasureShapesROIAreaTool(),

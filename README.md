@@ -44,12 +44,14 @@ The assistant is grounded in the live napari session. It can inspect loaded laye
 Current workflows include:
 - inspect the selected layer or named layers with structured summaries
 - profile loaded layers with deterministic semantic and workflow-aware metadata
-- run built-in tools for enhancement, thresholding, mask cleanup, measurement, projection, and cropping
+- run built-in tools for enhancement, thresholding, mask cleanup, measurement, projection, cropping, presentation, and layer visibility control
 - inspect ROI context and extract grayscale values from `Labels` and `Shapes` layers
 - generate napari Python code when no built-in tool is the right fit
 - paste and run your own viewer-bound Python from the prompt box with `Run My Code`
+- repair or explain broken pasted Python with `Refine My Code`
+- use `Layer Context` to copy or insert exact layer summaries into the Prompt box
 - save, pin, tag, rename, and reuse prompts and code from the local Library
-- use built-in demo packs for repeatable teaching, testing, and workflow development
+- browse built-in templates and demo packs for repeatable teaching, testing, and workflow development
 
 Example requests:
 - `Inspect the selected layer`
@@ -70,28 +72,16 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.5.0
+## What's New In 1.6.0
 
-- added a built-in `Templates` tab with a category tree, preview pane, load action, and double-click run through `Run My Code`
-- organized starter code around a napari workbench model with categories for `Data`, `Inspect`, `Process`, `Segment`, `Measure`, `Visualize`, `Compare`, `Workbench`, and `Background Jobs`
-- moved built-in demo packs into `Templates > Data` so users can browse and launch test datasets from the new library
-- added plugin-native starter templates designed for `viewer`, `selected_layer`, and `run_in_background(...)`
-- added a `Line Profile Gaussian Fit` measurement template for profile extraction, Gaussian fitting, and FWHM readout
+- added `Refine My Code` so users can repair pasted or failed viewer-bound Python directly inside the plugin, using the current napari session context
+- added direct layer visibility controls for showing, hiding, isolating, and restoring layers without manual layer toggling
+- redesigned the dock around a compact model/status bar and a cleaner main workflow that keeps chat, prompt writing, and library access in focus
+- replaced the old context area with `Layer Context`, which now includes a copyable summary view plus per-layer `Insert` and `Copy` actions for faster prompt building
+- made `Layer Context` refresh live from napari layer and selection changes instead of relying on manual refreshes
+- improved library usability with a collapsed template tree by default, clearer tab tooltips, and darker prompt/code list styling
 
-## What's New In 1.4.7
-
-- clarified workflow wording so the README does not imply the current text-only assistant directly sees image pixels
-- kept the description grounded in the live napari viewer state and loaded data
-
-## What's New In 1.4.6
-
-- expanded SAM2 as the main focus of this release with bundled adapter support, setup auto-detect, checkpoint/config discovery, and live model selection
-- improved SAM2 Live with a more practical managed-points workflow, clearer prompt guidance, polarity toggling on the active points layer, and better preview/save behavior
-- refactored local Python guardrails into dual-mode validation: strict for assistant-generated code and permissive-with-warnings for `Run My Code`
-- kept protections against clearly bad napari hallucinations and dtype hazards while separating hard errors, warnings, and repair notes
-- continued workflow/help/documentation polish across the current 1.4.x line
-
-For older release history, see [CHANGELOG.md](CHANGELOG.md).
+For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 
@@ -172,10 +162,12 @@ pip install -e .
 2. Open `Plugins -> Chat Assistant`.
 3. Leave `Base URL` as `http://127.0.0.1:11434` unless your Ollama server is elsewhere.
 4. Choose a model from the `Model` dropdown or type a model tag manually.
-5. Click `Test`.
+5. Use `Load` if you want to warm the selected model before the first request.
 6. Start chatting, or use the Library for repeatable tasks and reusable code.
 
 If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
+
+If your pasted code fails or needs adaptation to the current viewer session, click `Refine My Code` to send it back through the assistant with the current napari context and local validation feedback.
 
 The assistant works best when prompts describe a concrete action. Natural language is fine.
 
@@ -195,11 +187,13 @@ Examples:
 ## Typical Workflow
 
 1. Open your image or volume in napari.
-2. Ask the assistant to inspect the layer and suggest the next step.
-3. Run a built-in tool for denoising, thresholding, cleanup, or measurement.
-4. Select an ROI or object in the viewer if you want local analysis.
-5. Ask for code when you need a custom plot, statistics, or reusable script.
-6. Save useful prompts or code snippets into the Library for later reuse.
+2. Use `Layer Context` if you want to copy or insert exact layer summaries into the Prompt box.
+3. Ask the assistant to inspect the layer and suggest the next step.
+4. Run a built-in tool for denoising, thresholding, cleanup, measurement, layout, or layer visibility.
+5. Select an ROI or object in the viewer if you want local analysis.
+6. Ask for code when you need a custom plot, statistics, or reusable script.
+7. Use `Run My Code` for your own Python and `Refine My Code` when pasted code fails or needs repair for this plugin environment.
+8. Save useful prompts, code snippets, or templates into the Library for later reuse.
 
 This is the core value of the plugin: users can stay in the viewer, interact with the data, ask questions, run analysis, and keep the resulting workflow close to the image session.
 
@@ -247,6 +241,10 @@ The assistant currently supports built-in tools for:
 - per-object measurement table summaries for labels layers
 - max-intensity projection for 3D grayscale images
 - cropping one layer to the bounding box of another layer
+- showing image layers in a comparison grid
+- hiding the image grid view and restoring hidden non-image layers
+- arranging layers for presentation in rows, columns, grids, or repeated groups
+- showing, hiding, isolating, and restoring layer visibility directly from chat
 - ROI inspection and grayscale value extraction from labels or shapes regions
 - registry-backed tool execution as the foundation for future workflow and pipeline expansion
 
@@ -288,12 +286,15 @@ Generated code can be:
 - copied to the clipboard
 - reviewed in chat
 - executed from the plugin
+- repaired or explained in place when you use `Refine My Code` on pasted or failed user code
 
 You can also paste your own Python directly into the Prompt box and run it from the plugin with `Run My Code`, without switching to QtConsole.
 
 Use assistant-generated code when you want a reusable script or need custom logic beyond the current built-in tools.
 
 Use `Run My Code` when you already have Python you want to test quickly inside the current napari session.
+
+Use `Refine My Code` when your own code fails validation, errors at runtime, or needs adjustment to the current napari viewer state.
 
 ### Selective session memory
 
@@ -316,6 +317,7 @@ This is intentionally not full transcript memory. The model is still grounded pr
 The assistant includes a persistent Library for repeatable workflows and reusable code:
 - built-in starter prompts
 - built-in demo packs and reusable code examples in the `Code` tab
+- built-in categorized starter templates in the `Templates` tab
 - recent prompts captured automatically
 - saved prompts for reusable tasks
 - pinned prompts for high-frequency workflows
@@ -324,6 +326,7 @@ The assistant includes a persistent Library for repeatable workflows and reusabl
 Interaction:
 - single click loads a prompt or code snippet into the editor
 - double click sends a prompt directly or runs a code snippet
+- templates can be previewed, loaded into the Prompt box, or run directly
 - right click can rename or edit tags for saved and recent prompt/code items
 - multi-select supports Shift/Ctrl selection for batch actions
 - `Delete` can remove saved prompts, recent prompts, code snippets, or hide built-in prompts
@@ -354,8 +357,6 @@ Install links:
 - napari Hub: `https://napari-hub.org/plugins/napari-nd2-spectral-ome-zarr.html`
 
 ### Experimental SAM2 integration
-
-Version `1.5.0` adds a new built-in `Templates` workbench library with categorized starter code, integrated demo data generators, and plugin-native examples meant to be loaded, refined with chat, and run directly inside napari.
 
 Behavior:
 - SAM2 is accessed from `Advanced`, not from the main toolbar

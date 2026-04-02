@@ -2,6 +2,17 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.6.0
+
+- Added `Refine My Code` as a first-class recovery workflow beside `Run My Code`, so users can repair pasted or failed viewer-bound Python for the current napari plugin environment without leaving the dock.
+- Added structured code-repair context for pasted code, including local validation errors, warnings, repair notes, and current viewer context to improve explanation and rewrite quality.
+- Added direct layer visibility controls with built-in tools for `show_layers`, `hide_layers`, `show_only_layers`, and `show_all_layers`.
+- Refactored the main dock layout around a compact top model/status bar and reduced the visual weight of configuration controls by moving `Base URL`, `Test`, and `Setup` behind a `Connection` toggle.
+- Reworked the old context area into `Layer Context`, with a copyable summary view plus a per-layer quick-action view that supports `Insert` and `Copy` actions for prompt building.
+- Made `Layer Context` update live from napari layer and selection events instead of only after plugin-triggered refreshes.
+- Made the `Session` section collapsible and closed by default so `Library`, `Chat`, and `Prompt` stay visually primary.
+- Improved library usability by collapsing the Templates tree by default, adding tab tooltips for `Prompts`, `Code`, and `Templates`, and darkening the `Prompts` and `Code` list backgrounds to better match the rest of the interface.
+
 ## 1.5.0
 
 - Added a new built-in `Templates` tab with a category tree, read-only preview, `Load Template`, and double-click-to-run behavior through `Run My Code`.
