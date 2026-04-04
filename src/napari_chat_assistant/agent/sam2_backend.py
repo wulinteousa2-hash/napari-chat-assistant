@@ -397,6 +397,106 @@ def segment_image_from_points(
     return (binary > 0).astype(np.int32, copy=False), message
 
 
+def segment_image_auto(
+    image: np.ndarray,
+    *,
+    model_name: str | None = None,
+    config: SAM2BackendConfig | None = None,
+) -> tuple[np.ndarray, str]:
+    resolved = config or sam2_config_from_ui_state()
+    ok, status_message = get_sam2_backend_status(resolved)
+    if not ok:
+        raise RuntimeError(status_message)
+
+    wrapper = _load_wrapper_module(resolved)
+    if hasattr(wrapper, "segment_image_auto"):
+        result = wrapper.segment_image_auto(
+            image=np.asarray(image),
+            checkpoint_path=str(resolved.checkpoint_file),
+            config_path=str(resolved.config_file),
+            device=resolved.device,
+            model_name=model_name,
+        )
+    else:
+        bundled = _bundled_adapter_module()
+        result = bundled.segment_image_auto(
+            image=np.asarray(image),
+            checkpoint_path=str(resolved.checkpoint_file),
+            config_path=str(resolved.config_file),
+            device=resolved.device,
+            model_name=model_name,
+        )
+
+    message = ""
+    mask = result
+    if isinstance(result, dict):
+        mask = result.get("mask")
+        message = str(result.get("message") or "").strip()
+    if mask is None:
+        raise RuntimeError("SAM2 wrapper returned no mask for segment_image_auto.")
+    binary = np.asarray(mask)
+    if binary.ndim != 2:
+        raise ValueError(f"SAM2 wrapper returned mask ndim={binary.ndim}; expected a 2D mask.")
+    if binary.shape != np.asarray(image).shape:
+        raise ValueError(
+            f"SAM2 wrapper returned mask shape {binary.shape}, which does not match image shape {np.asarray(image).shape}."
+        )
+    return (binary > 0).astype(np.int32, copy=False), message
+
+
+def refine_mask_from_mask(
+    image: np.ndarray,
+    *,
+    mask: np.ndarray,
+    roi_mask: np.ndarray | None = None,
+    model_name: str | None = None,
+    config: SAM2BackendConfig | None = None,
+) -> tuple[np.ndarray, str]:
+    resolved = config or sam2_config_from_ui_state()
+    ok, status_message = get_sam2_backend_status(resolved)
+    if not ok:
+        raise RuntimeError(status_message)
+
+    wrapper = _load_wrapper_module(resolved)
+    if hasattr(wrapper, "refine_mask"):
+        result = wrapper.refine_mask(
+            image=np.asarray(image),
+            mask=np.asarray(mask),
+            roi_mask=None if roi_mask is None else np.asarray(roi_mask),
+            checkpoint_path=str(resolved.checkpoint_file),
+            config_path=str(resolved.config_file),
+            device=resolved.device,
+            model_name=model_name,
+        )
+    else:
+        bundled = _bundled_adapter_module()
+        result = bundled.refine_mask(
+            image=np.asarray(image),
+            mask=np.asarray(mask),
+            roi_mask=None if roi_mask is None else np.asarray(roi_mask),
+            checkpoint_path=str(resolved.checkpoint_file),
+            config_path=str(resolved.config_file),
+            device=resolved.device,
+            model_name=model_name,
+        )
+
+    message = ""
+    refined = result
+    if isinstance(result, dict):
+        refined = result.get("mask")
+        message = str(result.get("message") or "").strip()
+    if refined is None:
+        raise RuntimeError("SAM2 wrapper returned no mask for refine_mask.")
+    binary = np.asarray(refined)
+    if binary.ndim != 2:
+        raise ValueError(f"SAM2 wrapper returned mask ndim={binary.ndim}; expected a 2D mask.")
+    if binary.shape != np.asarray(image).shape:
+        raise ValueError(
+            f"SAM2 wrapper returned mask shape {binary.shape}, which does not match image shape {np.asarray(image).shape}."
+        )
+    return (binary > 0).astype(np.int32, copy=False), message
+
+
 def _pick_device_local(device: str | None = None) -> str:
     requested = str(device or "cuda").strip().lower()
     try:

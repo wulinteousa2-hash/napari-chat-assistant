@@ -13,6 +13,7 @@ TEMPLATE_CATEGORIES = [
     "Process",
     "Segment",
     "Measure",
+    "Stats",
     "Visualize",
     "Compare",
     "Workbench",
@@ -198,7 +199,7 @@ else:
     },
     {
         "id": "measure_roi_intensity_metrics",
-        "title": "ROI Intensity Metrics",
+        "title": "ROI Intensity Analysis",
         "category": "Measure",
         "description": "Open a floating ROI measurement widget that tracks one or more editable shapes on the current image layer, shows a live histogram above the table, and updates intensity statistics for the current displayed slice in stacks.",
         "tags": ["measure", "roi", "intensity", "histogram", "widget", "table", "interactive"],
@@ -241,6 +242,108 @@ open_line_profile_gaussian_fit_widget(viewer)
 """.strip(),
     },
     {
+        "id": "stats_compare_two_roi_groups",
+        "title": "Compare Two ROI Groups",
+        "category": "Stats",
+        "description": "Run the built-in two-group ROI comparison workflow for prefixes such as wt vs mutant, using ROI summaries per image.",
+        "tags": ["stats", "compare", "roi", "t-test", "welch", "mann-whitney"],
+        "best_for": "Comparing two groups of ROI-based measurements with one ROI summary per image.",
+        "suggested_followup": "Load this into Prompt and replace the group prefixes with your own layer-name prefixes or ask chat to open the interactive comparison widget.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "compare_roi_groups",
+    {
+        "group_a_prefix": "wt",
+        "group_b_prefix": "mutant",
+        "metric": "mean",
+        "roi_kind": "auto",
+        "pair_mode": "paired_suffix",
+        "alpha": 0.05,
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
+        "id": "stats_compare_two_image_groups",
+        "title": "Compare Two Image Groups",
+        "category": "Stats",
+        "description": "Run the built-in two-group whole-image comparison workflow when you want one summary value per image without ROI.",
+        "tags": ["stats", "compare", "image", "t-test", "welch", "group"],
+        "best_for": "Comparing two groups of whole-image summaries such as mean or median intensity per image.",
+        "suggested_followup": "Load this into Prompt and replace the group prefixes, or open the interactive group comparison widget for a plot-based workflow.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "compare_image_groups",
+    {
+        "group_a_prefix": "wt",
+        "group_b_prefix": "mutant",
+        "metric": "mean",
+        "pair_mode": "paired_suffix",
+        "alpha": 0.05,
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
+        "id": "stats_open_group_comparison_widget",
+        "title": "Open Group Comparison Widget",
+        "category": "Stats",
+        "description": "Open the interactive group-comparison widget for ROI or whole-image two-group statistics.",
+        "tags": ["stats", "compare", "widget", "interactive", "roi", "image"],
+        "best_for": "Exploring group comparisons with an interactive widget instead of running a fixed code snippet.",
+        "suggested_followup": "Use this when you want plots, descriptive stats, or a guided UI instead of a one-shot console result.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "ui_mode": "widget",
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(viewer, "open_group_comparison_widget", {})
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
         "id": "visualize_histogram_selected_layer",
         "title": "Histogram of Selected Layer",
         "category": "Visualize",
@@ -277,6 +380,77 @@ plt.show()
 """.strip(),
     },
     {
+        "id": "visualize_quick_compare_grid",
+        "title": "Quick Compare Grid",
+        "category": "Visualize",
+        "description": "Turn on napari grid view for side-by-side image comparison without moving any layer data.",
+        "tags": ["visualize", "grid", "compare", "viewer"],
+        "best_for": "Fast visual comparison of multiple image layers while keeping the original layers untouched.",
+        "suggested_followup": "Use Turn Off Compare Grid to return to overlap view, or switch to Create Presentation Layout for physically arranged copies.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "show_image_layers_in_grid",
+    {
+        "layer_names": ["img_a", "img_b", "img_c"],
+        "spacing": 2,
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
+        "id": "visualize_presentation_layout",
+        "title": "Create Presentation Layout",
+        "category": "Visualize",
+        "description": "Arrange image or labels layers as presentation copies in one viewer space, distinct from viewer grid mode.",
+        "tags": ["visualize", "presentation", "layout", "viewer"],
+        "best_for": "Curated side-by-side layouts for display, figures, or layer-by-layer presentation in one viewer.",
+        "suggested_followup": "Use create_analysis_montage instead if you want one real composite canvas for shared ROI or mask analysis.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "arrange_layers_for_presentation",
+    {
+        "layer_names": ["img_a", "img_b", "img_c"],
+        "layout": "row",
+        "spacing": 20,
+        "use_copies": True,
+        "match_origin": True,
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
         "id": "compare_two_image_layers",
         "title": "Compare Two Image Layers",
         "category": "Compare",
@@ -304,6 +478,118 @@ for layer in image_layers[:2]:
         f"{layer.name}: mean={float(values.mean()):.4f} std={float(values.std()):.4f} "
         f"min={float(values.min()):.4f} max={float(values.max()):.4f}"
     )
+""".strip(),
+    },
+    {
+        "id": "workbench_create_analysis_montage",
+        "title": "Create Analysis Montage",
+        "category": "Workbench",
+        "description": "Build one composite montage canvas from multiple 2D grayscale image layers, with optional tile boxes and a blank mask layer for shared ROI or mask work.",
+        "tags": ["workbench", "montage", "analysis", "labels", "viewer"],
+        "best_for": "Creating one shared annotation canvas from multiple source images without using chat.",
+        "suggested_followup": "After editing the montage mask or montage points, run one of the split-back templates to export per-source layers.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+def run_tool(tool_name, arguments):
+    prepared = prepare_tool_job(viewer, tool_name, arguments)
+    if prepared["mode"] == "immediate" and "job" not in prepared:
+        print(prepared["message"])
+        return prepared
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+    print(message)
+    return result
+
+
+run_tool(
+    "create_analysis_montage",
+    {
+        "layer_names": ["img_a", "img_b", "img_c"],
+        "rows": 1,
+        "columns": 3,
+        "spacing": 2,
+        "show_tile_boxes": True,
+        "create_mask_layer": True,
+    },
+)
+
+print("Edit analysis_montage_mask or add montage points, then run a split-back template.")
+""".strip(),
+    },
+    {
+        "id": "workbench_split_montage_labels_to_sources",
+        "title": "Split Montage Labels To Sources",
+        "category": "Workbench",
+        "description": "Split a montage-space Labels layer back into one labels layer per source image using stored montage tile metadata.",
+        "tags": ["workbench", "montage", "labels", "split", "analysis"],
+        "best_for": "Exporting per-image masks after editing a single montage mask layer.",
+        "suggested_followup": "Use the created per-source labels for measurement, cleanup, export, or downstream spectral ROI extraction.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "split_montage_annotations_to_sources",
+    {
+        "annotation_layer": "analysis_montage_mask",
+        "montage_layer": "analysis_montage",
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
+""".strip(),
+    },
+    {
+        "id": "workbench_split_montage_points_to_sources",
+        "title": "Split Montage Points To Sources",
+        "category": "Workbench",
+        "description": "Split a montage-space Points layer back into one points layer per source image, converting coordinates from montage space to source-local space.",
+        "tags": ["workbench", "montage", "points", "split", "analysis"],
+        "best_for": "Recovering per-image annotations after adding points on a shared montage canvas.",
+        "suggested_followup": "Reuse the output points layers for per-image prompts, tracking, or measurement workflows.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": False,
+        },
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+prepared = prepare_tool_job(
+    viewer,
+    "split_montage_annotations_to_sources",
+    {
+        "annotation_layer": "montage_points",
+        "montage_layer": "analysis_montage",
+    },
+)
+
+if prepared["mode"] == "immediate" and "job" not in prepared:
+    print(prepared["message"])
+else:
+    result = run_tool_job(prepared["job"])
+    print(apply_tool_job_result(viewer, result))
 """.strip(),
     },
     {
@@ -385,27 +671,27 @@ run_in_background(compute, apply_result, label="Compute background stats")
 
 
 DEMO_PACK_TEMPLATE_METADATA: dict[str, dict[str, Any]] = {
-    "Demo Pack: EM 2D SNR Sweep": {
-        "id": "data_demo_em_2d_snr_sweep",
-        "description": "Generate a 2D electron-microscopy-style grayscale demo pack with low, mid, and high SNR variants plus a mask.",
+    "Synthetic 2D SNR Sweep Gray": {
+        "id": "data_synthetic_2d_snr_sweep_gray",
+        "description": "Generate a 2D grayscale synthetic SNR sweep with low, mid, and high noise variants plus a mask.",
         "best_for": "Testing denoise, threshold, segmentation, and measurement workflows on grayscale 2D data.",
         "suggested_followup": "Ask chat to adapt this pack to different sizes, SNR spacing, or object density.",
     },
-    "Demo Pack: EM 3D SNR Sweep": {
-        "id": "data_demo_em_3d_snr_sweep",
-        "description": "Generate a 3D electron-microscopy-style grayscale demo pack with low, mid, and high SNR volumes plus a mask.",
+    "Synthetic 3D SNR Sweep Gray": {
+        "id": "data_synthetic_3d_snr_sweep_gray",
+        "description": "Generate a 3D grayscale synthetic SNR sweep with low, mid, and high noise volumes plus a mask.",
         "best_for": "Testing volume processing, 3D segmentation, and SAM-style workflows on grayscale data.",
         "suggested_followup": "Ask chat to reduce the volume size, alter object density, or create a projection workflow.",
     },
-    "Demo Pack: RGB Cells 2D SNR Sweep": {
-        "id": "data_demo_rgb_cells_2d_snr_sweep",
-        "description": "Generate a 2D RGB fluorescent-style cell demo pack with multiple SNR conditions and labels.",
+    "Synthetic 2D SNR Sweep RGB": {
+        "id": "data_synthetic_2d_snr_sweep_rgb",
+        "description": "Generate a 2D RGB synthetic SNR sweep with multiple noise conditions and labels.",
         "best_for": "Testing multi-channel plotting, segmentation, and label measurement on 2D RGB data.",
         "suggested_followup": "Ask chat to isolate channels, add measurements, or convert this into a comparison workflow.",
     },
-    "Demo Pack: RGB Cells 3D SNR Sweep": {
-        "id": "data_demo_rgb_cells_3d_snr_sweep",
-        "description": "Generate a 3D RGB fluorescent-style cell demo pack with multiple SNR conditions and labels.",
+    "Synthetic 3D SNR Sweep RGB": {
+        "id": "data_synthetic_3d_snr_sweep_rgb",
+        "description": "Generate a 3D RGB synthetic SNR sweep with multiple noise conditions and labels.",
         "best_for": "Testing 3D multi-channel workflows, layer comparison, and label analysis.",
         "suggested_followup": "Ask chat to extract one channel, measure labels, or add a projection template on top.",
     },

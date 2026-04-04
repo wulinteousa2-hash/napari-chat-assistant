@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+import napari
+
 
 ValidationMode = Literal["strict", "permissive"]
 
@@ -76,6 +78,7 @@ def build_code_repair_context(user_text: str, *, viewer=None) -> dict | None:
         "intent": intent,
         "original_code": code,
         "normalized_code_candidate": normalized_code,
+        "layer_binding_hints": _build_layer_binding_hints(normalized_code, viewer=viewer),
         "local_validation": {
             "errors": list(report.errors),
             "warnings": list(report.warnings),
@@ -88,6 +91,16 @@ def _repair_generated_code(code: str) -> tuple[str, list[str]]:
     text = str(code or "")
     repair_notes: list[str] = []
     repaired = text
+
+    run_in_background_import_pattern = (
+        r"(?m)^\s*from\s+napari(?:\.[A-Za-z0-9_]+)*\s+import\s+run_in_background\s*(?:#.*)?\n?"
+    )
+    repaired_no_bg_import = re.sub(run_in_background_import_pattern, "", repaired)
+    if repaired_no_bg_import != repaired:
+        repaired = repaired_no_bg_import.lstrip("\n")
+        repair_notes.append(
+            "Removed `run_in_background` import from `napari...` because the plugin runtime already provides `run_in_background` as a built-in helper."
+        )
 
     selected_layer_lookup_pattern = r"\bviewer\.layers\[\s*selected_layer\s*\]"
     selected_layer_lookup_repaired = re.sub(selected_layer_lookup_pattern, "selected_layer", repaired)
@@ -115,6 +128,7 @@ def _extract_code_candidate(text: str) -> str:
     marker_patterns = (
         r"(?is)(?:code|python)\s*:\s*(.+)$",
         r"(?is)(?:fix|debug|refine|repair|explain)\s+this\s+code\s*:?\s*(.+)$",
+        r"(?is)(?:please\s+)?(?:fix|debug|refine|repair|explain)\s+this\s+code\s*:?\s*(.+)$",
     )
     for pattern in marker_patterns:
         match = re.search(pattern, source)
@@ -168,6 +182,152 @@ def _looks_like_python_text(text: str) -> bool:
     )
     line_count = len([line for line in source.splitlines() if line.strip()])
     return any(signal in source for signal in python_signals) and line_count >= 1
+
+
+def _layer_kind(layer) -> str:
+    if isinstance(layer, napari.layers.Image):
+        return "image"
+    if isinstance(layer, napari.layers.Labels):
+        return "labels"
+    if isinstance(layer, napari.layers.Shapes):
+        return "shapes"
+    if isinstance(layer, napari.layers.Points):
+        return "points"
+    return layer.__class__.__name__.lower()
+
+
+def _semantic_type(layer) -> str:
+    try:
+        from .profiler import profile_layer
+
+        return str(profile_layer(layer).get("semantic_type", "unknown"))
+    except Exception:
+        return "unknown"
+
+
+def _build_layer_binding_hints(code_text: str, *, viewer=None) -> dict:
+    layer_records = []
+    if viewer is not None:
+        for layer in getattr(viewer, "layers", []) or []:
+            layer_records.append(
+                {
+                    "name": str(getattr(layer, "name", "")).strip(),
+                    "kind": _layer_kind(layer),
+                    "semantic_type": _semantic_type(layer),
+                }
+            )
+
+    selected_layer = None
+    try:
+        selected_layer = None if viewer is None else getattr(getattr(viewer.layers, "selection", None), "active", None)
+    except Exception:
+        selected_layer = None
+
+    by_kind: dict[str, list[str]] = {"image": [], "labels": [], "shapes": [], "points": []}
+    for record in layer_records:
+        kind = str(record.get("kind", "")).strip()
+        name = str(record.get("name", "")).strip()
+        if kind in by_kind and name:
+            by_kind[kind].append(name)
+
+    return {
+        "selected_layer_name": "" if selected_layer is None else str(getattr(selected_layer, "name", "")).strip(),
+        "selected_layer_kind": "" if selected_layer is None else _layer_kind(selected_layer),
+        "available_layers": layer_records,
+        "layer_candidates": by_kind,
+        "placeholder_bindings": _extract_code_layer_placeholders(
+            code_text,
+            selected_layer_name="" if selected_layer is None else str(getattr(selected_layer, "name", "")).strip(),
+            selected_layer_kind="" if selected_layer is None else _layer_kind(selected_layer),
+            by_kind=by_kind,
+        ),
+    }
+
+
+def _extract_code_layer_placeholders(
+    code_text: str,
+    *,
+    selected_layer_name: str,
+    selected_layer_kind: str,
+    by_kind: dict[str, list[str]],
+) -> list[dict]:
+    source = str(code_text or "").strip()
+    if not source:
+        return []
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError:
+        return []
+
+    key_kind_map = {
+        "layer_name": "image",
+        "image_layer": "image",
+        "source_layer": "image",
+        "layer_names": "image",
+        "mask_layer": "labels",
+        "reference_layer": "labels",
+        "intensity_layer": "image",
+        "roi_layer": "shapes",
+        "points_layer": "points",
+        "annotation_layer": "",
+        "montage_layer": "image",
+    }
+    placeholder_signals = {
+        "img_a",
+        "img_b",
+        "img_c",
+        "image_a",
+        "image_b",
+        "image_c",
+        "mask_a",
+        "mask_b",
+        "roi_a",
+        "roi_b",
+        "shape_a",
+        "shape_b",
+        "points_a",
+        "points_b",
+        "analysis_montage",
+        "analysis_montage_mask",
+        "montage_points",
+    }
+
+    bindings: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key_node, value_node in zip(node.keys, node.values):
+            if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
+                continue
+            key = str(key_node.value).strip()
+            expected_kind = key_kind_map.get(key)
+            if expected_kind is None:
+                continue
+            values: list[str] = []
+            if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+                values = [str(value_node.value).strip()]
+            elif isinstance(value_node, (ast.List, ast.Tuple)):
+                values = [
+                    str(item.value).strip()
+                    for item in value_node.elts
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                ]
+            if not values:
+                continue
+            if not any(value in placeholder_signals for value in values):
+                continue
+            suggested = list(by_kind.get(expected_kind, [])) if expected_kind else []
+            if expected_kind and selected_layer_kind == expected_kind and selected_layer_name:
+                suggested = [selected_layer_name] + [name for name in suggested if name != selected_layer_name]
+            bindings.append(
+                {
+                    "argument": key,
+                    "placeholder_values": values,
+                    "expected_kind": expected_kind,
+                    "suggested_layers": suggested,
+                }
+            )
+    return bindings
 
 
 def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:

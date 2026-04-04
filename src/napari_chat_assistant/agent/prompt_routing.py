@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
@@ -7,6 +9,163 @@ def _normalize_text(text: str) -> str:
 
 def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
+
+
+def infer_tool_clarification_request(message: str) -> dict | None:
+    source = _normalize_text(message)
+    if not source:
+        return None
+    if not _has_any(source, ("which image layer", "which layer", "what layer")):
+        return None
+
+    tool_patterns = (
+        (
+            ("gaussian denoising", "gaussian smoothing", "gaussian blur", "gaussian filter"),
+            {
+                "tool": "gaussian_denoise",
+                "arguments": {"sigma": 1.0},
+                "layer_argument": "layer_name",
+                "layer_scope": "image",
+                "operation_label": "Gaussian denoising",
+            },
+        ),
+        (
+            ("clahe", "adaptive histogram equalization", "local contrast enhancement"),
+            {
+                "tool": "apply_clahe",
+                "arguments": {},
+                "layer_argument": "layer_name",
+                "layer_scope": "image",
+                "operation_label": "CLAHE",
+            },
+        ),
+        (
+            ("threshold", "segmentation by threshold", "binary mask"),
+            {
+                "tool": "preview_threshold",
+                "arguments": {"polarity": "auto"},
+                "layer_argument": "layer_name",
+                "layer_scope": "image",
+                "operation_label": "threshold preview",
+            },
+        ),
+    )
+    for needles, payload in tool_patterns:
+        if _has_any(source, needles):
+            result = dict(payload)
+            result["options"] = extract_layer_options_from_clarification(message)
+            return result
+    return None
+
+
+def extract_layer_options_from_clarification(message: str) -> list[str]:
+    text = str(message or "")
+    matches = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", text)
+    candidates: list[str] = []
+    for match in matches:
+        clean = str(match).strip("[](){}<>,.:;!?\"'`").strip()
+        normalized = clean.lower()
+        if not clean or "_" not in clean:
+            continue
+        if normalized in {"gaussian_denoising", "gaussian_smoothing", "binary_mask"}:
+            continue
+        if clean not in candidates:
+            candidates.append(clean)
+    return candidates
+
+
+def resolve_followup_choice_index(text: str, options: list[str] | tuple[str, ...]) -> str:
+    source = _normalize_text(text)
+    if not source:
+        return ""
+    normalized_options = [str(option or "").strip() for option in options if str(option or "").strip()]
+    if not normalized_options:
+        return ""
+
+    ordinal_pairs = (
+        ("third", 2),
+        ("three", 2),
+        ("second", 1),
+        ("two", 1),
+        ("first", 0),
+        ("one", 0),
+        ("fourth", 3),
+        ("four", 3),
+        ("fifth", 4),
+        ("five", 4),
+        ("1", 0),
+        ("2", 1),
+        ("3", 2),
+        ("4", 3),
+        ("5", 4),
+    )
+    for token, index in ordinal_pairs:
+        if re.search(rf"(^|[^a-z0-9]){re.escape(token)}([^a-z0-9]|$)", source) and index < len(normalized_options):
+            return normalized_options[index]
+    return ""
+
+
+def resolve_followup_layer_reference(
+    text: str,
+    *,
+    selected_layer_name: str = "",
+    available_layer_names: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    source = _normalize_text(text)
+    if not source:
+        return []
+
+    matches: list[str] = []
+    selected_clean = str(selected_layer_name or "").strip()
+    if selected_clean and _has_any(
+        source,
+        (
+            "selected layer",
+            "selected one",
+            "current selected",
+            "current one",
+            "the selected one",
+            "the current one",
+            "the selected layer",
+            "the current selected one",
+        ),
+    ):
+        matches.append(selected_clean)
+
+    normalized_names = {
+        " ".join(str(name or "").strip().lower().split()): str(name or "").strip()
+        for name in available_layer_names
+        if str(name or "").strip()
+    }
+    for normalized_name, original_name in normalized_names.items():
+        if normalized_name and normalized_name in source and original_name not in matches:
+            matches.append(original_name)
+    return matches
+
+
+def is_affirmative_followup(text: str) -> bool:
+    source = _normalize_text(text)
+    if not source:
+        return False
+    return _has_any(
+        source,
+        (
+            "yes",
+            "yeah",
+            "yep",
+            "ok",
+            "okay",
+            "oky",
+            "oki",
+            "go ahead",
+            "go",
+            "do it",
+            "apply it",
+            "run it",
+            "continue",
+            "perform it",
+        ),
+    )
 
 
 def looks_like_multistep_segmentation_workflow(text: str) -> bool:
@@ -148,7 +307,7 @@ def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None =
                 "action": "tool",
                 "tool": "open_intensity_metrics_table",
                 "arguments": arguments,
-                "message": "Opening the ROI Intensity Metrics widget for interactive ROI measurement with a live histogram, table, and absolute versus normalized views.",
+                "message": "Opening the ROI Intensity Analysis widget for interactive ROI measurement with a live histogram, table, and absolute versus normalized views.",
             }
         arguments = {}
         if roi_layer_name:

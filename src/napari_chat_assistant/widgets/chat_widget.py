@@ -6,6 +6,7 @@ import hashlib
 import time
 import uuid
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import napari
 import numpy as np
@@ -20,6 +21,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -32,6 +34,8 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
+    QTabBar,
     QTabWidget,
     QTextEdit,
     QTreeWidget,
@@ -40,6 +44,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_chat_assistant.agent.action_library import action_library_payload
+from napari_chat_assistant import __version__
 from napari_chat_assistant.agent.client import chat_ollama, list_ollama_models, load_ollama_model, unload_ollama_model
 from napari_chat_assistant.agent.code_validation import (
     ValidationMode,
@@ -77,6 +83,17 @@ from napari_chat_assistant.agent.prompt_library import (
     upsert_recent_prompt,
     upsert_saved_code,
     upsert_saved_prompt,
+)
+from napari_chat_assistant.agent.pending_action import (
+    advance_pending_action_turn,
+    build_pending_action_from_assistant_message,
+    cancel_pending_action,
+    complete_pending_action,
+    empty_pending_action,
+    is_pending_action_cancel_message,
+    is_pending_action_waiting,
+    normalize_pending_action,
+    resolve_pending_action,
 )
 from napari_chat_assistant.agent.prompt_routing import route_local_workflow_prompt
 from napari_chat_assistant.agent.sam2_backend import (
@@ -250,8 +267,31 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_hint.setWordWrap(True)
     prompt_library_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
-    library_tabs = QTabWidget()
-    library_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    library_nav_row = QWidget()
+    library_nav_layout = QHBoxLayout(library_nav_row)
+    library_nav_layout.setContentsMargins(0, 0, 0, 0)
+    library_nav_layout.setSpacing(6)
+    library_tabs = QTabBar()
+    library_tabs.setDrawBase(False)
+    library_tabs.addTab("Prompts")
+    library_tabs.addTab("Code")
+    library_tabs.addTab("Templates")
+    library_tabs.setExpanding(False)
+    library_tabs.setMovable(False)
+    library_tabs.setDocumentMode(True)
+    library_tabs.setElideMode(Qt.ElideRight)
+    library_tabs.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    library_tabs.setTabToolTip(0, "Reusable natural-language prompts you can load, save, pin, and send.")
+    library_tabs.setTabToolTip(1, "Saved or recent Python snippets for Run My Code and code refinement.")
+    library_tabs.setTabToolTip(2, "Built-in starter templates organized by category for loading or immediate execution.")
+    actions_tab_btn = QPushButton("Actions")
+    actions_tab_btn.setCheckable(True)
+    actions_tab_btn.setToolTip("Deterministic built-in actions you can preview, load into Prompt, or run directly.")
+    library_nav_layout.addWidget(library_tabs, 0)
+    library_nav_layout.addStretch(1)
+    library_nav_layout.addWidget(actions_tab_btn, 0)
+    library_stack = QStackedWidget()
+    library_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     prompt_library_list = QListWidget()
     prompt_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
     prompt_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -307,12 +347,43 @@ def chat_widget(napari_viewer=None) -> QWidget:
     template_btn_layout.addWidget(template_load_btn)
     template_btn_layout.addWidget(template_run_btn)
     template_tab_layout.addWidget(template_btn_row)
-    library_tabs.addTab(prompt_library_list, "Prompts")
-    library_tabs.addTab(code_library_list, "Code")
-    library_tabs.addTab(template_tab, "Templates")
-    library_tabs.setTabToolTip(0, "Reusable natural-language prompts you can load, save, pin, and send.")
-    library_tabs.setTabToolTip(1, "Saved or recent Python snippets for Run My Code and code refinement.")
-    library_tabs.setTabToolTip(2, "Built-in starter templates organized by category for loading or immediate execution.")
+    action_tab = QWidget()
+    action_tab_layout = QVBoxLayout(action_tab)
+    action_tab_layout.setContentsMargins(0, 0, 0, 0)
+    action_splitter = QSplitter(Qt.Horizontal)
+    action_tree = QTreeWidget()
+    action_tree.setHeaderHidden(True)
+    action_tree.setMinimumWidth(180)
+    action_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+    action_tree.setStyleSheet("QTreeWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
+    action_preview = QTextEdit()
+    action_preview.setReadOnly(True)
+    action_preview.setAcceptRichText(False)
+    action_preview.setPlaceholderText("Select an action to preview what it does and how it runs.")
+    action_preview.setStyleSheet(
+        "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 10px; }"
+    )
+    action_splitter.addWidget(action_tree)
+    action_splitter.addWidget(action_preview)
+    action_splitter.setStretchFactor(0, 0)
+    action_splitter.setStretchFactor(1, 1)
+    action_tab_layout.addWidget(action_splitter, 1)
+    action_btn_row = QWidget()
+    action_btn_layout = QHBoxLayout(action_btn_row)
+    action_load_btn = QPushButton("Load Action")
+    action_load_btn.setToolTip("Load the selected action's suggested prompt into the Prompt box.")
+    action_run_btn = QPushButton("Run Action")
+    action_run_btn.setToolTip("Run the selected deterministic action directly without using the model.")
+    action_add_shortcut_btn = QPushButton("Add to Shortcuts")
+    action_add_shortcut_btn.setToolTip("Add the selected action to the Shortcuts area for one-click reuse.")
+    action_btn_layout.addWidget(action_load_btn)
+    action_btn_layout.addWidget(action_run_btn)
+    action_btn_layout.addWidget(action_add_shortcut_btn)
+    action_tab_layout.addWidget(action_btn_row)
+    library_stack.addWidget(prompt_library_list)
+    library_stack.addWidget(code_library_list)
+    library_stack.addWidget(template_tab)
+    library_stack.addWidget(action_tab)
     prompt_library_btn_row = QWidget()
     prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
     save_prompt_btn = QPushButton("Save")
@@ -330,9 +401,50 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_btn_layout.addWidget(prompt_font_down_btn)
     prompt_library_btn_layout.addWidget(prompt_font_up_btn)
     prompt_library_layout.addWidget(prompt_library_hint)
-    prompt_library_layout.addWidget(library_tabs)
+    prompt_library_layout.addWidget(library_nav_row)
+    prompt_library_layout.addWidget(library_stack)
     prompt_library_layout.addWidget(prompt_library_btn_row)
     left_layout.addWidget(prompt_library_group, 2)
+
+    shortcuts_group = QGroupBox("Shortcuts")
+    shortcuts_layout = QVBoxLayout(shortcuts_group)
+    shortcuts_hint = QLabel(
+        "Keep your most-used actions here for one-click work."
+    )
+    shortcuts_hint.setWordWrap(True)
+    shortcuts_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
+    shortcuts_layout.addWidget(shortcuts_hint)
+    shortcuts_grid = QGridLayout()
+    shortcuts_grid.setContentsMargins(0, 0, 0, 0)
+    shortcuts_grid.setHorizontalSpacing(8)
+    shortcuts_grid.setVerticalSpacing(8)
+    shortcuts_layout.addLayout(shortcuts_grid)
+    shortcut_buttons: list[QPushButton] = []
+    shortcuts_btn_row = QWidget()
+    shortcuts_btn_layout = QHBoxLayout(shortcuts_btn_row)
+    shortcuts_add_row_btn = QPushButton("+")
+    shortcuts_add_row_btn.setToolTip("Add another row of 3 shortcut buttons.")
+    shortcuts_add_row_btn.setFixedWidth(88)
+    shortcuts_remove_row_btn = QPushButton("-")
+    shortcuts_remove_row_btn.setToolTip("Remove the last row of 3 shortcut buttons. The last row must be empty first.")
+    shortcuts_remove_row_btn.setFixedWidth(88)
+    shortcuts_save_btn = QPushButton("Save Setup")
+    shortcuts_save_btn.setToolTip("Save your current shortcuts setup so you can reuse it later.")
+    shortcuts_save_btn.setFixedWidth(88)
+    shortcuts_load_btn = QPushButton("Load Setup")
+    shortcuts_load_btn.setToolTip("Load a saved shortcuts setup.")
+    shortcuts_load_btn.setFixedWidth(88)
+    shortcuts_clear_btn = QPushButton("Clear")
+    shortcuts_clear_btn.setToolTip("Clear all shortcut button assignments.")
+    shortcuts_clear_btn.setFixedWidth(88)
+    shortcuts_btn_layout.addStretch(1)
+    shortcuts_btn_layout.addWidget(shortcuts_add_row_btn)
+    shortcuts_btn_layout.addWidget(shortcuts_remove_row_btn)
+    shortcuts_btn_layout.addWidget(shortcuts_save_btn)
+    shortcuts_btn_layout.addWidget(shortcuts_load_btn)
+    shortcuts_btn_layout.addWidget(shortcuts_clear_btn)
+    shortcuts_layout.addWidget(shortcuts_btn_row)
+    left_layout.addWidget(shortcuts_group, 0)
 
     log_group = QGroupBox("Session")
     log_group.setCheckable(True)
@@ -443,7 +555,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     reject_memory_btn.setToolTip("Reject the last assistant outcome from session memory.")
     reject_memory_btn.setEnabled(False)
     help_btn = QPushButton("Help")
-    help_btn.setToolTip("Show prompt-writing tips and example instruction patterns.")
+    help_btn.setToolTip("Open prompt tips and UI-help controls.")
+    help_menu = QMenu(help_btn)
+    help_prompt_tips_action = help_menu.addAction("Prompt Tips")
+    help_whats_new_action = help_menu.addAction("What's New")
+    help_about_action = help_menu.addAction("About")
+    help_report_bug_action = help_menu.addAction("Report Bug")
+    help_menu.addSeparator()
+    help_ui_toggle_action = help_menu.addAction("UI Help Enabled")
+    help_ui_toggle_action.setCheckable(True)
+    help_ui_toggle_action.setChecked(bool(ui_state.get("ui_help_enabled", False)))
+    help_btn.setMenu(help_menu)
     advanced_btn = QPushButton("Advanced")
     advanced_btn.setToolTip("Open advanced and optional integrations.")
     advanced_menu = QMenu(advanced_btn)
@@ -452,9 +574,21 @@ def chat_widget(napari_viewer=None) -> QWidget:
     advanced_btn.setMenu(advanced_menu)
     run_code_btn = QPushButton("Run Code")
     run_my_code_btn = QPushButton("Run My Code")
-    run_my_code_btn.setToolTip("Paste your own Python in the Prompt box and click to run it directly, without opening QtConsole.")
+    run_code_btn.setToolTip(
+        "Run the reviewed code inside the Chat Assistant plugin runtime. "
+        "This uses plugin globals such as viewer, selected_layer, and run_in_background, "
+        "and output is shown in chat rather than QtConsole."
+    )
+    run_my_code_btn.setToolTip(
+        "Paste your own Python in the Prompt box and run it inside the Chat Assistant plugin runtime, "
+        "without opening QtConsole. This is similar to napari scripting but not identical to QtConsole. "
+        "Output is shown in chat."
+    )
     refine_my_code_btn = QPushButton("Refine My Code")
-    refine_my_code_btn.setToolTip("Ask the assistant to repair prompt-box code or the last failed Run My Code submission for this plugin environment.")
+    refine_my_code_btn.setToolTip(
+        "Ask the assistant to adapt prompt-box code or the last failed Run My Code submission so it works "
+        "in the Chat Assistant plugin runtime. Use this when code may work in QtConsole but not here as-is."
+    )
     copy_code_btn = QPushButton("Copy Code")
     run_code_btn.setEnabled(False)
     copy_code_btn.setEnabled(False)
@@ -566,10 +700,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
         "error": "",
     }
     last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
+    pending_action_state = empty_pending_action()
     session_memory_state = load_session_memory()
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     template_library_state = template_library_payload()
+    action_library_state = action_library_payload()
+    shortcut_action_ids = list(ui_state.get("shortcuts_action_ids", []) or [])
+    shortcut_slot_count = max(6, int(ui_state.get("shortcuts_slot_count", 6) or 6))
     generation_defaults = {
         "temperature": 1.0,
         "top_k": 20,
@@ -589,7 +727,197 @@ def chat_widget(napari_viewer=None) -> QWidget:
         current_path = str(ui_state.get("last_workspace_path", "")).strip()
         workspace_path_label.setText(f"Workspace file: {current_path if current_path else '[none]'}")
 
+    def shortcuts_default_path() -> str:
+        current = str(ui_state.get("last_shortcuts_path", "")).strip()
+        if current:
+            return current
+        shortcuts_dir = Path.home() / ".napari-chat-assistant" / "shortcuts"
+        shortcuts_dir.mkdir(parents=True, exist_ok=True)
+        return str(shortcuts_dir / "shortcuts.json")
+
+    def action_record_by_id(action_id: str) -> dict | None:
+        token = str(action_id or "").strip()
+        if not token:
+            return None
+        for record in action_library_state.get("actions", []):
+            if isinstance(record, dict) and str(record.get("id", "")).strip() == token:
+                return record
+        return None
+
+    def quick_action_button_label(record: dict) -> str:
+        title = str(record.get("title", "")).strip() or "Action"
+        if len(title) <= 18:
+            return title
+        shortened = (
+            title.replace("SAM2 ", "")
+            .replace("Create ", "")
+            .replace("Open ", "")
+            .replace(" Analysis", "")
+            .replace(" Comparison", "")
+            .strip()
+        )
+        if 0 < len(shortened) <= 18:
+            return shortened
+        return f"{title[:15].rstrip()}..."
+
+    def quick_action_button_style(record: dict) -> str:
+        category = str(record.get("category", "")).strip().lower()
+        palette = {
+            "widgets": ("#22314a", "#dbeafe", "#31557f"),
+            "layers": ("#2d2f45", "#e5e7eb", "#4b5563"),
+            "enhance": ("#3f2b17", "#ffedd5", "#c67b23"),
+            "visualize": ("#173b57", "#e0f2fe", "#1d6fa5"),
+            "measure": ("#1e4634", "#dcfce7", "#2f855a"),
+            "masks": ("#5a3415", "#ffedd5", "#c66a1b"),
+            "montage": ("#153f40", "#ccfbf1", "#0f766e"),
+            "segmentation": ("#4a2130", "#ffe4e6", "#be3c5d"),
+            "spectral": ("#36244f", "#ede9fe", "#7c3aed"),
+        }
+        bg, fg, border = palette.get(category, ("#243447", "#f5f7fa", "#475569"))
+        hover_bg = QColor(bg).lighter(118).name()
+        hover_border = QColor(border).lighter(125).name()
+        pressed_bg = QColor(bg).darker(112).name()
+        return (
+            "QPushButton { "
+            f"background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 7px; padding: 6px 10px; "
+            "font-weight: 600; } "
+            "QPushButton:hover { "
+            f"background: {hover_bg}; border: 1px solid {hover_border}; }} "
+            "QPushButton:pressed { "
+            f"background: {pressed_bg}; border: 1px solid {hover_border}; }} "
+            "QPushButton:disabled { background: #1f2937; color: #94a3b8; border: 1px solid #334155; }"
+        )
+
+    def save_shortcuts() -> None:
+        ui_state["shortcuts_action_ids"] = [str(action_id).strip() for action_id in shortcut_action_ids if str(action_id).strip()]
+        ui_state["shortcuts_slot_count"] = max(6, int(shortcut_slot_count))
+        save_ui_state(ui_state)
+
+    def save_shortcuts_layout(*, choose_path: bool) -> None:
+        destination = shortcuts_default_path()
+        if choose_path or not destination.strip():
+            selected, _ = QFileDialog.getSaveFileName(
+                root,
+                "Save Shortcuts Layout",
+                destination or "shortcuts.json",
+                "JSON Files (*.json)",
+            )
+            if not selected:
+                return
+            destination = selected
+        payload = {
+            "version": 1,
+            "slot_count": max(6, int(shortcut_slot_count)),
+            "action_ids": [str(action_id).strip() for action_id in shortcut_action_ids if str(action_id).strip()],
+        }
+        try:
+            path = Path(destination)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            append_log(f"Save shortcuts failed: {exc}")
+            set_status("Status: save shortcuts failed", ok=False)
+            return
+        ui_state["last_shortcuts_path"] = str(destination)
+        save_ui_state(ui_state)
+        append_log(f"Saved shortcuts layout: {destination}")
+        set_status("Status: shortcuts saved", ok=True)
+
+    def load_shortcuts_layout(*, choose_path: bool) -> None:
+        nonlocal shortcut_slot_count
+        source_path = shortcuts_default_path()
+        if choose_path or not source_path.strip():
+            selected, _ = QFileDialog.getOpenFileName(
+                root,
+                "Load Shortcuts Layout",
+                source_path or "",
+                "JSON Files (*.json)",
+            )
+            if not selected:
+                return
+            source_path = selected
+        if not source_path.strip():
+            set_status("Status: no shortcuts file selected", ok=False)
+            return
+        try:
+            payload = json.loads(Path(source_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            append_log(f"Load shortcuts failed: {exc}")
+            set_status("Status: load shortcuts failed", ok=False)
+            return
+        slot_count = max(6, int(payload.get("slot_count", 6)))
+        raw_ids = [str(value).strip() for value in payload.get("action_ids", []) if str(value).strip()]
+        merged_ids: list[str] = []
+        for action_id in raw_ids:
+            if action_record_by_id(action_id) is not None and action_id not in merged_ids:
+                merged_ids.append(action_id)
+        shortcut_slot_count = slot_count
+        shortcut_action_ids[:] = merged_ids
+        while len(shortcut_action_ids) < shortcut_slot_count:
+            shortcut_action_ids.append("")
+        if len(shortcut_action_ids) > shortcut_slot_count:
+            del shortcut_action_ids[shortcut_slot_count:]
+        ui_state["last_shortcuts_path"] = str(source_path)
+        save_shortcuts()
+        refresh_shortcuts()
+        append_log(f"Loaded shortcuts layout: {source_path}")
+        set_status("Status: shortcuts loaded", ok=True)
+
+    def refresh_action_button_row(buttons: list[QPushButton], action_ids: list[str], *, empty_tooltip: str) -> None:
+        for index, button in enumerate(buttons):
+            action_id = str(action_ids[index]).strip() if index < len(action_ids) else ""
+            record = action_record_by_id(action_id)
+            if not isinstance(record, dict):
+                button.setText(f"Empty {index + 1}")
+                button.setToolTip(empty_tooltip)
+                button.setEnabled(False)
+                button.setProperty("action_id", "")
+                button.setStyleSheet(
+                    "QPushButton { background: #1f2937; color: #94a3b8; border: 1px solid #334155; border-radius: 7px; padding: 6px 10px; }"
+                )
+                continue
+            button.setText(quick_action_button_label(record))
+            button.setToolTip(
+                f"{record.get('title', 'Action')}\n\n{str(record.get('description', '')).strip() or 'Run this action directly.'}"
+            )
+            button.setEnabled(True)
+            button.setProperty("action_id", str(record.get("id", "")).strip())
+            button.setStyleSheet(quick_action_button_style(record))
+
+    def rebuild_shortcuts_grid() -> None:
+        while shortcuts_grid.count():
+            item = shortcuts_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        shortcut_buttons.clear()
+        for slot_index in range(max(6, int(shortcut_slot_count))):
+            btn = QPushButton(f"Empty {slot_index + 1}")
+            btn.setEnabled(False)
+            btn.setMinimumHeight(34)
+            btn.setToolTip("Add an action from the Actions panel.")
+            btn.clicked.connect(lambda _checked=False, idx=slot_index: run_shortcut_button(idx))
+            btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(
+                lambda pos, idx=slot_index, button=btn: show_shortcut_menu(idx, button.mapToGlobal(pos))
+            )
+            shortcuts_grid.addWidget(btn, slot_index // 3, slot_index % 3)
+            shortcut_buttons.append(btn)
+
+    def refresh_shortcuts() -> None:
+        while len(shortcut_action_ids) < max(6, int(shortcut_slot_count)):
+            shortcut_action_ids.append("")
+        if len(shortcut_action_ids) > max(6, int(shortcut_slot_count)):
+            del shortcut_action_ids[max(6, int(shortcut_slot_count)) :]
+        rebuild_shortcuts_grid()
+        refresh_action_button_row(
+            shortcut_buttons,
+            shortcut_action_ids,
+            empty_tooltip="Add an action from the Actions panel.",
+        )
+
     refresh_workspace_path_label()
+    refresh_shortcuts()
 
     base_url_edit.setText(saved_settings["base_url"])
     model_combo.addItem(saved_settings["model"])
@@ -613,6 +941,22 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 f'text-align: left; max-width: 100%;">{safe_message}</div></td><td width="35%"></td></tr></table>'
             )
         transcript.append(html)
+
+    def whats_new_message(version: str) -> str:
+        current = str(version or "").strip()
+        if current == "1.8.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- Expanded deterministic mask workflows with a fuller binary-image action set.\n"
+                "- Upgraded workspace save/load to use a JSON manifest plus OME-Zarr assets for generated data.\n"
+                "- Added Points workspace persistence and improved action previews with parameter hints."
+            )
+        return (
+            f"**What's New In {current}**\n"
+            "- This plugin version was updated.\n"
+            "- See the changelog for full details.\n"
+            "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+        )
 
     def replace_last_assistant(text_out: str, *, render_markdown: bool = True):
         cursor = transcript.textCursor()
@@ -669,54 +1013,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if widget_is_alive(context_layers_list):
             context_layers_list.clear()
             if viewer is not None:
-                for layer in viewer.layers:
-                    layer_type = layer.__class__.__name__
-                    data = getattr(layer, "data", None)
-                    shape = getattr(data, "shape", None)
-                    dtype = getattr(data, "dtype", None)
-                    semantic = "n/a"
-                    try:
-                        from napari_chat_assistant.agent.profiler import profile_layer
-
-                        semantic = str(profile_layer(layer).get("semantic_type", "n/a"))
-                    except Exception:
-                        pass
-                    line = (
-                        f"- {layer.name} [{layer_type}] "
-                        f"shape={tuple(shape) if shape is not None else 'n/a'} "
-                        f"dtype={dtype if dtype is not None else 'n/a'} semantic={semantic}"
-                    )
-                    item = QListWidgetItem()
-                    context_layers_list.addItem(item)
-                    row_widget = QWidget()
-                    row_layout = QHBoxLayout(row_widget)
-                    row_layout.setContentsMargins(6, 4, 6, 4)
-                    row_layout.setSpacing(8)
-                    row_label = QLabel(line)
-                    row_label.setWordWrap(True)
-                    row_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    copy_btn = QPushButton("Copy")
-                    copy_btn.setMaximumWidth(56)
-                    insert_btn = QPushButton("Insert")
-                    insert_btn.setMaximumWidth(56)
-                    insert_btn.setToolTip("Append this layer summary line to the Prompt box.")
-                    copy_btn.setToolTip("Copy this layer summary line to the clipboard.")
-                    copy_btn.clicked.connect(lambda _checked=False, text=line: QApplication.clipboard().setText(text))
-                    insert_btn.clicked.connect(lambda _checked=False, text=line: append_text_to_prompt(text))
-                    row_layout.addWidget(row_label, 1)
-                    row_layout.addWidget(insert_btn, 0)
-                    row_layout.addWidget(copy_btn, 0)
-                    item.setSizeHint(row_widget.sizeHint())
-                    context_layers_list.setItemWidget(item, row_widget)
                 selected = viewer.layers.selection.active if viewer is not None else None
-                if selected is not None:
+                for layer in viewer.layers:
+                    insert_text = str(layer.name)
+                    line = insert_text
+                    if selected is layer:
+                        line = f"{line} [selected]"
                     item = QListWidgetItem()
                     context_layers_list.addItem(item)
                     row_widget = QWidget()
                     row_layout = QHBoxLayout(row_widget)
                     row_layout.setContentsMargins(6, 4, 6, 4)
                     row_layout.setSpacing(8)
-                    line = f"Selected: {selected.name}"
                     row_label = QLabel(line)
                     row_label.setWordWrap(True)
                     row_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -724,11 +1032,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     copy_btn.setMaximumWidth(56)
                     insert_btn = QPushButton("Insert")
                     insert_btn.setMaximumWidth(56)
-                    insert_btn.setToolTip("Append this selected-layer line to the Prompt box.")
-                    copy_btn.setToolTip("Copy this selected-layer line to the clipboard.")
-                    copy_btn.clicked.connect(lambda _checked=False, text=line: QApplication.clipboard().setText(text))
-                    insert_btn.clicked.connect(lambda _checked=False, text=line: append_text_to_prompt(text))
+                    inline_btn = QPushButton("Inline")
+                    inline_btn.setMaximumWidth(56)
+                    insert_btn.setToolTip("Insert this exact layer name into the Prompt box.")
+                    inline_btn.setToolTip("Insert this exact layer name at the current cursor position.")
+                    copy_btn.setToolTip("Copy this exact layer name to the clipboard.")
+                    copy_btn.clicked.connect(lambda _checked=False, text=insert_text: QApplication.clipboard().setText(text))
+                    insert_btn.clicked.connect(lambda _checked=False, text=insert_text: append_text_to_prompt(text))
+                    inline_btn.clicked.connect(lambda _checked=False, text=insert_text: insert_text_at_prompt_cursor(text))
                     row_layout.addWidget(row_label, 1)
+                    row_layout.addWidget(inline_btn, 0)
                     row_layout.addWidget(insert_btn, 0)
                     row_layout.addWidget(copy_btn, 0)
                     item.setSizeHint(row_widget.sizeHint())
@@ -741,6 +1054,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         current = prompt.toPlainText().rstrip()
         prompt.setPlainText(f"{current}\n{content}" if current else content)
+        prompt.setFocus()
+
+    def insert_text_at_prompt_cursor(text: str):
+        content = str(text or "")
+        if not content:
+            return
+        cursor = prompt.textCursor()
+        cursor.insertText(content)
+        prompt.setTextCursor(cursor)
         prompt.setFocus()
 
     def connect_viewer_context_events():
@@ -1135,46 +1457,80 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- Natural language is fine. The assistant will use the selected layer when it can.\n\n"
             "**Try These**\n"
             "- `Inspect the selected layer`\n"
-            "- `Preview threshold on em_2d_snr_mid`\n"
-            "- `Apply gaussian denoise to em_2d_snr_low with sigma 1.2`\n"
-            "- `Fill holes in mask_messy_2d`\n"
-            "- `Remove small objects from mask_messy_2d with min_size 64`\n"
-            "- `Keep only the largest connected component in mask_messy_2d`\n"
-            "- `Measure labels table for rgb_cells_2d_labels`\n"
-            "- `Create a max intensity projection from em_3d_snr_mid along axis 0`\n"
-            "- `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`\n"
+            "- `Preview threshold on the selected image`\n"
+            "- `Apply gaussian blur to image_a with sigma 1.2`\n"
+            "- `Fill holes in labels_a`\n"
+            "- `Remove small particles from labels_a with min_size 64`\n"
+            "- `Keep only the largest connected component in labels_a`\n"
+            "- `Analyze particles table for labels_a`\n"
+            "- `Create a max intensity projection from volume_a along axis 0`\n"
+            "- `Crop image_a to the bounding box of labels_a with padding 8`\n"
             "- `Inspect the current ROI`\n"
-            "- `Extract ROI values from em_2d_snr_mid using em_2d_mask`\n\n"
+            "- `Extract ROI values from image_a using roi_shapes`\n\n"
             "**ROI Support**\n"
             "- Labels and Shapes layers can be used as regions of interest.\n"
             "- You can inspect ROI context or extract grayscale image values inside an ROI.\n"
             "- Example: `Extract ROI values from image_a using roi_shapes`\n\n"
-            "**Demo Data**\n"
-            "- Use the Library `Templates` tab to load built-in demo packs for testing.\n"
-            "- Available demo packs include EM 2D/3D SNR sweeps, RGB cells 2D/3D SNR sweeps, and messy masks 2D/3D.\n"
-            "- These demos create named layers so you can test tools quickly and repeatably.\n\n"
+            "**Synthetic Data**\n"
+            "- Use the Library `Templates` tab to load built-in synthetic datasets for testing.\n"
+            "- Examples include `Synthetic 2D SNR Sweep Gray`, `Synthetic 3D SNR Sweep Gray`, `Synthetic 2D SNR Sweep RGB`, and `Synthetic 3D SNR Sweep RGB`.\n"
+            "- These datasets create named layers so you can test tools quickly and repeatably.\n\n"
             "**Example Pipeline**\n"
-            "- `Run the EM 2D SNR Sweep demo pack.`\n"
-            "- `Apply gaussian denoise to em_2d_snr_low with sigma 1.0`\n"
+            "- `Run Synthetic 2D SNR Sweep Gray.`\n"
+            "- `Apply gaussian blur to em_2d_snr_low with sigma 1.0`\n"
             "- `Preview threshold on em_2d_snr_low_gaussian`\n"
             "- `Apply threshold now on em_2d_snr_low_gaussian`\n"
             "- `Fill holes in em_2d_snr_low_gaussian_labels`\n"
-            "- `Remove small objects from em_2d_snr_low_gaussian_labels_filled with min_size 64`\n"
+            "- `Remove small particles from em_2d_snr_low_gaussian_labels_filled with min_size 64`\n"
             "- `Keep only the largest connected component in em_2d_snr_low_gaussian_labels_filled_clean`\n"
-            "- `Measure mask on em_2d_snr_low_gaussian_labels_filled_clean_largest`\n\n"
+            "- `Measure selected mask`\n\n"
+            "**Layer Names and Placeholders**\n"
+            "- When possible, use exact layer names from `Layer Context`.\n"
+            "- Use `Inline` when you want to place a layer name into code or a placeholder position.\n"
+            "- `Refine My Code` can often replace placeholder names like `image_a`, `labels_a`, or `roi_shapes` with the best matching current viewer layers.\n\n"
             "**Run My Code Tip**\n"
-            "- Paste Python into the Prompt box and click `Run My Code` to execute it directly inside napari.\n"
+            "- Paste Python into the Prompt box and click `Run My Code` to execute it directly inside the plugin runtime.\n"
             "- For heavy compute, use `run_in_background(compute_fn, apply_fn, error_fn=None, label=\"...\")`.\n"
             "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
-            "- Example: `Write Run My Code for a 3D RGB cell demo using run_in_background.`\n\n"
+            "- Example: `Write Run My Code for a 3D RGB synthetic dataset using run_in_background.`\n\n"
             "**Formatting**\n"
             "- `Reply in markdown`\n"
             "- `Use bullets and short sections`\n"
-            "- `Explain first, then give runnable napari code`\n\n"
+            "- `Explain first, then give runnable plugin code`\n\n"
             "**Language**\n"
             "- You can prompt in your preferred language.",
         )
         append_log("Opened prompt-writing help.")
+
+    def show_whats_new(*_args):
+        append_chat_message("assistant", whats_new_message(__version__))
+        append_log(f"Opened what's new for version {__version__}.")
+        set_status("Status: what's new shown", ok=None)
+
+    def show_about_assistant(*_args):
+        append_chat_message(
+            "assistant",
+            f"**napari-chat-assistant {__version__}**\n"
+            "- Local AI and deterministic imaging workbench for napari.\n"
+            "- Combines Prompt, Code, Templates, Actions, and user-defined Shortcuts.\n"
+            "- Designed to reduce click count and keep analysis close to the viewer.\n"
+            "- MIT License\n"
+            "- Copyright (c) 2025 Wulin Teo",
+        )
+        append_log(f"Opened about panel for version {__version__}.")
+        set_status("Status: about info shown", ok=None)
+
+    def show_report_bug(*_args):
+        append_chat_message(
+            "assistant",
+            "**Report Bug**\n"
+            "- GitHub Issues: https://github.com/wulinteousa2-hash/napari-chat-assistant/issues\n"
+            "- Email: wulinteo.usa2@gmail.com\n"
+            "- Include the plugin version, what you clicked or asked, and any error text you saw.\n"
+            f"- Current plugin version: `{__version__}`",
+        )
+        append_log("Opened bug-report help.")
+        set_status("Status: bug-report help shown", ok=None)
 
     def persist_session_memory():
         save_session_memory(session_memory_state)
@@ -1183,6 +1539,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
         payload = layer_context_json(viewer)
         profile = payload.get("selected_layer_profile")
         return profile if isinstance(profile, dict) else None
+
+    def set_pending_action(payload: dict | None) -> None:
+        nonlocal pending_action_state
+        pending_action_state = normalize_pending_action(payload)
 
     def set_last_memory_candidates(item_ids: list[str]):
         nonlocal last_memory_candidate_ids
@@ -1231,11 +1591,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_last_memory_candidates([])
 
     def current_library_kind() -> str:
-        current_widget = library_tabs.currentWidget()
+        current_widget = library_stack.currentWidget()
         if current_widget is code_library_list:
             return "code"
         if current_widget is template_tab:
             return "template"
+        if current_widget is action_tab:
+            return "action"
         return "prompt"
 
     def current_library_list() -> QListWidget:
@@ -1244,7 +1606,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def current_library_item_name() -> str:
         if current_library_kind() == "template":
             return "template"
+        if current_library_kind() == "action":
+            return "action"
         return "code snippet" if current_library_kind() == "code" else "prompt"
+
+    def show_library_panel(kind: str) -> None:
+        target = str(kind or "").strip().lower()
+        if target == "code":
+            library_stack.setCurrentWidget(code_library_list)
+            library_tabs.setCurrentIndex(1)
+            actions_tab_btn.setChecked(False)
+        elif target == "template":
+            library_stack.setCurrentWidget(template_tab)
+            library_tabs.setCurrentIndex(2)
+            actions_tab_btn.setChecked(False)
+        elif target == "action":
+            library_stack.setCurrentWidget(action_tab)
+            actions_tab_btn.setChecked(True)
+        else:
+            library_stack.setCurrentWidget(prompt_library_list)
+            library_tabs.setCurrentIndex(0)
+            actions_tab_btn.setChecked(False)
+        refresh_library_controls()
 
     def selected_library_records() -> list[dict]:
         if current_library_kind() == "template":
@@ -1253,6 +1636,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return []
             record = item.data(0, Qt.UserRole)
             return [record] if isinstance(record, dict) and record.get("code") else []
+        if current_library_kind() == "action":
+            item = action_tree.currentItem()
+            if item is None:
+                return []
+            record = item.data(0, Qt.UserRole)
+            return [record] if isinstance(record, dict) and isinstance(record.get("execution"), dict) else []
         records: list[dict] = []
         for item in current_library_list().selectedItems():
             record = item.data(Qt.UserRole)
@@ -1365,7 +1754,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
         current = str(ui_state.get("last_workspace_path", "")).strip()
         if current:
             return current
-        return "napari_workspace.json"
+        workspace_dir = Path.home() / ".napari-chat-assistant" / "workspaces"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return str(workspace_dir / "napari_workspace.json")
 
     def save_workspace_common(*, choose_path: bool) -> None:
         destination = workspace_default_path()
@@ -1543,9 +1934,34 @@ def chat_widget(napari_viewer=None) -> QWidget:
             template_selected = current_template_record() is not None
             template_load_btn.setEnabled(template_selected)
             template_run_btn.setEnabled(template_selected)
+            action_load_btn.setEnabled(False)
+            action_run_btn.setEnabled(False)
+            action_add_shortcut_btn.setEnabled(False)
+            return
+        if current_library_kind() == "action":
+            save_prompt_btn.setText("Save")
+            pin_prompt_btn.setText("Pin")
+            delete_prompt_btn.setText("Delete")
+            clear_prompt_btn.setText("Clear")
+            save_prompt_btn.setEnabled(False)
+            pin_prompt_btn.setEnabled(False)
+            delete_prompt_btn.setEnabled(False)
+            clear_prompt_btn.setEnabled(False)
+            prompt_library_hint.setText(
+                "Click an action to preview its purpose and workflow. Use Load Action to insert the prompt form or Run Action for direct execution."
+            )
+            template_load_btn.setEnabled(False)
+            template_run_btn.setEnabled(False)
+            action_selected = current_action_record() is not None
+            action_load_btn.setEnabled(action_selected)
+            action_run_btn.setEnabled(action_selected)
+            action_add_shortcut_btn.setEnabled(action_selected)
             return
         template_load_btn.setEnabled(False)
         template_run_btn.setEnabled(False)
+        action_load_btn.setEnabled(False)
+        action_run_btn.setEnabled(False)
+        action_add_shortcut_btn.setEnabled(False)
         save_prompt_btn.setEnabled(True)
         pin_prompt_btn.setEnabled(True)
         delete_prompt_btn.setEnabled(True)
@@ -1619,6 +2035,44 @@ def chat_widget(napari_viewer=None) -> QWidget:
             template_tree.topLevelItem(index).setExpanded(False)
         template_tree.setCurrentItem(None)
         template_preview.clear()
+        action_tree.clear()
+        action_categories = [str(name).strip() for name in action_library_state.get("categories", []) if str(name).strip()]
+        action_lookup: dict[str, QTreeWidgetItem] = {}
+        for category in action_categories:
+            category_item = QTreeWidgetItem([category])
+            category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
+            category_item.setFirstColumnSpanned(True)
+            action_lookup[category] = category_item
+            action_tree.addTopLevelItem(category_item)
+        for record in action_library_state.get("actions", []):
+            if not isinstance(record, dict) or not isinstance(record.get("execution"), dict):
+                continue
+            category = str(record.get("category", "Actions")).strip() or "Actions"
+            parent = action_lookup.get(category)
+            if parent is None:
+                parent = QTreeWidgetItem([category])
+                parent.setFlags(parent.flags() & ~Qt.ItemIsSelectable)
+                parent.setFirstColumnSpanned(True)
+                action_lookup[category] = parent
+                action_tree.addTopLevelItem(parent)
+            group = str(record.get("group", "")).strip()
+            if group:
+                subgroup_key = f"{category}::{group}"
+                subgroup = action_lookup.get(subgroup_key)
+                if subgroup is None:
+                    subgroup = QTreeWidgetItem([group])
+                    subgroup.setFlags(subgroup.flags() & ~Qt.ItemIsSelectable)
+                    subgroup.setFirstColumnSpanned(True)
+                    action_lookup[subgroup_key] = subgroup
+                    parent.addChild(subgroup)
+                parent = subgroup
+            child = QTreeWidgetItem([str(record.get("title", "Untitled Action")).strip() or "Untitled Action"])
+            child.setData(0, Qt.UserRole, record)
+            parent.addChild(child)
+        for index in range(action_tree.topLevelItemCount()):
+            action_tree.topLevelItem(index).setExpanded(False)
+        action_tree.setCurrentItem(None)
+        action_preview.clear()
         refresh_library_controls()
 
     def current_template_record() -> dict | None:
@@ -1627,6 +2081,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return None
         record = item.data(0, Qt.UserRole)
         return record if isinstance(record, dict) and str(record.get("code", "")).strip() else None
+
+    def current_action_record() -> dict | None:
+        item = action_tree.currentItem()
+        if item is None:
+            return None
+        record = item.data(0, Qt.UserRole)
+        return record if isinstance(record, dict) and isinstance(record.get("execution"), dict) else None
 
     def template_preview_text(record: dict) -> str:
         title = str(record.get("title", "")).strip() or "Untitled Template"
@@ -1678,6 +2139,282 @@ def chat_widget(napari_viewer=None) -> QWidget:
         )
         return "\n".join(lines).strip()
 
+    def action_preview_text(record: dict) -> str:
+        title = str(record.get("title", "")).strip() or "Untitled Action"
+        category = str(record.get("category", "")).strip() or "Actions"
+        description = str(record.get("description", "")).strip()
+        tags = [str(tag).strip() for tag in record.get("tags", []) if str(tag).strip()]
+        best_for = str(record.get("best_for", "")).strip()
+        expected_input = str(record.get("expected_input", "")).strip()
+        load_prompt = str(record.get("load_prompt", "")).strip()
+        execution = record.get("execution", {})
+        runtime = record.get("runtime", {})
+        how_it_works = str(record.get("how_it_works", "")).strip()
+        workflow = [str(step).strip() for step in record.get("workflow", []) if str(step).strip()]
+        parameter_hints = [str(step).strip() for step in record.get("parameter_hints", []) if str(step).strip()]
+        prompt_examples = [str(step).strip() for step in record.get("prompt_examples", []) if str(step).strip()]
+        runtime_flags: list[str] = []
+        if isinstance(runtime, dict):
+            if runtime.get("uses_viewer"):
+                runtime_flags.append("Viewer")
+            if runtime.get("uses_selected_layer"):
+                runtime_flags.append("Selected Layer")
+            if runtime.get("uses_run_in_background"):
+                runtime_flags.append("Background")
+        lines = [f"Action: {title}", f"Category: {category}"]
+        if tags:
+            lines.append(f"Tags: {', '.join(tags)}")
+        if runtime_flags:
+            lines.append(f"Runtime: {', '.join(runtime_flags)}")
+        if description:
+            lines.extend(["", description])
+        if best_for:
+            lines.extend(["", f"Best for: {best_for}"])
+        if expected_input:
+            lines.extend(["", f"Expected input: {expected_input}"])
+        if how_it_works:
+            lines.extend(["", f"How it works: {how_it_works}"])
+        if workflow:
+            lines.extend(["", "Workflow:"])
+            lines.extend(f"{index}. {step}" for index, step in enumerate(workflow, start=1))
+        if parameter_hints:
+            lines.extend(["", "Parameter hints:"])
+            lines.extend(f"- {step}" for step in parameter_hints)
+        if prompt_examples:
+            lines.extend(["", "Prompt examples:"])
+            lines.extend(f"- {step}" for step in prompt_examples)
+        if load_prompt:
+            lines.extend(["", "Load to Prompt:", load_prompt])
+        if isinstance(execution, dict):
+            kind = str(execution.get("kind", "")).strip()
+            target = str(execution.get("target", "")).strip()
+            if kind and target:
+                lines.extend(["", f"Internal target: {kind}:{target}"])
+        return "\n".join(lines).strip()
+
+    def sam2_managed_points_layer_name(image_layer) -> str | None:
+        if image_layer is None:
+            return None
+        return f"{str(getattr(image_layer, 'name', '')).strip()}_sam2_prompts"
+
+    def current_sam2_target_image_layer():
+        if viewer is None:
+            return None
+        active = getattr(getattr(viewer.layers, "selection", None), "active", None)
+        if isinstance(active, napari.layers.Image) and not getattr(active, "rgb", False):
+            return active
+        if isinstance(active, napari.layers.Points):
+            source_name = str(getattr(active, "metadata", {}).get("sam2_source_image", "")).strip()
+            if source_name and source_name in viewer.layers:
+                source_layer = viewer.layers[source_name]
+                if isinstance(source_layer, napari.layers.Image) and not getattr(source_layer, "rgb", False):
+                    return source_layer
+        for layer in viewer.layers if viewer is not None else []:
+            if isinstance(layer, napari.layers.Image) and not getattr(layer, "rgb", False):
+                return layer
+        return None
+
+    def selected_scalable_layer():
+        layer = None if viewer is None else getattr(getattr(viewer.layers, "selection", None), "active", None)
+        if layer is None:
+            raise ValueError("Select a layer first.")
+        if not hasattr(layer, "scale"):
+            raise ValueError(f"Selected layer [{getattr(layer, 'name', 'layer')}] does not support scale.")
+        data = np.asarray(getattr(layer, "data", None))
+        ndim = int(getattr(layer, "ndim", data.ndim if data is not None else 0))
+        if ndim <= 0:
+            raise ValueError(f"Selected layer [{getattr(layer, 'name', 'layer')}] does not have a valid dimensionality.")
+        return layer, ndim
+
+    def set_selected_layer_uniform_scale(value: float) -> tuple[str, tuple[float, ...]]:
+        layer, ndim = selected_scalable_layer()
+        scale = tuple([float(value)] * int(ndim))
+        layer.scale = scale
+        refresh_context()
+        return str(getattr(layer, "name", "layer")), scale
+
+    def set_selected_layer_scale_0_1() -> tuple[str, tuple[float, ...]]:
+        return set_selected_layer_uniform_scale(0.1)
+
+    def reset_selected_layer_scale() -> tuple[str, tuple[float, ...]]:
+        return set_selected_layer_uniform_scale(1.0)
+
+    def resolve_sam2_points_action_arguments() -> dict[str, object]:
+        image_layer = current_sam2_target_image_layer()
+        if image_layer is None:
+            raise ValueError("Select a grayscale image layer or its SAM2 points layer first.")
+        points_name = sam2_managed_points_layer_name(image_layer)
+        if not points_name or points_name not in viewer.layers:
+            raise ValueError(
+                f"No SAM2 points layer found for [{image_layer.name}]. Run Initialize Points first."
+            )
+        points_layer = viewer.layers[points_name]
+        if not isinstance(points_layer, napari.layers.Points):
+            raise ValueError(f"Layer [{points_name}] exists but is not a SAM2 points layer.")
+        return {
+            "image_layer": str(image_layer.name),
+            "points_layer": str(points_layer.name),
+        }
+
+    def set_sam2_points_mode(layer, label_value: int) -> None:
+        value = 1 if int(label_value) == 1 else 0
+        try:
+            layer.feature_defaults = {"sam_label": value}
+        except Exception:
+            pass
+        try:
+            layer.current_properties = {"sam_label": np.asarray([value], dtype=np.int32)}
+        except Exception:
+            pass
+        color = "#4caf50" if value == 1 else "#ef5350"
+        try:
+            layer.current_face_color = color
+        except Exception:
+            pass
+        try:
+            layer.current_border_color = "white"
+        except Exception:
+            pass
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        metadata["sam2_current_label"] = value
+        layer.metadata = metadata
+
+    def sync_sam2_points_colors(layer) -> None:
+        labels = np.asarray([], dtype=np.int32)
+        try:
+            features = getattr(layer, "features", None)
+            if features is not None and "sam_label" in features:
+                column = features["sam_label"]
+                try:
+                    labels = np.asarray(column.to_numpy(), dtype=np.int32)
+                except Exception:
+                    labels = np.asarray(column, dtype=np.int32)
+        except Exception:
+            labels = np.asarray([], dtype=np.int32)
+        if labels.size == 0:
+            return
+        try:
+            layer.face_color = ["#4caf50" if int(label) == 1 else "#ef5350" for label in labels.tolist()]
+            layer.border_color = ["white"] * int(labels.size)
+        except Exception:
+            pass
+
+    def toggle_sam2_points_layer_polarity(layer) -> None:
+        selected = []
+        try:
+            selected = sorted(int(index) for index in (getattr(layer, "selected_data", set()) or set()))
+        except Exception:
+            selected = []
+
+        labels = None
+        try:
+            features = getattr(layer, "features", None)
+            if features is not None and "sam_label" in features:
+                column = features["sam_label"]
+                try:
+                    labels = np.asarray(column.to_numpy(), dtype=np.int32)
+                except Exception:
+                    labels = np.asarray(column, dtype=np.int32)
+        except Exception:
+            labels = None
+        if labels is None:
+            data = np.asarray(getattr(layer, "data", np.empty((0, 2))), dtype=np.float32)
+            labels = np.ones((data.shape[0],), dtype=np.int32)
+
+        if selected:
+            updated = labels.copy()
+            for index in selected:
+                if 0 <= index < updated.shape[0]:
+                    updated[index] = 0 if int(updated[index]) == 1 else 1
+            try:
+                layer.features = {"sam_label": updated}
+            except Exception:
+                try:
+                    features = getattr(layer, "features", None)
+                    if features is not None:
+                        features["sam_label"] = updated
+                        layer.features = features
+                except Exception:
+                    pass
+            sync_sam2_points_colors(layer)
+            append_log(f"Toggled polarity for {len(selected)} SAM2 prompt point(s) on [{layer.name}].")
+            set_status("Status: SAM2 point polarity toggled", ok=True)
+            return
+
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        current = 1 if int(metadata.get("sam2_current_label", 1)) == 1 else 0
+        next_value = 0 if current == 1 else 1
+        set_sam2_points_mode(layer, next_value)
+        append_log(
+            f"SAM2 point polarity set to [{'positive' if next_value == 1 else 'negative'}] on [{layer.name}]."
+        )
+        set_status("Status: SAM2 point polarity toggled", ok=True)
+
+    def register_sam2_points_toggle(layer) -> None:
+        if layer is None or not hasattr(layer, "bind_key") or getattr(layer, "_sam2_toggle_registered", False):
+            return
+        try:
+            @layer.bind_key("t", overwrite=True)
+            def _toggle_sam2_prompt_polarity(active_layer):
+                toggle_sam2_points_layer_polarity(active_layer)
+        except TypeError:
+            try:
+                layer.bind_key("t", toggle_sam2_points_layer_polarity, overwrite=True)
+            except Exception:
+                return
+        except Exception:
+            return
+        setattr(layer, "_sam2_toggle_registered", True)
+
+    def initialize_sam2_points_layer() -> str | None:
+        selected = viewer.layers.selection.active if viewer is not None else None
+        if not isinstance(selected, napari.layers.Image) or getattr(selected, "rgb", False):
+            raise ValueError("Select a 2D or 3D grayscale image layer before initializing SAM2 points.")
+        image_data = np.asarray(selected.data)
+        if image_data.ndim not in {2, 3}:
+            raise ValueError("SAM2 points initialization currently supports 2D or 3D grayscale image layers only.")
+        layer_name = sam2_managed_points_layer_name(selected)
+        if not layer_name:
+            raise ValueError("Could not derive a SAM2 points layer name from the selected image.")
+        if layer_name in viewer.layers:
+            layer = viewer.layers[layer_name]
+            if not isinstance(layer, napari.layers.Points):
+                raise ValueError(f"Layer [{layer_name}] already exists and is not a Points layer.")
+        else:
+            empty = np.empty((0, image_data.ndim), dtype=np.float32)
+            layer = viewer.add_points(
+                empty,
+                name=layer_name,
+                features={"sam_label": np.empty((0,), dtype=np.int32)},
+                face_color="#4caf50",
+                border_color="white",
+                size=10,
+            )
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        metadata["sam2_managed_points"] = True
+        metadata["sam2_source_image"] = str(selected.name)
+        layer.metadata = metadata
+        set_sam2_points_mode(layer, int(metadata.get("sam2_current_label", 1)))
+        sync_sam2_points_colors(layer)
+        register_sam2_points_toggle(layer)
+        try:
+            layer.mode = "add"
+        except Exception:
+            pass
+        try:
+            viewer.layers.selection.active = layer
+        except Exception:
+            pass
+        append_chat_message(
+            "assistant",
+            f"SAM2 points initialized for [{selected.name}] as [{layer.name}].\n"
+            "Add positive and negative prompt points on that layer. Press `T` on the active SAM2 points layer "
+            "to toggle polarity for new points, or to flip selected points.",
+        )
+        append_log(f"Initialized SAM2 points layer [{layer.name}] for image [{selected.name}].")
+        set_status("Status: SAM2 points initialized", ok=True)
+        return layer.name
+
     def launch_widget_template(record: dict) -> bool:
         template_id = str(record.get("id", "")).strip()
         if template_id == "measure_roi_intensity_metrics":
@@ -1689,6 +2426,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
             open_line_profile_gaussian_fit_widget(viewer)
             append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
             set_status("Status: measurement widget opened", ok=True)
+            return True
+        if template_id == "stats_open_group_comparison_widget":
+            prepared = prepare_tool_job(viewer, "open_group_comparison_widget", {})
+            run_prepared_tool_request(
+                prepared,
+                tool_name="open_group_comparison_widget",
+                tool_message="Opening the group comparison widget.",
+            )
+            append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
             return True
         return False
 
@@ -1704,6 +2450,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
             refresh_library_controls()
             return
         template_preview.setPlainText(template_preview_text(record))
+        refresh_library_controls()
+
+    def show_action_preview(item: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None = None):
+        del _previous
+        if item is None:
+            action_preview.clear()
+            refresh_library_controls()
+            return
+        record = item.data(0, Qt.UserRole)
+        if not isinstance(record, dict) or not isinstance(record.get("execution"), dict):
+            action_preview.clear()
+            refresh_library_controls()
+            return
+        action_preview.setPlainText(action_preview_text(record))
         refresh_library_controls()
 
     def load_template_record(record: dict | None, *, run_now: bool = False):
@@ -1743,6 +2503,84 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         load_template_record(record)
 
+    def load_action_record(record: dict | None):
+        if not isinstance(record, dict):
+            set_status("Status: no action selected", ok=False)
+            append_log("Load action skipped: no action record selected.")
+            return
+        prompt_text = str(record.get("load_prompt", "")).strip()
+        if not prompt_text:
+            set_status("Status: selected action has no prompt form", ok=False)
+            append_log("Load action skipped: selected action has no prompt form.")
+            return
+        prompt.setPlainText(prompt_text)
+        prompt.setFocus()
+        append_log(f"Loaded action prompt: {record.get('title', 'Untitled Action')}")
+        set_status("Status: action loaded to prompt", ok=None)
+
+    def run_action_record(record: dict | None):
+        if not isinstance(record, dict):
+            set_status("Status: no action selected", ok=False)
+            append_log("Run action skipped: no action record selected.")
+            return
+        execution = record.get("execution", {})
+        if not isinstance(execution, dict):
+            set_status("Status: selected action is missing execution data", ok=False)
+            append_log("Run action skipped: missing execution data.")
+            return
+        kind = str(execution.get("kind", "")).strip()
+        target = str(execution.get("target", "")).strip()
+        arguments = dict(execution.get("arguments", {})) if isinstance(execution.get("arguments"), dict) else {}
+        title = str(record.get("title", "Untitled Action")).strip() or "Untitled Action"
+        load_prompt = str(record.get("load_prompt", "")).strip()
+        if load_prompt:
+            append_chat_message("user", load_prompt)
+        if kind == "function":
+            if target == "open_intensity_metrics_widget":
+                open_intensity_metrics_widget(viewer)
+                append_chat_message("assistant", f"Opened {title}.")
+            elif target == "open_line_profile_gaussian_fit_widget":
+                open_line_profile_gaussian_fit_widget(viewer)
+                append_chat_message("assistant", f"Opened {title}.")
+            elif target == "save_workspace":
+                save_workspace_common(choose_path=False)
+            elif target == "save_workspace_as":
+                save_workspace_common(choose_path=True)
+            elif target == "load_workspace":
+                load_workspace_common(choose_path=True)
+            elif target == "restore_last_workspace":
+                load_workspace_common(choose_path=False)
+            elif target == "show_sam2_setup_dialog":
+                show_sam2_setup_dialog()
+                append_chat_message("assistant", f"Opened {title}.")
+            elif target == "show_sam2_live_dialog":
+                show_sam2_live_dialog()
+                append_chat_message("assistant", f"Opened {title}.")
+            elif target == "set_selected_layer_scale_0_1":
+                layer_name, scale = set_selected_layer_scale_0_1()
+                append_chat_message("assistant", f"Set [{layer_name}] scale to {scale}.")
+            elif target == "reset_selected_layer_scale":
+                layer_name, scale = reset_selected_layer_scale()
+                append_chat_message("assistant", f"Reset [{layer_name}] scale to {scale}.")
+            elif target == "initialize_sam2_points_layer":
+                initialize_sam2_points_layer()
+            else:
+                set_status("Status: unknown action target", ok=False)
+                append_log(f"Run action failed: unknown function target {target}.")
+                return
+            append_log(f"Ran action: {title}")
+            set_status("Status: action completed", ok=True)
+            return
+        if kind == "tool":
+            if target in {"sam_segment_from_points", "sam_propagate_points_3d"}:
+                arguments = {**arguments, **resolve_sam2_points_action_arguments()}
+            prepared = prepare_tool_job(viewer, target, arguments)
+            run_prepared_tool_request(prepared, tool_name=target, tool_message=f"Running action: {title}")
+            append_log(f"Ran action: {title}")
+            return
+        set_status("Status: unsupported action kind", ok=False)
+        append_log(f"Run action failed: unsupported action kind {kind}.")
+
     def run_selected_template(*_args):
         record = current_template_record()
         if record is None:
@@ -1750,6 +2588,135 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_log("Run template skipped: no selection.")
             return
         load_template_record(record, run_now=True)
+
+    def load_selected_action(*_args):
+        record = current_action_record()
+        if record is None:
+            set_status("Status: no action selected", ok=False)
+            append_log("Load action skipped: no selection.")
+            return
+        load_action_record(record)
+
+    def add_action_to_shortcuts(record: dict | None):
+        if not isinstance(record, dict):
+            set_status("Status: no action selected", ok=False)
+            append_log("Add shortcut skipped: no action record selected.")
+            return
+        action_id = str(record.get("id", "")).strip()
+        if not action_id:
+            set_status("Status: selected action has no id", ok=False)
+            append_log("Add shortcut skipped: selected action has no id.")
+            return
+        if action_id in shortcut_action_ids:
+            set_status("Status: action already in shortcuts", ok=None)
+            append_log(f"Shortcut already present: {record.get('title', 'Untitled Action')}")
+            return
+        for index, existing in enumerate(shortcut_action_ids):
+            if not str(existing).strip():
+                shortcut_action_ids[index] = action_id
+                save_shortcuts()
+                refresh_shortcuts()
+                set_status("Status: added to shortcuts", ok=True)
+                append_log(f"Added shortcut: {record.get('title', 'Untitled Action')}")
+                return
+        set_status("Status: shortcuts full", ok=False)
+        append_log("Add shortcut skipped: all shortcut slots are already used.")
+
+    def add_selected_action_to_shortcuts(*_args):
+        record = current_action_record()
+        if record is None:
+            set_status("Status: no action selected", ok=False)
+            append_log("Add shortcut skipped: no selection.")
+            return
+        add_action_to_shortcuts(record)
+
+    def run_selected_action(*_args):
+        record = current_action_record()
+        if record is None:
+            set_status("Status: no action selected", ok=False)
+            append_log("Run action skipped: no selection.")
+            return
+        run_action_record(record)
+
+    def run_action_button_slot(buttons: list[QPushButton], index: int):
+        if index < 0 or index >= len(buttons):
+            return
+        action_id = str(buttons[index].property("action_id") or "").strip()
+        record = action_record_by_id(action_id)
+        if not isinstance(record, dict):
+            set_status("Status: action slot is empty", ok=False)
+            append_log(f"Action slot {index + 1} is empty.")
+            return
+        run_action_record(record)
+
+    def run_shortcut_button(index: int):
+        run_action_button_slot(shortcut_buttons, index)
+
+    def clear_shortcuts(*_args):
+        for index in range(len(shortcut_action_ids)):
+            shortcut_action_ids[index] = ""
+        save_shortcuts()
+        refresh_shortcuts()
+        set_status("Status: shortcuts cleared", ok=True)
+        append_log("Cleared shortcuts.")
+
+    def add_shortcut_row(*_args):
+        nonlocal shortcut_slot_count
+        shortcut_slot_count = max(6, int(shortcut_slot_count) + 3)
+        while len(shortcut_action_ids) < shortcut_slot_count:
+            shortcut_action_ids.append("")
+        save_shortcuts()
+        refresh_shortcuts()
+        set_status(f"Status: added shortcut row ({shortcut_slot_count} slots)", ok=True)
+        append_log(f"Expanded shortcuts to {shortcut_slot_count} slots.")
+
+    def remove_shortcut_row(*_args):
+        nonlocal shortcut_slot_count
+        if int(shortcut_slot_count) <= 6:
+            set_status("Status: shortcuts already at minimum size", ok=False)
+            return
+        last_row_start = max(0, int(shortcut_slot_count) - 3)
+        occupied = [str(value).strip() for value in shortcut_action_ids[last_row_start:int(shortcut_slot_count)] if str(value).strip()]
+        if occupied:
+            set_status("Status: clear the last shortcut row before removing it", ok=False)
+            append_log("Remove shortcut row blocked: last row still contains assigned shortcuts.")
+            return
+        shortcut_slot_count = max(6, int(shortcut_slot_count) - 3)
+        del shortcut_action_ids[shortcut_slot_count:]
+        save_shortcuts()
+        refresh_shortcuts()
+        set_status(f"Status: removed shortcut row ({shortcut_slot_count} slots)", ok=True)
+        append_log(f"Reduced shortcuts to {shortcut_slot_count} slots.")
+
+    def remove_shortcut_slot(index: int):
+        if index < 0 or index >= len(shortcut_action_ids):
+            return
+        action_id = str(shortcut_action_ids[index]).strip()
+        if not action_id:
+            set_status("Status: shortcut slot is already empty", ok=False)
+            return
+        title = str(action_record_by_id(action_id).get("title", "Action")).strip() if action_record_by_id(action_id) else "Action"
+        shortcut_action_ids[index] = ""
+        compacted = [value for value in shortcut_action_ids if str(value).strip()]
+        while len(compacted) < max(6, int(shortcut_slot_count)):
+            compacted.append("")
+        shortcut_action_ids[:] = compacted
+        save_shortcuts()
+        refresh_shortcuts()
+        set_status("Status: shortcut removed", ok=True)
+        append_log(f"Removed shortcut: {title}")
+
+    def show_shortcut_menu(index: int, global_pos):
+        if index < 0 or index >= len(shortcut_buttons):
+            return
+        action_id = str(shortcut_buttons[index].property("action_id") or "").strip()
+        if not action_id:
+            return
+        menu = QMenu(root)
+        remove_action = menu.addAction("Remove")
+        chosen = menu.exec_(global_pos)
+        if chosen is remove_action:
+            remove_shortcut_slot(index)
 
     def run_template_tree_item(item: QTreeWidgetItem, _column: int):
         del _column
@@ -1875,6 +2842,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
         saved_settings["base_url"] = base_url
         set_status(f"Status: found {len(models)} local models", ok=True)
         append_log(f"Loaded {len(models)} local models from Ollama")
+
+    def toggle_ui_help(enabled: bool):
+        ui_state["ui_help_enabled"] = bool(enabled)
+        save_ui_state(ui_state)
+        if help_ui_toggle_action.isChecked() != bool(enabled):
+            help_ui_toggle_action.blockSignals(True)
+            help_ui_toggle_action.setChecked(bool(enabled))
+            help_ui_toggle_action.blockSignals(False)
+        append_chat_message(
+            "assistant",
+            (
+                "UI Help is on. Short questions about plugin controls can now be answered locally."
+                if enabled
+                else "UI Help is off. Normal requests will go directly to actions, tools, and chat."
+            ),
+        )
+        append_log(f"UI help {'enabled' if enabled else 'disabled'}.")
+        set_status(f"Status: UI help {'enabled' if enabled else 'disabled'}", ok=None)
 
     def test_connection(*_args):
         provider = "Local (Ollama-style)"
@@ -3119,6 +4104,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         prompt.clear()
         append_log(f"Queued message: {text}")
         if manual_code:
+            set_pending_action(None)
             validation_report = preflight_generated_code(manual_code)
             code_message = "Manual code captured from the prompt. Review it, then click Run Code."
             if validation_report.errors:
@@ -3190,8 +4176,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
             )
             return
-        ui_help_reply = answer_ui_question(text)
+        ui_help_reply = None
+        if bool(ui_state.get("ui_help_enabled", False)):
+            ui_help_reply = None if build_code_repair_context(text, viewer=viewer) is not None else answer_ui_question(text)
         if ui_help_reply:
+            set_pending_action(None)
             append_chat_message("assistant", ui_help_reply)
             append_log("Answered plugin UI help question locally.")
             set_status("Status: plugin help ready", ok=True)
@@ -3209,6 +4198,37 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
             )
             return
+        current_profile = selected_layer_profile() or {}
+        selected_layer_name = str(current_profile.get("layer_name", "")).strip()
+        available_names = image_layer_names()
+        resumed_tool_request = resolve_pending_action(
+            pending_action_state,
+            user_text=text,
+            selected_layer_name=selected_layer_name,
+            available_layer_names=available_names,
+        )
+        if isinstance(resumed_tool_request, dict):
+            tool_name = str(resumed_tool_request.get("tool", "")).strip()
+            prepared = prepare_tool_job(viewer, tool_name, resumed_tool_request.get("arguments", {}))
+            set_pending_action(complete_pending_action(pending_action_state))
+            run_prepared_tool_request(
+                prepared,
+                tool_name=tool_name,
+                tool_message=str(resumed_tool_request.get("tool_message", "")).strip(),
+            )
+            append_log(f"Resolved pending action and resumed tool: {tool_name}")
+            return
+        if is_pending_action_waiting(pending_action_state) and is_pending_action_cancel_message(text):
+            set_pending_action(cancel_pending_action(pending_action_state))
+            append_chat_message("assistant", "Cancelled the pending action. Tell me what you want to do next.")
+            append_log("Cancelled pending action from user follow-up.")
+            set_status("Status: pending action cancelled", ok=None)
+            return
+        if is_pending_action_waiting(pending_action_state):
+            advanced_pending = advance_pending_action_turn(pending_action_state)
+            set_pending_action(advanced_pending)
+            if advanced_pending.get("status") == "expired":
+                append_log("Expired pending action after unresolved follow-up turns.")
         base_url = base_url_edit.text().strip().rstrip("/") or str(saved_settings["base_url"]).rstrip("/")
         model_name = model_combo.currentText().strip() or str(saved_settings["model"]).strip()
         if not base_url or not model_name:
@@ -3217,6 +4237,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return
         local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
         if isinstance(local_workflow_route, dict):
+            set_pending_action(None)
             tool_name = str(local_workflow_route.get("tool", "")).strip()
             arguments = local_workflow_route.get("arguments", {})
             tool_message = str(local_workflow_route.get("message", "")).strip()
@@ -3354,6 +4375,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             action = str(parsed.get("action", "reply")).strip().lower()
 
             if action == "tool":
+                set_pending_action(None)
                 tool_name = str(parsed.get("tool", "")).strip()
                 arguments = parsed.get("arguments", {})
                 tool_message = str(parsed.get("message", "")).strip()
@@ -3493,6 +4515,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return
 
             if action == "code":
+                set_pending_action(None)
                 raw_code_text = str(parsed.get("code", "")).strip()
                 code_text, validation_report = normalize_generated_code_if_needed(raw_code_text, viewer=viewer)
                 code_message = str(parsed.get("message", "")).strip() or "Generated napari code. Review it, then click Run Code."
@@ -3556,6 +4579,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return
 
             message_text = str(parsed.get("message", reply)).strip() or "[empty response]"
+            set_pending_action(
+                build_pending_action_from_assistant_message(
+                    message_text,
+                    turn_id=turn_id,
+                    selected_layer_name=str((selected_layer_profile() or {}).get("layer_name", "")).strip(),
+                )
+            )
             replace_last_assistant(message_text)
             latency_ms = int((time.perf_counter() - request_started_at) * 1000)
             last_turn_metrics.update(
@@ -3861,6 +4891,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         request_lines = [
             "Refine this code so it runs in the current napari plugin environment.",
             "Preserve the original intent, explain the main fix briefly, and return corrected runnable Python.",
+            "If the code contains placeholder or template layer names, replace them with the best matching current viewer layers automatically.",
         ]
         if error_text:
             request_lines.extend(["", "Latest error or validation failure:", error_text])
@@ -4005,7 +5036,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
     reject_memory_btn.clicked.connect(reject_last_memory)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
-    help_btn.clicked.connect(show_help_tips)
+    help_prompt_tips_action.triggered.connect(show_help_tips)
+    help_whats_new_action.triggered.connect(show_whats_new)
+    help_about_action.triggered.connect(show_about_assistant)
+    help_report_bug_action.triggered.connect(show_report_bug)
     telemetry_summary_btn.clicked.connect(show_telemetry_summary)
     telemetry_view_btn.clicked.connect(show_telemetry_viewer)
     telemetry_reset_btn.clicked.connect(reset_telemetry_log)
@@ -4013,7 +5047,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
     summary_stats_btn.clicked.connect(run_summary_stats)
     histogram_btn.clicked.connect(run_histogram)
     compare_btn.clicked.connect(run_layer_comparison)
-    library_tabs.currentChanged.connect(lambda *_args: refresh_library_controls())
+    library_tabs.currentChanged.connect(
+        lambda index: show_library_panel("prompt" if index == 0 else "code" if index == 1 else "template")
+    )
+    actions_tab_btn.clicked.connect(lambda *_args: show_library_panel("action"))
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
     prompt_library_list.customContextMenuRequested.connect(show_library_context_menu)
@@ -4025,6 +5062,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
     template_tree.itemDoubleClicked.connect(run_template_tree_item)
     template_load_btn.clicked.connect(load_selected_template)
     template_run_btn.clicked.connect(run_selected_template)
+    action_tree.currentItemChanged.connect(show_action_preview)
+    action_load_btn.clicked.connect(load_selected_action)
+    action_run_btn.clicked.connect(run_selected_action)
+    action_add_shortcut_btn.clicked.connect(add_selected_action_to_shortcuts)
+    shortcuts_add_row_btn.clicked.connect(add_shortcut_row)
+    shortcuts_remove_row_btn.clicked.connect(remove_shortcut_row)
+    shortcuts_save_btn.clicked.connect(lambda _checked=False: save_shortcuts_layout(choose_path=True))
+    shortcuts_load_btn.clicked.connect(lambda _checked=False: load_shortcuts_layout(choose_path=True))
+    shortcuts_clear_btn.clicked.connect(clear_shortcuts)
     save_prompt_btn.clicked.connect(save_current_prompt)
     pin_prompt_btn.clicked.connect(toggle_pin_selected_prompt)
     delete_prompt_btn.clicked.connect(delete_selected_prompt)
@@ -4034,6 +5080,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt.sendRequested.connect(send_message)
     connection_toggle_btn.toggled.connect(connection_details.setVisible)
     log_group.toggled.connect(log_tabs.setVisible)
+    help_ui_toggle_action.toggled.connect(toggle_ui_help)
     wait_timer.timeout.connect(tick_wait_indicator)
     root.destroyed.connect(cleanup_workers)
 
@@ -4045,27 +5092,36 @@ def chat_widget(napari_viewer=None) -> QWidget:
     refresh_models()
     refresh_sam2_actions()
     refresh_prompt_library()
+    show_library_panel("prompt")
     append_log(f"Assistant log: {APP_LOG_PATH}")
     append_log(f"Crash log: {CRASH_LOG_PATH}")
     if ui_state.get("telemetry_enabled", False):
         append_log(f"Telemetry log: {TELEMETRY_LOG_PATH}")
     append_log(f"Prompt library path: {prompt_library_path()}")
     append_log(f"Session memory path: {session_memory_path()}")
+    last_seen_version = str(ui_state.get("last_seen_version", "")).strip()
     if not ui_state.get("welcome_dismissed", False):
         append_chat_message(
             "assistant",
             "**Welcome**\n"
             "👋 Welcome to Local Chat Assistant.\n"
             "🤖 Connect a local model for chat, tool use, and generated napari code inside the viewer.\n"
-            "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it directly without opening QtConsole.\n"
-            "▶️ Use `Run Code` for assistant-generated code after review.\n"
+            "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it in the plugin runtime without opening QtConsole.\n"
+            "▶️ Use `Run Code` for assistant-generated code after review, and `Refine My Code` to adapt pasted code to this plugin runtime.\n"
             "🧭 Viewer state is read live when you send requests, and the summary strip shows what is currently open.\n"
-            "📚 Library tabs keep reusable prompts and code close to the workflow.\n"
+            "📚 Library tabs keep prompts, code, templates, actions, and shortcuts close to the workflow.\n"
             "📝 Action Log tracks local actions. Telemetry is optional and stays off unless you enable it.\n\n"
             "Ask about your selected layer, thresholding, CLAHE, measurements, histograms, comparisons, or code.\n\n"
-            "Follow for updates: https://x.com/viralvector",
+            "Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md\n"
+            "Bug reports: https://github.com/wulinteousa2-hash/napari-chat-assistant/issues",
         )
+        append_chat_message("assistant", whats_new_message(__version__))
         ui_state["welcome_dismissed"] = True
+        ui_state["last_seen_version"] = __version__
+        save_ui_state(ui_state)
+    elif last_seen_version != __version__:
+        append_chat_message("assistant", whats_new_message(__version__))
+        ui_state["last_seen_version"] = __version__
         save_ui_state(ui_state)
     append_log("Assistant panel initialized.")
     return root

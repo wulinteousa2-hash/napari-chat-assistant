@@ -26,7 +26,7 @@ from scipy.ndimage import map_coordinates
 from scipy.optimize import curve_fit
 
 
-WIDGET_NAME = "Line Profile Gaussian Fit"
+WIDGET_NAME = "Line Profile Analysis"
 PROMPT_OBJECT_NAME = "napariChatAssistantPrompt"
 SHAPES_LAYER_NAME = "template_profile_line"
 
@@ -45,6 +45,33 @@ def gaussian(x: np.ndarray, baseline: float, amplitude: float, mean: float, sigm
     return baseline + amplitude * np.exp(-((x - mean) ** 2) / (2 * sigma**2))
 
 
+def lorentzian(x: np.ndarray, baseline: float, amplitude: float, mean: float, gamma: float) -> np.ndarray:
+    return baseline + amplitude / (1.0 + ((x - mean) / gamma) ** 2)
+
+
+def sech2(x: np.ndarray, baseline: float, amplitude: float, mean: float, width: float) -> np.ndarray:
+    return baseline + amplitude / np.cosh((x - mean) / width) ** 2
+
+
+FIT_MODELS: dict[str, dict[str, Any]] = {
+    "Gaussian": {
+        "function": gaussian,
+        "width_label": "Sigma",
+        "fwhm_factor": 2.3548,
+    },
+    "Lorentzian": {
+        "function": lorentzian,
+        "width_label": "Gamma",
+        "fwhm_factor": 2.0,
+    },
+    "Sech^2": {
+        "function": sech2,
+        "width_label": "Width",
+        "fwhm_factor": float(2.0 * np.arccosh(np.sqrt(2.0))),
+    },
+}
+
+
 class LineProfileGaussianFitWidget(QWidget):
     def __init__(self, viewer: napari.Viewer):
         super().__init__()
@@ -53,6 +80,7 @@ class LineProfileGaussianFitWidget(QWidget):
         self.shapes_layer = None
         self._rows: list[dict[str, Any]] = []
         self._refresh_pending = False
+        self._hidden_shape_indices: set[int] = set()
 
         self.setMinimumWidth(640)
         self.setWindowTitle(WIDGET_NAME)
@@ -72,6 +100,10 @@ class LineProfileGaussianFitWidget(QWidget):
         self.plot_view_combo = QComboBox()
         self.plot_view_combo.addItems(["Absolute", "Normalized"])
         view_row.addWidget(self.plot_view_combo)
+        view_row.addWidget(QLabel("Fit Model:"))
+        self.fit_model_combo = QComboBox()
+        self.fit_model_combo.addItems(list(FIT_MODELS.keys()))
+        view_row.addWidget(self.fit_model_combo)
         view_row.addStretch(1)
         layout.addLayout(view_row)
 
@@ -80,8 +112,8 @@ class LineProfileGaussianFitWidget(QWidget):
         self.axes = self.figure.add_subplot(111)
         layout.addWidget(self.canvas, 1)
 
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Line", "Baseline", "Amplitude", "Mean", "Sigma", "FWHM", "Status"])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(["Line", "State", "Model", "Baseline", "Amplitude", "Center", "Width", "FWHM", "Status"])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -91,11 +123,17 @@ class LineProfileGaussianFitWidget(QWidget):
 
         button_row = QHBoxLayout()
         self.rename_btn = QPushButton("Rename Line")
+        self.hide_selected_btn = QPushButton("Hide Selected")
+        self.show_selected_btn = QPushButton("Show Selected")
+        self.remove_selected_btn = QPushButton("Remove Selected")
         self.copy_selected_btn = QPushButton("Copy Selected")
         self.copy_all_btn = QPushButton("Copy All")
         self.insert_chat_btn = QPushButton("Insert to Chat")
         self.export_csv_btn = QPushButton("Export CSV")
         button_row.addWidget(self.rename_btn)
+        button_row.addWidget(self.hide_selected_btn)
+        button_row.addWidget(self.show_selected_btn)
+        button_row.addWidget(self.remove_selected_btn)
         button_row.addWidget(self.copy_selected_btn)
         button_row.addWidget(self.copy_all_btn)
         button_row.addWidget(self.insert_chat_btn)
@@ -103,12 +141,16 @@ class LineProfileGaussianFitWidget(QWidget):
         layout.addLayout(button_row)
 
         self.rename_btn.clicked.connect(self.rename_selected_line)
+        self.hide_selected_btn.clicked.connect(self.hide_selected_lines)
+        self.show_selected_btn.clicked.connect(self.show_selected_lines)
+        self.remove_selected_btn.clicked.connect(self.remove_selected_lines)
         self.copy_selected_btn.clicked.connect(self.copy_selected_rows)
         self.copy_all_btn.clicked.connect(self.copy_all_rows)
         self.insert_chat_btn.clicked.connect(self.insert_rows_to_chat)
         self.export_csv_btn.clicked.connect(self.export_csv)
         self.table_view_combo.currentTextChanged.connect(self._refresh_table_view)
         self.plot_view_combo.currentTextChanged.connect(self._update_plot)
+        self.fit_model_combo.currentTextChanged.connect(self._schedule_refresh)
         self.table.itemSelectionChanged.connect(self._update_plot)
 
         self._ensure_shapes_layer()
@@ -204,6 +246,17 @@ class LineProfileGaussianFitWidget(QWidget):
                 labels = []
         return labels
 
+    def _shape_types(self) -> list[str]:
+        if self.shapes_layer is None:
+            return []
+        try:
+            raw = getattr(self.shapes_layer, "shape_type", [])
+            if isinstance(raw, str):
+                return [raw]
+            return [str(value).strip().lower() for value in list(raw)]
+        except Exception:
+            return []
+
     def _sync_line_labels(self) -> None:
         if self.shapes_layer is None:
             return
@@ -215,6 +268,23 @@ class LineProfileGaussianFitWidget(QWidget):
             normalized.append(label or self._default_line_label(index))
         try:
             self.shapes_layer.features = {"label": np.asarray(normalized, dtype=object)}
+        except Exception:
+            pass
+
+    def _normalize_hidden_indices(self) -> None:
+        count = self._shape_count()
+        self._hidden_shape_indices = {index for index in self._hidden_shape_indices if 0 <= index < count}
+
+    def _apply_hidden_state(self) -> None:
+        if self.shapes_layer is None:
+            return
+        self._normalize_hidden_indices()
+        shown = np.ones(self._shape_count(), dtype=bool)
+        for index in self._hidden_shape_indices:
+            if 0 <= index < len(shown):
+                shown[index] = False
+        try:
+            self.shapes_layer.shown = shown
         except Exception:
             pass
 
@@ -276,10 +346,12 @@ class LineProfileGaussianFitWidget(QWidget):
         for row_index, row in enumerate(rows):
             values = [
                 row["line"],
+                row.get("state", "Shown"),
+                row["model"],
                 self._display_metric(row, "baseline"),
                 self._display_metric(row, "amplitude"),
-                self._display_metric(row, "mean"),
-                self._display_metric(row, "sigma"),
+                self._display_metric(row, "center"),
+                self._display_metric(row, "width"),
                 self._display_metric(row, "fwhm"),
                 row["status"],
             ]
@@ -303,7 +375,7 @@ class LineProfileGaussianFitWidget(QWidget):
         if percent_mode:
             if metric in {"baseline", "amplitude"}:
                 value = self._as_percent(value, row.get("profile_peak_value"))
-            elif metric in {"mean", "sigma", "fwhm"}:
+            elif metric in {"center", "width", "fwhm"}:
                 value = self._as_percent(value, row.get("line_length_value"))
         return self._format_numeric(value, suffix="%" if percent_mode else "")
 
@@ -313,6 +385,8 @@ class LineProfileGaussianFitWidget(QWidget):
         plotted = 0
         normalized = self.plot_view_combo.currentText() == "Normalized"
         for row in rows:
+            if str(row.get("state", "")).strip().lower() == "hidden":
+                continue
             distance = row.get("distance")
             profile = row.get("profile")
             fit = row.get("fit")
@@ -329,16 +403,18 @@ class LineProfileGaussianFitWidget(QWidget):
             line_label = str(row["line"])
             self.axes.plot(distance, plot_profile, linewidth=1.8, label=f"{line_label} data")
             if plot_fit is not None:
-                self.axes.plot(distance, plot_fit, linestyle="--", linewidth=1.4, label=f"{line_label} fit")
+                self.axes.plot(distance, plot_fit, linestyle="--", linewidth=1.4, label=f"{line_label} {row.get('model', 'fit')}")
             plotted += 1
         if plotted:
-            self.axes.set_title("Line Profile and Gaussian Fit" if not normalized else "Line Profile and Gaussian Fit (Normalized)")
+            model_name = self.fit_model_combo.currentText().strip() or "Fit"
+            title = f"Line Profile and {model_name} Fit"
+            self.axes.set_title(title if not normalized else f"{title} (Normalized)")
             self.axes.set_xlabel("Distance (px)")
             self.axes.set_ylabel("Intensity" if not normalized else "Intensity (%)")
             self.axes.grid(True, alpha=0.25)
             self.axes.legend(loc="best", fontsize=8)
         else:
-            self.axes.set_title("Line Profile and Gaussian Fit")
+            self.axes.set_title("Line Profile Analysis")
             self.axes.text(
                 0.5,
                 0.5,
@@ -361,15 +437,17 @@ class LineProfileGaussianFitWidget(QWidget):
             return ""
         output = io.StringIO()
         writer = csv.writer(output, delimiter="\t", lineterminator="\n")
-        writer.writerow(["Line", "Baseline", "Amplitude", "Mean", "Sigma", "FWHM", "Status"])
+        writer.writerow(["Line", "State", "Model", "Baseline", "Amplitude", "Center", "Width", "FWHM", "Status"])
         for row in rows:
             writer.writerow(
                 [
                     row["line"],
+                    row.get("state", "Shown"),
+                    row["model"],
                     self._display_metric(row, "baseline"),
                     self._display_metric(row, "amplitude"),
-                    self._display_metric(row, "mean"),
-                    self._display_metric(row, "sigma"),
+                    self._display_metric(row, "center"),
+                    self._display_metric(row, "width"),
                     self._display_metric(row, "fwhm"),
                     row["status"],
                 ]
@@ -380,25 +458,36 @@ class LineProfileGaussianFitWidget(QWidget):
         selected = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         return [self._rows[index] for index in selected if 0 <= index < len(self._rows)]
 
+    def _selected_shape_indices(self) -> list[int]:
+        indices: list[int] = []
+        for row in self._selected_rows():
+            shape_index = row.get("shape_index")
+            if isinstance(shape_index, int):
+                indices.append(shape_index)
+        return sorted(set(indices))
+
     def rename_selected_line(self) -> None:
         selected = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         if len(selected) != 1:
             self._set_status("Select exactly one line row to rename.")
             return
-        row_index = selected[0]
-        current_label = self._line_label(row_index)
+        shape_index = self._rows[selected[0]].get("shape_index")
+        if not isinstance(shape_index, int):
+            self._set_status("Selected line is no longer available.")
+            return
+        current_label = self._line_label(shape_index)
         new_label, accepted = QInputDialog.getText(self, "Rename Line", "Line name:", text=current_label)
         if not accepted:
             return
-        new_label = str(new_label).strip() or self._default_line_label(row_index)
+        new_label = str(new_label).strip() or self._default_line_label(shape_index)
         labels = self._shape_labels()
         count = self._shape_count()
         if len(labels) < count:
             labels.extend(self._default_line_label(index) for index in range(len(labels), count))
-        if row_index >= count:
+        if shape_index >= count:
             self._set_status("Selected line is no longer available.")
             return
-        labels[row_index] = new_label
+        labels[shape_index] = new_label
         try:
             self.shapes_layer.features = {"label": np.asarray(labels[:count], dtype=object)}
         except Exception:
@@ -406,6 +495,45 @@ class LineProfileGaussianFitWidget(QWidget):
             return
         self.refresh()
         self._set_status(f"Renamed line to '{new_label}'.")
+
+    def hide_selected_lines(self) -> None:
+        indices = self._selected_shape_indices()
+        if not indices:
+            self._set_status("Select one or more line rows to hide.")
+            return
+        self._hidden_shape_indices.update(indices)
+        self._apply_hidden_state()
+        self.refresh()
+        self._set_status(f"Hid {len(indices)} line ROI(s).")
+
+    def show_selected_lines(self) -> None:
+        indices = self._selected_shape_indices()
+        if not indices:
+            self._set_status("Select one or more line rows to show.")
+            return
+        self._hidden_shape_indices.difference_update(indices)
+        self._apply_hidden_state()
+        self.refresh()
+        self._set_status(f"Showed {len(indices)} line ROI(s).")
+
+    def remove_selected_lines(self) -> None:
+        indices = self._selected_shape_indices()
+        if not indices:
+            self._set_status("Select one or more line rows to remove.")
+            return
+        if self.shapes_layer is None:
+            self._set_status("No line ROI layer is attached.")
+            return
+        try:
+            self.shapes_layer.selected_data = set(indices)
+            self.shapes_layer.remove_selected()
+        except Exception:
+            self._set_status("Could not remove the selected line ROI(s).")
+            return
+        removed = len(indices)
+        self._hidden_shape_indices = set()
+        self.refresh()
+        self._set_status(f"Removed {removed} line ROI(s).")
 
     def copy_selected_rows(self) -> None:
         rows = self._selected_rows()
@@ -446,15 +574,17 @@ class LineProfileGaussianFitWidget(QWidget):
             return
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["Line", "Baseline", "Amplitude", "Mean", "Sigma", "FWHM", "Status"])
+            writer.writerow(["Line", "State", "Model", "Baseline", "Amplitude", "Center", "Width", "FWHM", "Status"])
             for row in self._rows:
                 writer.writerow(
                     [
                         row["line"],
+                        row.get("state", "Shown"),
+                        row["model"],
                         self._display_metric(row, "baseline"),
                         self._display_metric(row, "amplitude"),
-                        self._display_metric(row, "mean"),
-                        self._display_metric(row, "sigma"),
+                        self._display_metric(row, "center"),
+                        self._display_metric(row, "width"),
                         self._display_metric(row, "fwhm"),
                         row["status"],
                     ]
@@ -474,8 +604,9 @@ class LineProfileGaussianFitWidget(QWidget):
 
         if self.shapes_layer is None:
             self._set_table_rows([])
-            self._set_status("Line ROI layer is missing. Reopen Line Profile Gaussian Fit to recreate the helper line layer.")
+            self._set_status("Line ROI layer is missing. Reopen Line Profile Analysis to recreate the helper line layer.")
             return
+        self._apply_hidden_state()
 
         self.measurement_image_layer = self._pick_measurement_layer()
         if self.measurement_image_layer is None:
@@ -490,25 +621,37 @@ class LineProfileGaussianFitWidget(QWidget):
             self._set_status(str(exc))
             return
 
+        fit_name = self.fit_model_combo.currentText().strip() or "Gaussian"
+        fit_spec = FIT_MODELS.get(fit_name, FIT_MODELS["Gaussian"])
+        fit_function = fit_spec["function"]
+        width_label = str(fit_spec["width_label"])
+        fwhm_factor = float(fit_spec["fwhm_factor"])
+
         rows: list[dict[str, Any]] = []
+        shape_types = self._shape_types()
         for index, raw_line in enumerate(self.shapes_layer.data, start=1):
             line_label = self._line_label(index - 1)
             line_data = np.asarray(raw_line)
-            if line_data.shape != (2, 2):
+            shape_type = shape_types[index - 1] if index - 1 < len(shape_types) else ""
+            if shape_type != "line" or line_data.shape != (2, 2):
                 rows.append(
                     {
                         "line": line_label,
+                        "state": "Hidden" if (index - 1) in self._hidden_shape_indices else "Shown",
+                        "shape_index": index - 1,
+                        "model": fit_name,
                         "baseline_value": None,
                         "amplitude_value": None,
-                        "mean_value": None,
-                        "sigma_value": None,
+                        "center_value": None,
+                        "width_value": None,
                         "fwhm_value": None,
                         "line_length_value": None,
                         "profile_peak_value": None,
-                        "status": "Skipped: not a straight line",
+                        "status": "Skipped: use straight line ROIs only",
                         "distance": None,
                         "profile": None,
                         "fit": None,
+                        "width_label": width_label,
                     }
                 )
                 continue
@@ -524,33 +667,41 @@ class LineProfileGaussianFitWidget(QWidget):
                 5.0,
             ]
             try:
-                params, _ = curve_fit(gaussian, dist, prof, p0=p0, maxfev=5000)
-                baseline, amplitude, mean, sigma = [float(value) for value in params]
-                fwhm = 2.3548 * sigma
+                params, _ = curve_fit(fit_function, dist, prof, p0=p0, maxfev=5000)
+                baseline, amplitude, center, width = [float(value) for value in params]
+                width = abs(width)
+                fwhm = fwhm_factor * width
                 rows.append(
                     {
                         "line": line_label,
+                        "state": "Hidden" if (index - 1) in self._hidden_shape_indices else "Shown",
+                        "shape_index": index - 1,
+                        "model": fit_name,
                         "baseline_value": baseline,
                         "amplitude_value": amplitude,
-                        "mean_value": mean,
-                        "sigma_value": sigma,
+                        "center_value": center,
+                        "width_value": width,
                         "fwhm_value": fwhm,
                         "line_length_value": float(dist[-1]) if len(dist) else None,
                         "profile_peak_value": float(np.max(prof)) if len(prof) else None,
                         "status": "OK",
                         "distance": dist,
                         "profile": prof,
-                        "fit": gaussian(dist, baseline, amplitude, mean, sigma),
+                        "fit": fit_function(dist, baseline, amplitude, center, width),
+                        "width_label": width_label,
                     }
                 )
             except Exception as exc:
                 rows.append(
                     {
                         "line": line_label,
+                        "state": "Hidden" if (index - 1) in self._hidden_shape_indices else "Shown",
+                        "shape_index": index - 1,
+                        "model": fit_name,
                         "baseline_value": None,
                         "amplitude_value": None,
-                        "mean_value": None,
-                        "sigma_value": None,
+                        "center_value": None,
+                        "width_value": None,
                         "fwhm_value": None,
                         "line_length_value": float(dist[-1]) if len(dist) else None,
                         "profile_peak_value": float(np.max(prof)) if len(prof) else None,
@@ -558,12 +709,15 @@ class LineProfileGaussianFitWidget(QWidget):
                         "distance": dist,
                         "profile": prof,
                         "fit": None,
+                        "width_label": width_label,
                     }
                 )
 
+        header_width = width_label
+        self.table.setHorizontalHeaderLabels(["Line", "State", "Model", "Baseline", "Amplitude", "Center", header_width, "FWHM", "Status"])
         self._set_table_rows(rows)
         self._set_status(
-            f"Measuring layer '{self.measurement_image_layer.name}' ({plane_label}) with {len(rows)} line(s)."
+            f"Measuring layer '{self.measurement_image_layer.name}' ({plane_label}) with {len(rows)} line(s) using {fit_name} fitting."
         )
 
 

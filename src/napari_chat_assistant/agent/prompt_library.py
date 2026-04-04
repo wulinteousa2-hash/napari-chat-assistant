@@ -29,11 +29,15 @@ DEFAULT_PROMPTS = [
     "for the current viewer, prefer built-in tools, but if none fit then generate safe napari code and explain the tradeoff",
     "open SAM2 Setup from Advanced and explain what each field means",
     "improve my prompt first, then answer in markdown with bullets and short sections",
+    "create an analysis montage from the selected 2D images with a 1x3 layout, spacing 2, tile boxes on, and a blank mask layer",
+    "create an analysis montage from these image layers in a 2x2 layout for ROI and mask work",
+    "split this montage mask back to the source images as per-image labels layers",
+    "split these montage points back to the original source images as per-image points layers",
 ]
 
 DEFAULT_CODE_SNIPPETS = [
     {
-        "title": "Demo Pack: EM 2D SNR Sweep",
+        "title": "Synthetic 2D SNR Sweep Gray",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -106,10 +110,10 @@ def apply_result(payload):
 
 run_in_background(compute, apply_result, label="Generate EM 2D SNR sweep")
 """.strip(),
-        "tags": ["demo", "em", "grayscale", "2d", "snr", "labels"],
+        "tags": ["synthetic", "grayscale", "2d", "snr", "labels"],
     },
     {
-        "title": "Demo Pack: EM 3D SNR Sweep",
+        "title": "Synthetic 3D SNR Sweep Gray",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -183,10 +187,10 @@ def apply_result(payload):
 
 run_in_background(compute, apply_result, label="Generate EM 3D SNR sweep")
 """.strip(),
-        "tags": ["demo", "em", "grayscale", "3d", "snr", "labels"],
+        "tags": ["synthetic", "grayscale", "3d", "snr", "labels"],
     },
     {
-        "title": "Demo Pack: RGB Cells 2D SNR Sweep",
+        "title": "Synthetic 2D SNR Sweep RGB",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -269,10 +273,10 @@ def apply_result(payload):
 
 run_in_background(compute, apply_result, label="Generate RGB cells 2D SNR sweep")
 """.strip(),
-        "tags": ["demo", "rgb", "fluorescent", "2d", "snr", "labels"],
+        "tags": ["synthetic", "rgb", "fluorescent", "2d", "snr", "labels"],
     },
     {
-        "title": "Demo Pack: RGB Cells 3D SNR Sweep",
+        "title": "Synthetic 3D SNR Sweep RGB",
         "code": """
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -455,6 +459,60 @@ def apply_result(payload):
 run_in_background(compute, apply_result, label="Generate messy masks demo pack")
 """.strip(),
         "tags": ["demo", "labels", "cleanup", "2d", "3d", "mask"],
+    },
+    {
+        "title": "Workflow Template: Analysis Montage Create And Split",
+        "code": """
+from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+
+
+def run_tool(tool_name, arguments):
+    prepared = prepare_tool_job(viewer, tool_name, arguments)
+    if prepared["mode"] == "immediate" and "job" not in prepared:
+        print(prepared["message"])
+        return prepared
+    if prepared["mode"] == "worker":
+        result = run_tool_job(prepared["job"])
+        message = apply_tool_job_result(viewer, result)
+        print(message)
+        return result
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+    print(message)
+    return result
+
+
+# Step 1: build a composite montage canvas from existing 2D grayscale image layers.
+run_tool(
+    "create_analysis_montage",
+    {
+        "layer_names": ["img_a", "img_b", "img_c"],
+        "rows": 1,
+        "columns": 3,
+        "spacing": 2,
+        "show_tile_boxes": True,
+        "create_mask_layer": True,
+    },
+)
+
+
+# Step 2: edit the montage labels layer manually in napari.
+# Example layer names created by the tool:
+# - analysis_montage
+# - analysis_montage_mask
+# - analysis_montage_tiles
+
+
+# Step 3: split montage annotations back to per-source layers.
+run_tool(
+    "split_montage_annotations_to_sources",
+    {
+        "annotation_layer": "analysis_montage_mask",
+        "montage_layer": "analysis_montage",
+    },
+)
+""".strip(),
+        "tags": ["workflow", "montage", "analysis", "labels", "points", "template"],
     },
 ]
 

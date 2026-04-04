@@ -95,6 +95,53 @@ def test_run_mask_op_creates_snapshot_before_mutation(make_napari_viewer_proxy):
     assert "Saved snapshot [mask_a_assistant_snapshot_01]" in message
 
 
+def test_run_mask_op_convert_to_mask_replaces_multilabel_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    labels = np.array([[0, 2, 0], [3, 0, 4], [0, 0, 0]], dtype=np.int32)
+    viewer.add_labels(labels.copy(), name="mask_a")
+
+    result = run_tool_job(prepare_tool_job(viewer, "run_mask_op", {"op": "convert_to_mask"})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    converted = np.asarray(viewer.layers["mask_a"].data)
+    assert np.array_equal(converted, np.array([[0, 1, 0], [1, 0, 1], [0, 0, 0]], dtype=np.int32))
+    assert "applied convert_to_mask to [mask_a]" in message.lower()
+
+
+def test_run_mask_op_distance_map_adds_image_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((7, 7), dtype=np.uint8)
+    data[2:5, 2:5] = 1
+    viewer.add_labels(data, name="mask_a", scale=(1.0, 2.0), translate=(3.0, 4.0))
+
+    result = run_tool_job(prepare_tool_job(viewer, "run_mask_op", {"op": "distance_map"})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_distance_map" in viewer.layers
+    layer = viewer.layers["mask_a_distance_map"]
+    assert layer.data.shape == (7, 7)
+    assert tuple(layer.scale) == (1.0, 2.0)
+    assert tuple(layer.translate) == (3.0, 4.0)
+    assert "Created [mask_a_distance_map] from [mask_a] using distance_map." in message
+
+
+def test_run_mask_op_watershed_adds_labels_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((9, 9), dtype=np.uint8)
+    data[2:4, 2:4] = 1
+    data[2:4, 5:7] = 1
+    data[4:6, 3:6] = 1
+    viewer.add_labels(data, name="mask_a")
+
+    result = run_tool_job(prepare_tool_job(viewer, "run_mask_op", {"op": "watershed"})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_watershed" in viewer.layers
+    watershed_layer = viewer.layers["mask_a_watershed"]
+    assert int(np.max(np.asarray(watershed_layer.data))) >= 1
+    assert "Created [mask_a_watershed] from [mask_a] using watershed." in message
+
+
 def test_preview_threshold_batch_creates_named_preview_per_layer(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     viewer.add_image(np.arange(16, dtype=np.float32).reshape(4, 4), name="image_a")
@@ -118,6 +165,319 @@ def test_gaussian_denoise_adds_output_image_layer(make_napari_viewer_proxy):
     assert "image_a_gaussian" in viewer.layers
     layer = viewer.layers["image_a_gaussian"]
     assert tuple(layer.scale) == (2.0, 3.0)
+
+
+def test_delete_layers_removes_named_shape_layers(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_shapes([np.array([[0.0, 0.0], [0.0, 5.0], [5.0, 5.0]])], shape_type="polygon", name="shape_a")
+    viewer.add_shapes([np.array([[1.0, 1.0], [1.0, 6.0], [6.0, 6.0]])], shape_type="polygon", name="shape_b")
+    viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a")
+
+    prepared = prepare_tool_job(viewer, "delete_layers", {"layer_names": ["shape_a", "shape_b"]})
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert "shape_a" not in viewer.layers
+    assert "shape_b" not in viewer.layers
+    assert "image_a" in viewer.layers
+    assert "Deleted 2 layer(s): [shape_a], [shape_b]." == message
+
+
+def test_delete_layers_removes_all_shapes_layers_by_type(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_shapes(
+        [np.array([[0.0, 0.0], [0.0, 5.0], [5.0, 5.0]])], shape_type="polygon", name="template_profile_line"
+    )
+    viewer.add_shapes(
+        [np.array([[1.0, 1.0], [1.0, 6.0], [6.0, 6.0]])], shape_type="polygon", name="template_intensity_roi"
+    )
+    viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="em_2d_snr_mid")
+    viewer.add_labels(np.zeros((8, 8), dtype=np.uint8), name="em_2d_mask")
+
+    prepared = prepare_tool_job(viewer, "delete_layers", {"layer_type": "shapes"})
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert "template_profile_line" not in viewer.layers
+    assert "template_intensity_roi" not in viewer.layers
+    assert "em_2d_snr_mid" in viewer.layers
+    assert "em_2d_mask" in viewer.layers
+    assert "Deleted 2 [shapes] layer(s): [template_profile_line], [template_intensity_roi]." == message
+
+
+def test_delete_all_layers_removes_everything(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a")
+    viewer.add_labels(np.zeros((8, 8), dtype=np.uint8), name="mask_a")
+    viewer.add_shapes([np.array([[0.0, 0.0], [0.0, 5.0], [5.0, 5.0]])], shape_type="polygon", name="roi_a")
+
+    message = apply_tool_job_result(viewer, run_tool_job(prepare_tool_job(viewer, "delete_all_layers", {})["job"]))
+
+    assert len(viewer.layers) == 0
+    assert message == "Deleted all 3 layer(s): [image_a], [mask_a], [roi_a]."
+
+
+def test_hide_all_layers_turns_every_layer_invisible(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a")
+    viewer.add_labels(np.zeros((8, 8), dtype=np.uint8), name="mask_a")
+
+    message = apply_tool_job_result(viewer, run_tool_job(prepare_tool_job(viewer, "hide_all_layers", {})["job"]))
+
+    assert all(not bool(layer.visible) for layer in viewer.layers)
+    assert message == "Hid all 2 layer(s)."
+
+
+def test_show_all_except_layers_hides_named_layers_and_shows_others(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a")
+    mask = viewer.add_labels(np.zeros((8, 8), dtype=np.uint8), name="mask_a")
+    roi = viewer.add_shapes([np.array([[0.0, 0.0], [0.0, 5.0], [5.0, 5.0]])], shape_type="polygon", name="roi_a")
+    image.visible = False
+    mask.visible = False
+    roi.visible = False
+
+    message = apply_tool_job_result(
+        viewer,
+        run_tool_job(prepare_tool_job(viewer, "show_all_except_layers", {"layer_names": ["mask_a"]})["job"]),
+    )
+
+    assert bool(image.visible) is True
+    assert bool(mask.visible) is False
+    assert bool(roi.visible) is True
+    assert message == "Showed all layers except 1 layer(s): [mask_a]."
+
+
+def test_show_only_layers_defaults_to_selected_layer_when_no_names_provided(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a")
+    mask = viewer.add_labels(np.zeros((8, 8), dtype=np.uint8), name="mask_a")
+    viewer.layers.selection.active = image
+
+    message = apply_tool_job_result(viewer, run_tool_job(prepare_tool_job(viewer, "show_only_layers", {})["job"]))
+
+    assert bool(image.visible) is True
+    assert bool(mask.visible) is False
+    assert message == "Showing only 1 layer(s): [image_a]."
+
+
+def test_set_layer_scale_applies_scalar_to_selected_2d_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = viewer.add_image(np.zeros((8, 8), dtype=np.float32), name="image_a", scale=(2.0, 3.0))
+    viewer.layers.selection.active = image
+
+    prepared = prepare_tool_job(viewer, "set_layer_scale", {"scale": 0.1})
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert tuple(image.scale) == (0.1, 0.1)
+    assert message == "Set scale for [image_a] to (0.1, 0.1)."
+
+
+def test_set_layer_scale_resets_named_3d_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((4, 5, 6), dtype=np.float32), name="volume_a", scale=(2.0, 0.5, 0.25))
+
+    prepared = prepare_tool_job(viewer, "set_layer_scale", {"layer_name": "volume_a", "scale": 1.0})
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert tuple(viewer.layers["volume_a"].scale) == (1.0, 1.0, 1.0)
+    assert message == "Set scale for [volume_a] to (1.0, 1.0, 1.0)."
+
+
+def test_create_analysis_montage_builds_composite_image_mask_and_tile_boxes(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.ones((4, 6), dtype=np.float32), name="img_a")
+    viewer.add_image(np.ones((2, 4), dtype=np.float32) * 2.0, name="img_b")
+    viewer.add_image(np.ones((3, 5), dtype=np.float32) * 3.0, name="img_c")
+    viewer.add_image(np.ones((4, 4, 4), dtype=np.float32), name="volume_a")
+
+    prepared = prepare_tool_job(
+        viewer,
+        "create_analysis_montage",
+        {"layer_names": ["img_a", "img_b", "img_c"], "rows": 2, "columns": 2, "spacing": 2, "show_tile_boxes": True},
+    )
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert "analysis_montage" in viewer.layers
+    assert "analysis_montage_mask" in viewer.layers
+    assert "analysis_montage_tiles" in viewer.layers
+    montage = viewer.layers["analysis_montage"]
+    mask = viewer.layers["analysis_montage_mask"]
+    boxes = viewer.layers["analysis_montage_tiles"]
+    assert montage.data.shape == (10, 14)
+    assert mask.data.shape == (10, 14)
+    assert len(boxes.data) == 3
+    metadata = montage.metadata["montage_canvas"]
+    assert metadata["purpose"] == "analysis"
+    assert metadata["layout"]["rows"] == 2
+    assert metadata["layout"]["columns"] == 2
+    assert metadata["layout"]["spacing"] == 2
+    assert metadata["layout"]["tile_size"] == [4, 6]
+    assert [item["source_layer"] for item in metadata["created_from"]] == ["img_a", "img_b", "img_c"]
+    assert metadata["linked_outputs"]["montage_labels_layer"] == "analysis_montage_mask"
+    assert mask.metadata["montage_canvas"]["role"] == "mask"
+    assert boxes.metadata["montage_canvas"]["role"] == "tile_boxes"
+    assert "Created analysis montage [analysis_montage] from 3 image layer(s) with grid=2x2 spacing=2." in message
+
+
+def test_create_analysis_montage_uses_selected_2d_images_by_default(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.arange(9, dtype=np.float32).reshape(3, 3), name="img_a")
+    image_b = viewer.add_image(np.arange(16, dtype=np.float32).reshape(4, 4), name="img_b")
+    viewer.layers.selection.add(image_a)
+    viewer.layers.selection.add(image_b)
+
+    prepared = prepare_tool_job(viewer, "create_analysis_montage", {"columns": 2, "create_mask_layer": False, "show_tile_boxes": False})
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert "analysis_montage" in viewer.layers
+    assert "analysis_montage_mask" not in viewer.layers
+    assert "analysis_montage_tiles" not in viewer.layers
+    montage = viewer.layers["analysis_montage"]
+    assert montage.metadata["montage_canvas"]["created_from"][0]["source_layer"] == "img_a"
+    assert montage.metadata["montage_canvas"]["created_from"][1]["source_layer"] == "img_b"
+    assert montage.data.shape == (4, 8)
+    assert "mask_layer=false tile_boxes=false." in message
+
+
+def test_split_montage_annotations_to_sources_exports_labels_per_image(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.ones((2, 2), dtype=np.float32), name="img_a", scale=(1.5, 2.5), translate=(10.0, 20.0))
+    viewer.add_image(np.ones((2, 2), dtype=np.float32) * 2.0, name="img_b", scale=(3.0, 4.0), translate=(30.0, 40.0))
+
+    message = apply_tool_job_result(
+        viewer,
+        run_tool_job(
+            prepare_tool_job(
+                viewer,
+                "create_analysis_montage",
+                {"layer_names": ["img_a", "img_b"], "rows": 1, "columns": 2, "spacing": 1},
+            )["job"]
+        ),
+    )
+
+    assert "Created analysis montage [analysis_montage]" in message
+    montage_mask = viewer.layers["analysis_montage_mask"]
+    montage_mask.data[0:2, 0:2] = np.array([[1, 0], [0, 1]], dtype=np.uint8)
+    montage_mask.data[0:2, 3:5] = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+
+    split_message = apply_tool_job_result(
+        viewer,
+        run_tool_job(
+            prepare_tool_job(
+                viewer,
+                "split_montage_annotations_to_sources",
+                {"annotation_layer": "analysis_montage_mask", "montage_layer": "analysis_montage"},
+            )["job"]
+        ),
+    )
+
+    assert "img_a_analysis_montage_mask" in viewer.layers
+    assert "img_b_analysis_montage_mask" in viewer.layers
+    split_a = viewer.layers["img_a_analysis_montage_mask"]
+    split_b = viewer.layers["img_b_analysis_montage_mask"]
+    assert tuple(split_a.scale) == (1.5, 2.5)
+    assert tuple(split_a.translate) == (10.0, 20.0)
+    assert tuple(split_b.scale) == (3.0, 4.0)
+    assert tuple(split_b.translate) == (30.0, 40.0)
+    assert np.array_equal(np.asarray(split_a.data), np.array([[1, 0], [0, 1]], dtype=np.uint8))
+    assert np.array_equal(np.asarray(split_b.data), np.array([[0, 1], [1, 0]], dtype=np.uint8))
+    assert split_a.metadata["montage_split"]["source_layer"] == "img_a"
+    assert "Split montage labels [analysis_montage_mask] into 2 per-source layer(s)" in split_message
+
+
+def test_split_montage_annotations_to_sources_exports_points_per_image(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.ones((2, 2), dtype=np.float32), name="img_a", scale=(1.0, 1.0), translate=(5.0, 6.0))
+    viewer.add_image(np.ones((2, 2), dtype=np.float32) * 2.0, name="img_b", scale=(2.0, 3.0), translate=(7.0, 8.0))
+
+    apply_tool_job_result(
+        viewer,
+        run_tool_job(
+            prepare_tool_job(
+                viewer,
+                "create_analysis_montage",
+                {"layer_names": ["img_a", "img_b"], "rows": 1, "columns": 2, "spacing": 1, "create_mask_layer": False},
+            )["job"]
+        ),
+    )
+    viewer.add_points(np.array([[0.5, 0.5], [1.5, 3.5]], dtype=np.float32), name="montage_points")
+
+    split_message = apply_tool_job_result(
+        viewer,
+        run_tool_job(
+            prepare_tool_job(
+                viewer,
+                "split_montage_annotations_to_sources",
+                {"annotation_layer": "montage_points", "montage_layer": "analysis_montage"},
+            )["job"]
+        ),
+    )
+
+    assert "img_a_montage_points" in viewer.layers
+    assert "img_b_montage_points" in viewer.layers
+    points_a = viewer.layers["img_a_montage_points"]
+    points_b = viewer.layers["img_b_montage_points"]
+    assert tuple(points_a.scale) == (1.0, 1.0)
+    assert tuple(points_a.translate) == (5.0, 6.0)
+    assert tuple(points_b.scale) == (2.0, 3.0)
+    assert tuple(points_b.translate) == (7.0, 8.0)
+    assert np.allclose(np.asarray(points_a.data), np.array([[0.5, 0.5]], dtype=np.float32))
+    assert np.allclose(np.asarray(points_b.data), np.array([[1.5, 0.5]], dtype=np.float32))
+    assert points_b.metadata["montage_split"]["source_kind"] == "points"
+    assert "with 2 point(s)" in split_message
+
+
+def test_edit_mask_in_roi_applies_operation_only_inside_shapes_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((8, 8), dtype=np.uint8)
+    data[2:6, 2:6] = 1
+    data[3, 4] = 0
+    viewer.add_labels(data, name="mask_a", scale=(1.5, 2.5), translate=(10.0, 20.0))
+    viewer.add_shapes(
+        [np.array([[2.0, 2.0], [2.0, 6.0], [6.0, 6.0], [6.0, 2.0]], dtype=np.float32)],
+        shape_type="rectangle",
+        name="roi_a",
+    )
+
+    prepared = prepare_tool_job(
+        viewer,
+        "edit_mask_in_roi",
+        {"mask_layer": "mask_a", "roi_layer": "roi_a", "op": "fill_holes"},
+    )
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    assert "mask_a_fill_holes_roi" in viewer.layers
+    edited = viewer.layers["mask_a_fill_holes_roi"]
+    assert tuple(edited.scale) == (1.5, 2.5)
+    assert tuple(edited.translate) == (10.0, 20.0)
+    assert int(np.asarray(edited.data)[3, 4]) == 1
+    assert np.array_equal(np.asarray(edited.data)[:2, :], data[:2, :])
+    assert "Applied [fill_holes] to [mask_a] only inside ROI [roi_a]" in message
+
+
+def test_edit_mask_in_roi_keeps_global_mask_unchanged_outside_roi(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    data = np.zeros((9, 9), dtype=np.uint8)
+    data[1, 1] = 1
+    data[4:7, 4:7] = 1
+    viewer.add_labels(data, name="mask_a")
+    viewer.add_shapes(
+        [np.array([[3.0, 3.0], [3.0, 8.0], [8.0, 8.0], [8.0, 3.0]], dtype=np.float32)],
+        shape_type="rectangle",
+        name="roi_big",
+    )
+
+    prepared = prepare_tool_job(
+        viewer,
+        "edit_mask_in_roi",
+        {"mask_layer": "mask_a", "roi_layer": "roi_big", "op": "remove_small", "min_size": 4},
+    )
+    message = apply_tool_job_result(viewer, run_tool_job(prepared["job"]))
+
+    edited = viewer.layers["mask_a_remove_small_roi"]
+    edited_data = np.asarray(edited.data)
+    assert int(edited_data[1, 1]) == 1
+    assert int(np.sum(edited_data[4:7, 4:7])) == 9
+    assert "min_size=4" in message
 
 
 def test_extract_axon_interiors_adds_labels_layer_from_dark_ring_enclosure(make_napari_viewer_proxy):
@@ -579,3 +939,52 @@ def test_sam_segment_from_points_reports_missing_backend_cleanly(make_napari_vie
     assert prepared["job"]["tool_name"] == "sam_segment_from_points"
     assert prepared["job"]["image_layer_name"] == "image_a"
     assert prepared["job"]["points_layer_name"] == "points_a"
+
+
+def test_sam_auto_segment_adds_labels_layer_when_backend_returns_mask(make_napari_viewer_proxy, monkeypatch):
+    from napari_chat_assistant.agent.tools_builtin import workbench as wb
+
+    viewer = make_napari_viewer_proxy()
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    viewer.add_image(image, name="image_a")
+
+    def fake_segment_image_auto(data, *, model_name=None):
+        del model_name
+        return (np.asarray(data) > 50).astype(np.int32), "fake-auto"
+
+    monkeypatch.setattr(wb, "segment_image_auto", fake_segment_image_auto)
+
+    prepared = prepare_tool_job(viewer, "sam_auto_segment", {"image_layer": "image_a"})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "Auto-segmented [image_a]" in message
+    assert "fake-auto" in message
+    assert "image_a_sam2_auto" in viewer.layers
+
+
+def test_sam_refine_mask_adds_refined_labels_layer(make_napari_viewer_proxy, monkeypatch):
+    from napari_chat_assistant.agent.tools_builtin import workbench as wb
+
+    viewer = make_napari_viewer_proxy()
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    mask = np.zeros((10, 10), dtype=np.int32)
+    mask[2:7, 2:7] = 1
+    viewer.add_image(image, name="image_a")
+    viewer.add_labels(mask, name="mask_a")
+
+    def fake_refine_mask_from_mask(data, *, mask, roi_mask=None, model_name=None):
+        del data, roi_mask, model_name
+        refined = np.asarray(mask, dtype=np.int32).copy()
+        refined[1:8, 1:8] = np.maximum(refined[1:8, 1:8], 1)
+        return refined, "fake-refine"
+
+    monkeypatch.setattr(wb, "refine_mask_from_mask", fake_refine_mask_from_mask)
+
+    prepared = prepare_tool_job(viewer, "sam_refine_mask", {"image_layer": "image_a", "mask_layer": "mask_a"})
+    result = run_tool_job(prepared["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "Refined [mask_a] on [image_a]" in message
+    assert "fake-refine" in message
+    assert "mask_a_sam2_refined" in viewer.layers

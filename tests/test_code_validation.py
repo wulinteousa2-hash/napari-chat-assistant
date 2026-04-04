@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import numpy as np
 
-from napari_chat_assistant.agent.code_validation import build_code_repair_context, validate_generated_code
+from napari_chat_assistant.agent.code_validation import (
+    build_code_repair_context,
+    normalize_generated_code_if_needed,
+    validate_generated_code,
+)
 
 
 def test_validate_generated_code_rejects_uint8_inplace_randint_add():
@@ -52,6 +57,26 @@ def test_validate_generated_code_rejects_missing_napari_symbol_import():
     assert report.errors == []
     assert report.has_blocking_issues("strict")
     assert not report.has_blocking_issues("permissive")
+
+
+def test_normalize_generated_code_strips_run_in_background_napari_import():
+    normalized, report = normalize_generated_code_if_needed(
+        """
+from napari.utils import run_in_background
+
+def compute():
+    return 1
+
+def apply_result(payload):
+    print(payload)
+
+run_in_background(compute, apply_result, label="demo")
+"""
+    )
+
+    assert "from napari.utils import run_in_background" not in normalized
+    assert report.errors == []
+    assert report.warnings == []
 
 
 def test_validate_generated_code_rejects_missing_viewer_method():
@@ -155,3 +180,61 @@ viewer.add_histogram(data)
 
 def test_build_code_repair_context_ignores_regular_non_code_requests():
     assert build_code_repair_context("show all images in grid") is None
+
+
+def test_build_code_repair_context_includes_layer_binding_hints_for_template_images(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.asarray([[1, 2], [3, 4]], dtype=np.float32), name="sample_a")
+    viewer.add_image(np.asarray([[5, 6], [7, 8]], dtype=np.float32), name="sample_b")
+    viewer.layers.selection.active = image_a
+
+    context = build_code_repair_context(
+        """
+Refine this code:
+```python
+from napari_chat_assistant.agent.dispatcher import prepare_tool_job
+prepared = prepare_tool_job(
+    viewer,
+    "create_analysis_montage",
+    {"layer_names": ["img_a", "img_b"], "rows": 1, "columns": 2},
+)
+```
+""",
+        viewer=viewer,
+    )
+
+    assert context is not None
+    hints = context["layer_binding_hints"]
+    assert hints["selected_layer_name"] == "sample_a"
+    assert hints["layer_candidates"]["image"] == ["sample_a", "sample_b"]
+    placeholder = next(item for item in hints["placeholder_bindings"] if item["argument"] == "layer_names")
+    assert placeholder["expected_kind"] == "image"
+    assert placeholder["suggested_layers"] == ["sample_a", "sample_b"]
+
+
+def test_build_code_repair_context_includes_binding_hints_for_roi_placeholders(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.asarray([[1, 2], [3, 4]], dtype=np.float32), name="sample_a")
+    roi = viewer.add_shapes([], name="sample_a_intensity_roi")
+    viewer.layers.selection.active = roi
+
+    context = build_code_repair_context(
+        """
+Please refine this code:
+```python
+prepared = prepare_tool_job(
+    viewer,
+    "extract_roi_values",
+    {"image_layer": "img_a", "roi_layer": "roi_a"},
+)
+```
+""",
+        viewer=viewer,
+    )
+
+    assert context is not None
+    hints = context["layer_binding_hints"]
+    assert hints["selected_layer_kind"] == "shapes"
+    roi_binding = next(item for item in hints["placeholder_bindings"] if item["argument"] == "roi_layer")
+    assert roi_binding["expected_kind"] == "shapes"
+    assert roi_binding["suggested_layers"] == ["sample_a_intensity_roi"]

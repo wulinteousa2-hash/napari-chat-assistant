@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-chat-assistant"
-version = "1.6.1"
-description = "Local chat assistant scaffold for napari image-analysis workflows"
+version = "1.8.0"
+description = "Local AI and deterministic workbench for napari image-analysis workflows"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -28,9 +28,11 @@ classifiers = [
 dependencies = [
   "napari",
   "numpy",
+  "ome-zarr",
   "qtpy",
   "scipy",
   "scikit-image",
+  "zarr",
 ]
 
 [project.urls]

@@ -10,13 +10,15 @@ from skimage.measure import regionprops, regionprops_table
 from skimage.draw import polygon
 from skimage.filters import threshold_otsu
 from skimage.morphology import disk, remove_small_objects
-from skimage.segmentation import clear_border
+from skimage.segmentation import clear_border, watershed
 
 from napari_chat_assistant.agent.context import find_any_layer, find_image_layer, find_labels_layer
 from napari_chat_assistant.agent.image_ops import fill_holes, keep_largest_component, remove_small_components
 from napari_chat_assistant.agent.sam2_backend import (
     get_sam2_backend_status,
+    refine_mask_from_mask,
     propagate_volume_from_points,
+    segment_image_auto,
     segment_image_from_box,
     segment_image_from_points,
 )
@@ -412,6 +414,30 @@ def _resolve_presentation_layers(viewer, layer_names: object | None = None) -> l
     return [layer for layer in viewer.layers if isinstance(layer, (Image, Labels))]
 
 
+def _resolve_montage_image_layers(viewer, layer_names: object | None = None) -> list[Image]:
+    resolved: list[Image] = []
+    names = _parse_layer_names_argument(layer_names)
+    if names:
+        for name in names:
+            layer = find_any_layer(viewer, name)
+            if isinstance(layer, Image) and not getattr(layer, "rgb", False) and np.asarray(layer.data).ndim == 2:
+                resolved.append(layer)
+        return resolved
+
+    selected_layers = list(getattr(viewer.layers.selection, "_selected", []) or [])
+    selected_layers = [
+        layer for layer in selected_layers
+        if isinstance(layer, Image) and not getattr(layer, "rgb", False) and np.asarray(layer.data).ndim == 2
+    ]
+    if len(selected_layers) >= 2:
+        return selected_layers
+
+    return [
+        layer for layer in viewer.layers
+        if isinstance(layer, Image) and not getattr(layer, "rgb", False) and np.asarray(layer.data).ndim == 2
+    ]
+
+
 def _normalized_layout_shape(layout: object) -> str:
     value = str(layout or "row").strip().lower()
     if value in {"row", "rows", "horizontal"}:
@@ -556,12 +582,283 @@ def _resolve_existing_layers(viewer, names: list[str]) -> list[object]:
     return resolved
 
 
+def _normalize_layer_type(value: object) -> str:
+    layer_type = str(value or "").strip().lower()
+    aliases = {
+        "shape": "shapes",
+        "shapes": "shapes",
+        "roi": "shapes",
+        "image": "image",
+        "images": "image",
+        "label": "labels",
+        "labels": "labels",
+        "mask": "labels",
+        "masks": "labels",
+        "point": "points",
+        "points": "points",
+    }
+    return aliases.get(layer_type, "")
+
+
+def _layer_matches_type(layer: object, layer_type: str) -> bool:
+    normalized = _normalize_layer_type(layer_type)
+    if normalized == "image":
+        return isinstance(layer, Image)
+    if normalized == "labels":
+        return isinstance(layer, Labels)
+    if normalized == "shapes":
+        return isinstance(layer, Shapes)
+    if normalized == "points":
+        return isinstance(layer, Points)
+    return False
+
+
+def _resolve_layers_by_type(viewer, layer_type: str) -> list[object]:
+    normalized = _normalize_layer_type(layer_type)
+    if not normalized or viewer is None:
+        return []
+    return [layer for layer in viewer.layers if _layer_matches_type(layer, normalized)]
+
+
+def _apply_mask_operation(data, *, op_name: str, radius: int = 1, min_size: int = 64) -> np.ndarray:
+    op = str(op_name or "").strip().lower()
+    binary = np.asarray(data) > 0
+    if op == "dilate":
+        return ndi.binary_dilation(binary, structure=disk(max(1, int(radius)))).astype(np.asarray(data).dtype)
+    if op == "erode":
+        return ndi.binary_erosion(binary, structure=disk(max(1, int(radius)))).astype(np.asarray(data).dtype)
+    if op == "open":
+        return ndi.binary_opening(binary, structure=disk(max(1, int(radius)))).astype(np.asarray(data).dtype)
+    if op == "close":
+        return ndi.binary_closing(binary, structure=disk(max(1, int(radius)))).astype(np.asarray(data).dtype)
+    if op == "convert_to_mask":
+        return binary.astype(np.asarray(data).dtype)
+    if op == "median":
+        return (ndi.median_filter(binary.astype(np.uint8), footprint=disk(max(1, int(radius)))) > 0).astype(np.asarray(data).dtype)
+    if op == "outline":
+        return (binary & ~ndi.binary_erosion(binary, structure=ndi.generate_binary_structure(binary.ndim, 1))).astype(
+            np.asarray(data).dtype
+        )
+    if op == "fill_holes":
+        return fill_holes(data)
+    if op == "skeletonize":
+        from skimage.morphology import skeletonize
+
+        return skeletonize(binary).astype(np.asarray(data).dtype)
+    if op == "distance_map":
+        return ndi.distance_transform_edt(binary).astype(np.float32, copy=False)
+    if op == "ultimate_points":
+        from skimage.morphology import local_maxima
+
+        distance = ndi.distance_transform_edt(binary)
+        return (local_maxima(distance) & binary).astype(np.int32, copy=False)
+    if op == "watershed":
+        from skimage.morphology import local_maxima
+
+        distance = ndi.distance_transform_edt(binary)
+        maxima = local_maxima(distance) & binary
+        markers, _ = ndi.label(maxima)
+        if int(np.max(markers)) == 0:
+            markers, _ = ndi.label(binary)
+        return watershed(-distance, markers=markers, mask=binary).astype(np.int32, copy=False)
+    if op == "voronoi":
+        markers, object_count = ndi.label(binary)
+        if object_count == 0:
+            return np.zeros_like(np.asarray(data), dtype=np.int32)
+        distance = ndi.distance_transform_edt(~binary)
+        return watershed(distance, markers=markers, mask=np.ones_like(binary, dtype=bool)).astype(np.int32, copy=False)
+    if op == "remove_small":
+        return remove_small_components(data, min_size=max(1, int(min_size)))
+    if op == "keep_largest":
+        return keep_largest_component(data)
+    raise ValueError(f"Unsupported mask operation: {op_name}")
+
+
+def _normalize_grid_dimensions(count: int, rows: int, columns: int) -> tuple[int, int]:
+    count = max(1, int(count))
+    rows = max(0, int(rows))
+    columns = max(0, int(columns))
+    if rows <= 0 and columns <= 0:
+        return _auto_grid_shape(count)
+    if rows <= 0:
+        rows = max(1, int(np.ceil(count / max(1, columns))))
+    if columns <= 0:
+        columns = max(1, int(np.ceil(count / max(1, rows))))
+    if rows * columns < count:
+        raise ValueError(f"Grid {rows}x{columns} is too small for {count} image layers.")
+    return rows, columns
+
+
+def _build_montage_canvas(
+    layers: list[Image],
+    *,
+    rows: int,
+    columns: int,
+    spacing: int,
+    background_value: float,
+) -> tuple[np.ndarray, list[dict[str, object]], tuple[int, int]]:
+    if not layers:
+        raise ValueError("Need at least one image layer to build a montage canvas.")
+    source_arrays = [np.asarray(layer.data) for layer in layers]
+    max_height = max(int(array.shape[0]) for array in source_arrays)
+    max_width = max(int(array.shape[1]) for array in source_arrays)
+    tile_height = max(1, max_height)
+    tile_width = max(1, max_width)
+    canvas_height = rows * tile_height + max(0, rows - 1) * spacing
+    canvas_width = columns * tile_width + max(0, columns - 1) * spacing
+    canvas = np.full((canvas_height, canvas_width), fill_value=float(background_value), dtype=np.float32)
+    placements: list[dict[str, object]] = []
+    for index, (layer, array) in enumerate(zip(layers, source_arrays)):
+        row = index // columns
+        col = index % columns
+        tile_y0 = row * (tile_height + spacing)
+        tile_x0 = col * (tile_width + spacing)
+        height = int(array.shape[0])
+        width = int(array.shape[1])
+        content_y0 = tile_y0 + max(0, (tile_height - height) // 2)
+        content_x0 = tile_x0 + max(0, (tile_width - width) // 2)
+        content_y1 = content_y0 + height
+        content_x1 = content_x0 + width
+        canvas[content_y0:content_y1, content_x0:content_x1] = np.asarray(array, dtype=np.float32)
+        placements.append(
+            {
+                "source_layer": layer.name,
+                "source_kind": "image",
+                "source_shape": [height, width],
+                "source_dtype": str(getattr(array, "dtype", "")),
+                "tile_index": index,
+                "grid_position": [row, col],
+                "canvas_bbox": {
+                    "y0": int(tile_y0),
+                    "y1": int(tile_y0 + tile_height),
+                    "x0": int(tile_x0),
+                    "x1": int(tile_x0 + tile_width),
+                },
+                "content_bbox": {
+                    "y0": int(content_y0),
+                    "y1": int(content_y1),
+                    "x0": int(content_x0),
+                    "x1": int(content_x1),
+                },
+                "padding": {
+                    "top": int(content_y0 - tile_y0),
+                    "bottom": int(tile_y0 + tile_height - content_y1),
+                    "left": int(content_x0 - tile_x0),
+                    "right": int(tile_x0 + tile_width - content_x1),
+                },
+            }
+        )
+    return canvas, placements, (tile_height, tile_width)
+
+
+def _montage_metadata(
+    *,
+    montage_id: str,
+    purpose: str,
+    placements: list[dict[str, object]],
+    rows: int,
+    columns: int,
+    spacing: int,
+    tile_size: tuple[int, int],
+    canvas_shape: tuple[int, int],
+    background_value: float,
+    linked_outputs: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "montage_id": str(montage_id),
+        "purpose": str(purpose),
+        "layout": {
+            "mode": "grid",
+            "rows": int(rows),
+            "columns": int(columns),
+            "spacing": int(spacing),
+            "tile_size": [int(tile_size[0]), int(tile_size[1])],
+            "size_mode": "pad_to_max",
+            "alignment": "center",
+            "fill_order": "row_major",
+        },
+        "canvas_shape": [int(canvas_shape[0]), int(canvas_shape[1])],
+        "canvas_dtype": "float32",
+        "background_value": float(background_value),
+        "created_from": placements,
+        "linked_outputs": dict(linked_outputs),
+    }
+
+
+def _montage_metadata_from_layer(layer) -> dict[str, object] | None:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    montage = metadata.get("montage_canvas")
+    return dict(montage) if isinstance(montage, dict) else None
+
+
+def _resolve_annotation_layer(viewer, annotation_layer_name: object | None = None):
+    name = str(annotation_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        return layer if isinstance(layer, (Labels, Points)) else None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, (Labels, Points)):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        if isinstance(layer, (Labels, Points)):
+            return layer
+    return None
+
+
+def _resolve_montage_reference_layer(viewer, montage_layer_name: object | None = None, annotation_layer=None):
+    name = str(montage_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        return layer if _montage_metadata_from_layer(layer) is not None else None
+    if annotation_layer is not None and _montage_metadata_from_layer(annotation_layer) is not None:
+        return annotation_layer
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if _montage_metadata_from_layer(selected) is not None:
+        return selected
+    candidates = [layer for layer in viewer.layers if _montage_metadata_from_layer(layer) is not None] if viewer is not None else []
+    if not candidates:
+        return None
+    image_like = [layer for layer in candidates if isinstance(layer, Image)]
+    return image_like[0] if image_like else candidates[0]
+
+
+def _placement_content_bbox(placement: dict[str, object]) -> tuple[int, int, int, int]:
+    bbox = dict(placement.get("content_bbox", {}) or placement.get("canvas_bbox", {}) or {})
+    return (
+        int(bbox.get("y0", 0)),
+        int(bbox.get("y1", 0)),
+        int(bbox.get("x0", 0)),
+        int(bbox.get("x1", 0)),
+    )
+
+
+def _source_layer_transform(viewer, source_layer_name: str) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    source_layer = find_any_layer(viewer, source_layer_name)
+    if source_layer is None:
+        return (), ()
+    return tuple(getattr(source_layer, "scale", ())), tuple(getattr(source_layer, "translate", ()))
+
+
+def _slice_point_features(points_layer: Points, indices: list[int]):
+    features = getattr(points_layer, "features", None)
+    if features is None:
+        return None
+    try:
+        return features.iloc[indices].reset_index(drop=True)
+    except Exception:
+        try:
+            return {key: np.asarray(value)[indices] for key, value in dict(features).items()}
+        except Exception:
+            return None
+
+
 class ShowImageLayersInGridTool:
     spec = ToolSpec(
         name="show_image_layers_in_grid",
-        display_name="Show Image Layers In Grid",
-        category="presentation",
-        description="Show open image layers in napari grid view for side-by-side comparison.",
+        display_name="Quick Compare Grid",
+        category="grid_compare",
+        description="Use napari grid view to tile image layers for side-by-side comparison without moving layer data.",
         execution_mode="immediate",
         supported_layer_types=("image",),
         parameter_schema=(
@@ -569,7 +866,7 @@ class ShowImageLayersInGridTool:
             ParamSpec("spacing", "float", description="Optional grid spacing.", default=0.0, minimum=0.0),
         ),
         output_type="message",
-        ui_metadata={"panel_group": "Presentation"},
+        ui_metadata={"panel_group": "Grid Compare"},
         provenance_metadata={"algorithm": "napari_grid_view", "deterministic": True},
     )
 
@@ -637,14 +934,14 @@ class ShowImageLayersInGridTool:
 class HideImageGridViewTool:
     spec = ToolSpec(
         name="hide_image_grid_view",
-        display_name="Hide Image Grid View",
-        category="presentation",
-        description="Turn off napari grid view and restore hidden non-image layers.",
+        display_name="Turn Off Compare Grid",
+        category="grid_compare",
+        description="Turn off napari grid view and return to the normal overlapping layer view.",
         execution_mode="immediate",
         supported_layer_types=("image", "labels", "points", "shapes"),
         parameter_schema=(),
         output_type="message",
-        ui_metadata={"panel_group": "Presentation"},
+        ui_metadata={"panel_group": "Grid Compare"},
         provenance_metadata={"algorithm": "napari_grid_view", "deterministic": True},
     )
 
@@ -753,6 +1050,147 @@ class HideLayersTool:
         return f"Hid {len(layers)} layer(s): {hidden}."
 
 
+class HideAllLayersTool:
+    spec = ToolSpec(
+        name="hide_all_layers",
+        display_name="Hide All Layers",
+        category="visualization",
+        description="Hide every layer in the current viewer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        if len(ctx.viewer.layers) == 0:
+            return "No layers are open to hide."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        for layer in ctx.viewer.layers:
+            layer.visible = False
+        return f"Hid all {len(ctx.viewer.layers)} layer(s)."
+
+
+class DeleteAllLayersTool:
+    spec = ToolSpec(
+        name="delete_all_layers",
+        display_name="Delete All Layers",
+        category="viewer_editing",
+        description="Delete every layer in the current viewer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Viewer Editing"},
+        provenance_metadata={"algorithm": "layer_deletion", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        if len(ctx.viewer.layers) == 0:
+            return "No layers are open to delete."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_names": [str(layer.name) for layer in ctx.viewer.layers]},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        removed_names: list[str] = []
+        for layer_name in _parse_layer_names_argument(result.payload.get("layer_names", [])):
+            if find_any_layer(ctx.viewer, layer_name) is None:
+                continue
+            ctx.viewer.layers.remove(ctx.viewer.layers[layer_name])
+            removed_names.append(layer_name)
+        if not removed_names:
+            return "No layers were deleted."
+        removed = ", ".join(f"[{name}]" for name in removed_names)
+        return f"Deleted all {len(removed_names)} layer(s): {removed}."
+
+
+class DeleteLayersTool:
+    spec = ToolSpec(
+        name="delete_layers",
+        display_name="Delete Layers",
+        category="viewer_editing",
+        description="Delete specific layers by name or delete all layers of a given type.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Layer names to delete."),
+            ParamSpec("layer_type", "string", description="Optional layer type filter: image, labels, shapes, or points."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Viewer Editing"},
+        provenance_metadata={"algorithm": "layer_deletion", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        names = _parse_layer_names_argument(args.get("layer_names"))
+        requested_type = _normalize_layer_type(args.get("layer_type"))
+        if names:
+            layers = _resolve_existing_layers(ctx.viewer, names)
+        elif requested_type:
+            layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        else:
+            layers = []
+        if not layers:
+            if requested_type:
+                return f"No matching [{requested_type}] layers were found to delete."
+            return "Provide one or more layer names, or a layer_type such as shapes, to delete."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "layer_names": [layer.name for layer in layers],
+                "layer_type": requested_type,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layers = _resolve_existing_layers(ctx.viewer, _parse_layer_names_argument(result.payload.get("layer_names", [])))
+        if not layers:
+            requested_type = _normalize_layer_type(result.payload.get("layer_type"))
+            if requested_type:
+                return f"No usable [{requested_type}] layers were available to delete."
+            return "No usable layers were available to delete."
+        removed_names: list[str] = []
+        for layer in list(layers):
+            layer_name = layer.name
+            if find_any_layer(ctx.viewer, layer_name) is None:
+                continue
+            ctx.viewer.layers.remove(ctx.viewer.layers[layer_name])
+            removed_names.append(layer_name)
+        if not removed_names:
+            return "No layers were deleted."
+        removed = ", ".join(f"[{name}]" for name in removed_names)
+        requested_type = _normalize_layer_type(result.payload.get("layer_type"))
+        if requested_type and len(removed_names) == len(layers):
+            return f"Deleted {len(removed_names)} [{requested_type}] layer(s): {removed}."
+        return f"Deleted {len(removed_names)} layer(s): {removed}."
+
+
 class ShowOnlyLayersTool:
     spec = ToolSpec(
         name="show_only_layers",
@@ -771,6 +1209,10 @@ class ShowOnlyLayersTool:
 
     def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
         names = _parse_layer_names_argument((arguments or {}).get("layer_names"))
+        if not names:
+            selected = ctx.viewer.layers.selection.active if ctx.viewer is not None else None
+            if selected is not None:
+                names = [str(selected.name)]
         if not names:
             return "Provide at least one layer name to show exclusively."
         layers = _resolve_existing_layers(ctx.viewer, names)
@@ -795,6 +1237,50 @@ class ShowOnlyLayersTool:
             layer.visible = layer.name in selected
         shown = ", ".join(f"[{layer.name}]" for layer in layers)
         return f"Showing only {len(layers)} layer(s): {shown}."
+
+
+class ShowAllExceptLayersTool:
+    spec = ToolSpec(
+        name="show_all_except_layers",
+        display_name="Show All Except Layers",
+        category="visualization",
+        description="Show every layer except the specified layers, which will be hidden.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Layer names to keep hidden while all others are shown."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Visualization"},
+        provenance_metadata={"algorithm": "layer_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        names = _parse_layer_names_argument((arguments or {}).get("layer_names"))
+        if not names:
+            return "Provide at least one layer name to keep hidden."
+        layers = _resolve_existing_layers(ctx.viewer, names)
+        if not layers:
+            return "No matching layers were found to keep hidden."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_names": [layer.name for layer in layers]},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layers = _resolve_existing_layers(ctx.viewer, _parse_layer_names_argument(result.payload.get("layer_names", [])))
+        if not layers:
+            return "No usable layers were available to keep hidden."
+        hidden_names = {layer.name for layer in layers}
+        for layer in ctx.viewer.layers:
+            layer.visible = layer.name not in hidden_names
+        hidden = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Showed all layers except {len(layers)} layer(s): {hidden}."
 
 
 class ShowAllLayersTool:
@@ -830,12 +1316,87 @@ class ShowAllLayersTool:
         return f"Showed all {len(ctx.viewer.layers)} layer(s)."
 
 
+class SetLayerScaleTool:
+    spec = ToolSpec(
+        name="set_layer_scale",
+        display_name="Set Layer Scale",
+        category="viewer_editing",
+        description="Set a layer scale or pixel size deterministically on the selected or named layer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_name", "string", description="Optional layer name. Falls back to the selected layer."),
+            ParamSpec("scale", "float_or_list", description="Scalar or per-dimension scale value.", required=True),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Viewer Editing"},
+        provenance_metadata={"algorithm": "set_layer_scale", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layer_name = str(args.get("layer_name") or "").strip()
+        layer = find_any_layer(ctx.viewer, layer_name) if layer_name else None
+        if layer is None:
+            layer = ctx.viewer.layers.selection.active if ctx.viewer is not None else None
+        if layer is None:
+            return "No valid layer is selected to set scale."
+        if not hasattr(layer, "scale"):
+            return f"Layer [{getattr(layer, 'name', 'unknown')}] does not support scale."
+
+        scale_value = args.get("scale")
+        if scale_value is None:
+            return "Provide a scale value such as 0.1 or [1, 0.1, 0.1]."
+
+        ndim = int(getattr(layer, "ndim", np.asarray(getattr(layer, "data", np.asarray([]))).ndim or 1))
+        if isinstance(scale_value, (list, tuple)):
+            normalized = [
+                normalize_float(value, default=1.0, minimum=1e-9, maximum=1_000_000.0)
+                for value in scale_value
+            ]
+        else:
+            normalized = [normalize_float(scale_value, default=1.0, minimum=1e-9, maximum=1_000_000.0)]
+        if not normalized:
+            normalized = [1.0]
+        if len(normalized) == 1:
+            resolved_scale = tuple([float(normalized[0])] * ndim)
+        elif len(normalized) < ndim:
+            resolved_scale = tuple((normalized + [normalized[-1]] * ndim)[:ndim])
+        else:
+            resolved_scale = tuple(float(value) for value in normalized[:ndim])
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "layer_name": str(layer.name),
+                "scale": resolved_scale,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        layer = find_any_layer(ctx.viewer, payload.get("layer_name"))
+        if layer is None:
+            return f"Layer [{payload.get('layer_name', 'unknown')}] is no longer available."
+        resolved_scale = tuple(float(value) for value in payload.get("scale", ()))
+        if not resolved_scale:
+            return f"No valid scale was resolved for [{layer.name}]."
+        layer.scale = resolved_scale
+        return f"Set scale for [{layer.name}] to {resolved_scale}."
+
+
 class ArrangeLayersForPresentationTool:
     spec = ToolSpec(
         name="arrange_layers_for_presentation",
-        display_name="Arrange Layers For Presentation",
-        category="presentation",
-        description="Arrange image and labels layers into a row, column, grid, or repeated image-mask pairs for presentation.",
+        display_name="Create Presentation Layout",
+        category="presentation_layout",
+        description="Physically arrange image and labels layers into a row, column, montage grid, or image-mask pairs in the same viewer.",
         execution_mode="immediate",
         supported_layer_types=("image", "labels"),
         parameter_schema=(
@@ -848,7 +1409,7 @@ class ArrangeLayersForPresentationTool:
             ParamSpec("match_origin", "bool", description="Reset arranged layers to a shared top-left origin before layout offsets are applied.", default=True),
         ),
         output_type="message",
-        ui_metadata={"panel_group": "Presentation"},
+        ui_metadata={"panel_group": "Presentation Layout"},
         provenance_metadata={"algorithm": "layer_presentation_layout", "deterministic": True},
     )
 
@@ -929,6 +1490,315 @@ class ArrangeLayersForPresentationTool:
             f"{action} {len(arranged_names)} layer(s) with layout={layout} spacing={spacing:.6g}. "
             f"match_origin={str(match_origin).lower()} use_copies={str(use_copies).lower()}. {arranged_label}."
         )
+
+
+class CreateAnalysisMontageTool:
+    spec = ToolSpec(
+        name="create_analysis_montage",
+        display_name="Create Analysis Montage",
+        category="analysis_montage",
+        description="Create a composite montage canvas from 2D image layers for shared ROI and mask analysis.",
+        execution_mode="immediate",
+        supported_layer_types=("image",),
+        parameter_schema=(
+            ParamSpec("layer_names", "string_list", description="Optional ordered 2D image layer names to include."),
+            ParamSpec("rows", "int", description="Optional montage row count.", default=0, minimum=0),
+            ParamSpec("columns", "int", description="Optional montage column count.", default=0, minimum=0),
+            ParamSpec("spacing", "int", description="Pixel spacing between tiles.", default=0, minimum=0),
+            ParamSpec("show_tile_boxes", "bool", description="Add a Shapes layer showing tile boundaries.", default=True),
+            ParamSpec("create_mask_layer", "bool", description="Create a blank labels layer for montage annotation.", default=True),
+            ParamSpec("background_value", "float", description="Background fill value for padded regions.", default=0.0),
+        ),
+        output_type="image_layer",
+        ui_metadata={"panel_group": "Analysis Montage"},
+        provenance_metadata={"algorithm": "montage_canvas", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layers = _resolve_montage_image_layers(ctx.viewer, args.get("layer_names"))
+        if len(layers) < 2:
+            return "Need at least 2 grayscale 2D image layers to build an analysis montage."
+        try:
+            rows, columns = _normalize_grid_dimensions(
+                len(layers),
+                normalize_int(args.get("rows", 0), default=0, minimum=0, maximum=128),
+                normalize_int(args.get("columns", 0), default=0, minimum=0, maximum=128),
+            )
+        except ValueError as exc:
+            return str(exc)
+        spacing = normalize_int(args.get("spacing", 0), default=0, minimum=0, maximum=4096)
+        show_tile_boxes = bool(args.get("show_tile_boxes", True))
+        create_mask_layer = bool(args.get("create_mask_layer", True))
+        background_value = normalize_float(args.get("background_value", 0.0), default=0.0, minimum=-1_000_000.0, maximum=1_000_000.0)
+        montage_id = next_output_name(ctx.viewer, "analysis_montage")
+        output_name = montage_id
+        mask_name = next_output_name(ctx.viewer, f"{montage_id}_mask") if create_mask_layer else ""
+        boxes_name = next_output_name(ctx.viewer, f"{montage_id}_tiles") if show_tile_boxes else ""
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "layer_names": [layer.name for layer in layers],
+                "rows": rows,
+                "columns": columns,
+                "spacing": spacing,
+                "show_tile_boxes": show_tile_boxes,
+                "create_mask_layer": create_mask_layer,
+                "background_value": background_value,
+                "montage_id": montage_id,
+                "output_name": output_name,
+                "mask_name": mask_name,
+                "boxes_name": boxes_name,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        layer_names = [str(name).strip() for name in payload.get("layer_names", []) if str(name).strip()]
+        layers = [find_any_layer(ctx.viewer, name) for name in layer_names]
+        layers = [layer for layer in layers if isinstance(layer, Image) and not getattr(layer, "rgb", False) and np.asarray(layer.data).ndim == 2]
+        if len(layers) < 2:
+            return "No usable 2D image layers were available to build the analysis montage."
+
+        rows = int(payload.get("rows", 0) or 0)
+        columns = int(payload.get("columns", 0) or 0)
+        spacing = int(payload.get("spacing", 0) or 0)
+        background_value = float(payload.get("background_value", 0.0) or 0.0)
+        montage_array, placements, tile_size = _build_montage_canvas(
+            layers,
+            rows=rows,
+            columns=columns,
+            spacing=spacing,
+            background_value=background_value,
+        )
+        output_name = str(payload.get("output_name", "")).strip() or next_output_name(ctx.viewer, "analysis_montage")
+        mask_name = str(payload.get("mask_name", "")).strip()
+        boxes_name = str(payload.get("boxes_name", "")).strip()
+        montage_id = str(payload.get("montage_id", output_name)).strip() or output_name
+        linked_outputs = {
+            "montage_image_layer": output_name,
+            "montage_labels_layer": mask_name,
+            "tile_boxes_layer": boxes_name,
+        }
+        metadata = _montage_metadata(
+            montage_id=montage_id,
+            purpose="analysis",
+            placements=placements,
+            rows=rows,
+            columns=columns,
+            spacing=spacing,
+            tile_size=tile_size,
+            canvas_shape=tuple(int(v) for v in montage_array.shape),
+            background_value=background_value,
+            linked_outputs=linked_outputs,
+        )
+        image_layer = ctx.viewer.add_image(montage_array, name=output_name)
+        image_layer.metadata = dict(getattr(image_layer, "metadata", {}) or {})
+        image_layer.metadata["montage_canvas"] = metadata
+
+        if bool(payload.get("create_mask_layer", True)):
+            labels_layer = ctx.viewer.add_labels(np.zeros_like(montage_array, dtype=np.uint8), name=mask_name)
+            labels_layer.metadata = dict(getattr(labels_layer, "metadata", {}) or {})
+            labels_layer.metadata["montage_canvas"] = {
+                **metadata,
+                "role": "mask",
+                "source_montage_image": output_name,
+            }
+
+        if bool(payload.get("show_tile_boxes", True)):
+            rectangles = []
+            for placement in placements:
+                bbox = dict(placement.get("canvas_bbox", {}) or {})
+                y0 = float(bbox.get("y0", 0))
+                y1 = float(bbox.get("y1", 0))
+                x0 = float(bbox.get("x0", 0))
+                x1 = float(bbox.get("x1", 0))
+                rectangles.append(np.asarray([[y0, x0], [y0, x1], [y1, x1], [y1, x0]], dtype=np.float32))
+            boxes_layer = ctx.viewer.add_shapes(
+                rectangles,
+                shape_type="rectangle",
+                name=boxes_name,
+                edge_width=1.5,
+                edge_color="yellow",
+                face_color="transparent",
+            )
+            boxes_layer.metadata = dict(getattr(boxes_layer, "metadata", {}) or {})
+            boxes_layer.metadata["montage_canvas"] = {
+                **metadata,
+                "role": "tile_boxes",
+                "source_montage_image": output_name,
+            }
+
+        return (
+            f"Created analysis montage [{output_name}] from {len(layers)} image layer(s) "
+            f"with grid={rows}x{columns} spacing={spacing}. "
+            f"mask_layer={str(bool(payload.get('create_mask_layer', True))).lower()} "
+            f"tile_boxes={str(bool(payload.get('show_tile_boxes', True))).lower()}."
+        )
+
+
+class SplitMontageAnnotationsTool:
+    spec = ToolSpec(
+        name="split_montage_annotations_to_sources",
+        display_name="Split Montage Annotations To Sources",
+        category="analysis_montage",
+        description="Split montage-space labels or points back into per-source layers using stored montage metadata.",
+        execution_mode="immediate",
+        supported_layer_types=("labels", "points", "image"),
+        parameter_schema=(
+            ParamSpec("annotation_layer", "string", description="Montage-space Labels or Points layer."),
+            ParamSpec("montage_layer", "string", description="Optional montage image or montage labels layer."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Analysis Montage"},
+        provenance_metadata={"algorithm": "split_montage_annotations", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        annotation_layer = _resolve_annotation_layer(ctx.viewer, args.get("annotation_layer"))
+        if annotation_layer is None:
+            return "No valid montage annotation layer available. Select or name a Labels or Points layer."
+        if not isinstance(annotation_layer, (Labels, Points)):
+            return "Montage annotation splitting currently supports Labels or Points layers only."
+        montage_layer = _resolve_montage_reference_layer(ctx.viewer, args.get("montage_layer"), annotation_layer)
+        if montage_layer is None:
+            return "No montage canvas metadata was found. Select or name the montage image or montage mask layer."
+        metadata = _montage_metadata_from_layer(annotation_layer) or _montage_metadata_from_layer(montage_layer)
+        if metadata is None:
+            return "Selected layers do not contain montage canvas metadata."
+        placements = list(metadata.get("created_from", []) or [])
+        if not placements:
+            return "Montage metadata does not include any source-tile placements."
+        if isinstance(annotation_layer, Labels):
+            canvas_shape = tuple(int(v) for v in metadata.get("canvas_shape", []))
+            if canvas_shape and tuple(np.asarray(annotation_layer.data).shape) != canvas_shape:
+                return (
+                    f"Annotation layer [{annotation_layer.name}] shape {tuple(np.asarray(annotation_layer.data).shape)} "
+                    f"does not match montage canvas shape {canvas_shape}."
+                )
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "annotation_layer": annotation_layer.name,
+                "montage_layer": montage_layer.name,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        annotation_layer = _resolve_annotation_layer(ctx.viewer, payload.get("annotation_layer"))
+        montage_layer = _resolve_montage_reference_layer(ctx.viewer, payload.get("montage_layer"), annotation_layer)
+        if annotation_layer is None:
+            return "No usable montage annotation layer was available for splitting."
+        if montage_layer is None:
+            return "No usable montage layer with metadata was available for splitting."
+
+        metadata = _montage_metadata_from_layer(annotation_layer) or _montage_metadata_from_layer(montage_layer)
+        if metadata is None:
+            return "Montage metadata was not available during split."
+        placements = list(metadata.get("created_from", []) or [])
+        if not placements:
+            return "Montage metadata does not include source placements."
+
+        created_names: list[str] = []
+        point_total = 0
+        if isinstance(annotation_layer, Labels):
+            labels_data = np.asarray(annotation_layer.data)
+            for placement in placements:
+                source_layer_name = str(placement.get("source_layer", "")).strip()
+                if not source_layer_name:
+                    continue
+                y0, y1, x0, x1 = _placement_content_bbox(placement)
+                source_shape = tuple(int(v) for v in placement.get("source_shape", []) or labels_data[y0:y1, x0:x1].shape)
+                local_mask = np.asarray(labels_data[y0:y1, x0:x1]).copy()
+                if local_mask.shape != source_shape:
+                    local_mask = np.asarray(local_mask[: source_shape[0], : source_shape[1]])
+                scale, translate = _source_layer_transform(ctx.viewer, source_layer_name)
+                output_name = next_output_name(ctx.viewer, f"{source_layer_name}_{annotation_layer.name}")
+                split_layer = ctx.viewer.add_labels(local_mask, name=output_name, scale=scale, translate=translate)
+                split_layer.metadata = dict(getattr(split_layer, "metadata", {}) or {})
+                split_layer.metadata["montage_split"] = {
+                    "montage_id": metadata.get("montage_id"),
+                    "source_layer": source_layer_name,
+                    "annotation_layer": annotation_layer.name,
+                    "source_kind": "labels",
+                }
+                created_names.append(output_name)
+            if not created_names:
+                return "No per-source labels layers were created from the montage annotation."
+            created = ", ".join(f"[{name}]" for name in created_names[:6])
+            if len(created_names) > 6:
+                created += f" and {len(created_names) - 6} more"
+            return (
+                f"Split montage labels [{annotation_layer.name}] into {len(created_names)} per-source layer(s): {created}."
+            )
+
+        if isinstance(annotation_layer, Points):
+            point_data = np.asarray(annotation_layer.data, dtype=float)
+            if point_data.ndim != 2 or point_data.shape[1] < 2:
+                return f"Points layer [{annotation_layer.name}] does not contain usable 2D coordinates."
+            for placement in placements:
+                source_layer_name = str(placement.get("source_layer", "")).strip()
+                if not source_layer_name:
+                    continue
+                y0, y1, x0, x1 = _placement_content_bbox(placement)
+                inside_indices: list[int] = []
+                local_points: list[np.ndarray] = []
+                for index, point in enumerate(point_data):
+                    py = float(point[-2])
+                    px = float(point[-1])
+                    if py < y0 or py >= y1 or px < x0 or px >= x1:
+                        continue
+                    local_point = np.asarray(point, dtype=float).copy()
+                    local_point[-2] = py - float(y0)
+                    local_point[-1] = px - float(x0)
+                    inside_indices.append(index)
+                    local_points.append(local_point)
+                if not local_points:
+                    continue
+                scale, translate = _source_layer_transform(ctx.viewer, source_layer_name)
+                output_name = next_output_name(ctx.viewer, f"{source_layer_name}_{annotation_layer.name}")
+                features = _slice_point_features(annotation_layer, inside_indices)
+                split_layer = ctx.viewer.add_points(
+                    np.asarray(local_points, dtype=float),
+                    name=output_name,
+                    scale=scale,
+                    translate=translate,
+                    features=features,
+                )
+                split_layer.metadata = dict(getattr(split_layer, "metadata", {}) or {})
+                split_layer.metadata["montage_split"] = {
+                    "montage_id": metadata.get("montage_id"),
+                    "source_layer": source_layer_name,
+                    "annotation_layer": annotation_layer.name,
+                    "source_kind": "points",
+                }
+                created_names.append(output_name)
+                point_total += len(local_points)
+            if not created_names:
+                return "No montage points fell inside any source image bounds."
+            created = ", ".join(f"[{name}]" for name in created_names[:6])
+            if len(created_names) > 6:
+                created += f" and {len(created_names) - 6} more"
+            return (
+                f"Split montage points [{annotation_layer.name}] into {len(created_names)} per-source layer(s) "
+                f"with {point_total} point(s): {created}."
+            )
+
+        return "Montage annotation splitting currently supports Labels or Points layers only."
 
 
 class GaussianDenoiseTool:
@@ -1122,6 +1992,114 @@ class FillMaskHolesTool:
             translate=payload["translate"],
         )
         return f"Filled mask holes in [{payload['layer_name']}] into [{payload['output_name']}]."
+
+
+class EditMaskInROITool:
+    spec = ToolSpec(
+        name="edit_mask_in_roi",
+        display_name="Edit Mask In ROI",
+        category="segmentation_cleanup",
+        description="Apply a mask cleanup operation only inside a Labels-or-Shapes ROI, leaving the rest of the mask unchanged.",
+        execution_mode="immediate",
+        supported_layer_types=("labels", "shapes"),
+        parameter_schema=(
+            ParamSpec("mask_layer", "string", description="Target labels mask layer."),
+            ParamSpec("roi_layer", "string", description="Labels or Shapes ROI layer.", required=True),
+            ParamSpec("op", "string", description="convert_to_mask, dilate, erode, open, close, median, outline, fill_holes, skeletonize, distance_map, ultimate_points, watershed, voronoi, remove_small, or keep_largest.", required=True),
+            ParamSpec("radius", "int", description="Radius for morphology operations.", default=1, minimum=1),
+            ParamSpec("min_size", "int", description="Minimum size for remove_small.", default=64, minimum=1),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation Cleanup"},
+        provenance_metadata={"algorithm": "roi_constrained_mask_edit", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        mask_layer = find_labels_layer(ctx.viewer, args.get("mask_layer"))
+        if mask_layer is None:
+            return "No valid labels mask layer available for ROI editing."
+        roi_layer = _resolve_roi_layer(ctx.viewer, args.get("roi_layer"))
+        if roi_layer is None:
+            return "No valid ROI layer available. Select or name a Labels or Shapes layer."
+        try:
+            roi_mask = _roi_mask_from_layer(roi_layer, np.asarray(mask_layer.data).shape)
+        except Exception as exc:
+            return str(exc)
+        if not np.any(roi_mask):
+            return f"ROI layer [{roi_layer.name}] does not cover any pixels in [{mask_layer.name}]."
+        op_name = str(args.get("op", "")).strip().lower()
+        if op_name not in {
+            "convert_to_mask",
+            "dilate",
+            "erode",
+            "open",
+            "close",
+            "median",
+            "outline",
+            "fill_holes",
+            "skeletonize",
+            "distance_map",
+            "ultimate_points",
+            "watershed",
+            "voronoi",
+            "remove_small",
+            "keep_largest",
+        }:
+            return f"Unsupported ROI mask operation: {op_name}"
+        radius = normalize_int(args.get("radius", 1), default=1, minimum=1, maximum=1024)
+        min_size = normalize_int(args.get("min_size", 64), default=64, minimum=1, maximum=1_000_000)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "mask_layer": mask_layer.name,
+                "roi_layer": roi_layer.name,
+                "op_name": op_name,
+                "radius": radius,
+                "min_size": min_size,
+                "output_name": next_output_name(ctx.viewer, f"{mask_layer.name}_{op_name}_roi"),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        mask_layer = find_labels_layer(ctx.viewer, payload.get("mask_layer"))
+        roi_layer = _resolve_roi_layer(ctx.viewer, payload.get("roi_layer"))
+        if mask_layer is None:
+            return "No usable labels mask layer was available for ROI editing."
+        if roi_layer is None:
+            return "No usable ROI layer was available for ROI editing."
+        try:
+            roi_mask = _roi_mask_from_layer(roi_layer, np.asarray(mask_layer.data).shape).astype(bool)
+        except Exception as exc:
+            return str(exc)
+        original = np.asarray(mask_layer.data)
+        local_input = np.where(roi_mask, original, 0).astype(original.dtype, copy=False)
+        edited_local = _apply_mask_operation(
+            local_input,
+            op_name=payload.get("op_name", ""),
+            radius=payload.get("radius", 1),
+            min_size=payload.get("min_size", 64),
+        )
+        merged = np.asarray(original).copy()
+        merged[roi_mask] = np.asarray(edited_local)[roi_mask]
+        output_name = str(payload.get("output_name", "")).strip() or next_output_name(ctx.viewer, f"{mask_layer.name}_roi_edit")
+        ctx.viewer.add_labels(
+            merged,
+            name=output_name,
+            scale=tuple(getattr(mask_layer, "scale", ())),
+            translate=tuple(getattr(mask_layer, "translate", ())),
+        )
+        return (
+            f"Applied [{payload['op_name']}] to [{mask_layer.name}] only inside ROI [{roi_layer.name}] "
+            f"as [{output_name}] with radius={payload['radius']} min_size={payload['min_size']}."
+        )
 
 
 class ProjectMaxIntensityTool:
@@ -2761,11 +3739,188 @@ class SAMPropagatePoints3DTool:
         )
 
 
+class SAMRefineMaskTool:
+    spec = ToolSpec(
+        name="sam_refine_mask",
+        display_name="SAM Refine Mask",
+        category="segmentation",
+        description="Refine an existing mask using Segment Anything.",
+        execution_mode="worker",
+        supported_layer_types=("image", "labels", "shapes"),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Target image layer."),
+            ParamSpec("mask_layer", "string", description="Existing mask or labels layer."),
+            ParamSpec("roi_layer", "string", description="Optional additional ROI prompt."),
+            ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "sam2_refine", "deterministic": False},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for SAM2 mask refinement."
+        if getattr(image_layer, "rgb", False):
+            return "SAM2 mask refinement currently supports grayscale 2D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 2:
+            return f"SAM2 mask refinement currently supports 2D image layers only. Got ndim={image_data.ndim}."
+        mask_layer = find_labels_layer(ctx.viewer, args.get("mask_layer"))
+        if mask_layer is None:
+            return "No valid mask layer available for SAM2 refinement. Select or name a Labels layer."
+        mask_data = (np.asarray(mask_layer.data) > 0).astype(np.uint8, copy=False)
+        if mask_data.shape != image_data.shape:
+            return f"Mask layer [{mask_layer.name}] shape {mask_data.shape} does not match image layer [{image_layer.name}] shape {image_data.shape}."
+        if not np.any(mask_data):
+            return f"Mask layer [{mask_layer.name}] does not contain any positive pixels to refine."
+
+        roi_layer = _resolve_roi_layer(ctx.viewer, args.get("roi_layer"))
+        roi_mask = None
+        roi_layer_name = ""
+        if roi_layer is not None:
+            roi_layer_name = str(roi_layer.name)
+            if isinstance(roi_layer, Labels):
+                roi_mask = np.asarray(roi_layer.data) > 0
+            else:
+                roi_mask = _rasterize_shapes_roi(roi_layer, image_data.shape)
+            if np.asarray(roi_mask).shape != image_data.shape:
+                return f"ROI layer [{roi_layer.name}] shape does not match image layer [{image_layer.name}]."
+
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "mask_layer_name": mask_layer.name,
+                "roi_layer_name": roi_layer_name,
+                "output_name": next_output_name(ctx.viewer, f"{mask_layer.name}_sam2_refined"),
+                "model_name": str(args.get("model_name") or "").strip() or None,
+                "data": image_data.copy(),
+                "mask": mask_data.copy(),
+                "roi_mask": None if roi_mask is None else np.asarray(roi_mask, dtype=np.uint8).copy(),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        try:
+            refined, backend_message = refine_mask_from_mask(
+                np.asarray(payload["data"]),
+                mask=np.asarray(payload["mask"]),
+                roi_mask=None if payload.get("roi_mask") is None else np.asarray(payload["roi_mask"]),
+                model_name=payload.get("model_name"),
+            )
+        except Exception as exc:
+            return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload, message=str(exc))
+        payload["result"] = refined
+        payload["backend_message"] = backend_message
+        payload["foreground_pixels"] = int(np.count_nonzero(refined))
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload)
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        if "result" not in payload:
+            return result.message or "SAM2 mask refinement did not produce a result."
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        roi_suffix = f" within ROI [{payload['roi_layer_name']}]" if payload.get("roi_layer_name") else ""
+        backend_suffix = f" {payload['backend_message']}" if payload.get("backend_message") else ""
+        return (
+            f"Refined [{payload['mask_layer_name']}] on [{payload['image_layer_name']}]"
+            f"{roi_suffix} as [{payload['output_name']}]. foreground_pixels={payload['foreground_pixels']}.{backend_suffix}"
+        )
+
+
+class SAMAutoSegmentTool:
+    spec = ToolSpec(
+        name="sam_auto_segment",
+        display_name="SAM Auto Segment",
+        category="segmentation",
+        description="Run automatic Segment Anything mask generation on an image.",
+        execution_mode="worker",
+        supported_layer_types=("image",),
+        parameter_schema=(
+            ParamSpec("image_layer", "string", description="Target image layer."),
+            ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation"},
+        provenance_metadata={"algorithm": "sam2_auto", "deterministic": False},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        image_layer = find_image_layer(ctx.viewer, args.get("image_layer"))
+        if image_layer is None:
+            return "No valid image layer available for SAM2 auto segmentation."
+        if getattr(image_layer, "rgb", False):
+            return "SAM2 auto segmentation currently supports grayscale 2D image layers, not RGB layers."
+        image_data = np.asarray(image_layer.data)
+        if image_data.ndim != 2:
+            return f"SAM2 auto segmentation currently supports 2D image layers only. Got ndim={image_data.ndim}."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "image_layer_name": image_layer.name,
+                "output_name": next_output_name(ctx.viewer, f"{image_layer.name}_sam2_auto"),
+                "model_name": str(args.get("model_name") or "").strip() or None,
+                "data": image_data.copy(),
+                "scale": tuple(image_layer.scale),
+                "translate": tuple(image_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        try:
+            segmented, backend_message = segment_image_auto(
+                np.asarray(payload["data"]),
+                model_name=payload.get("model_name"),
+            )
+        except Exception as exc:
+            return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload, message=str(exc))
+        payload["result"] = segmented
+        payload["backend_message"] = backend_message
+        payload["foreground_pixels"] = int(np.count_nonzero(segmented))
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload)
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        if "result" not in payload:
+            return result.message or "SAM2 auto segmentation did not produce a result."
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        backend_suffix = f" {payload['backend_message']}" if payload.get("backend_message") else ""
+        return (
+            f"Auto-segmented [{payload['image_layer_name']}] as [{payload['output_name']}]. "
+            f"foreground_pixels={payload['foreground_pixels']}.{backend_suffix}"
+        )
+
+
 def workbench_scaffold_tools():
     return [
         GaussianDenoiseTool(),
         RemoveSmallObjectsTool(),
         FillMaskHolesTool(),
+        EditMaskInROITool(),
         KeepLargestComponentTool(),
         LabelConnectedComponentsTool(),
         MeasureLabelsTableTool(),
@@ -2776,9 +3931,16 @@ def workbench_scaffold_tools():
         HideImageGridViewTool(),
         ShowLayersTool(),
         HideLayersTool(),
+        HideAllLayersTool(),
+        DeleteAllLayersTool(),
+        DeleteLayersTool(),
         ShowOnlyLayersTool(),
+        ShowAllExceptLayersTool(),
         ShowAllLayersTool(),
+        SetLayerScaleTool(),
         ArrangeLayersForPresentationTool(),
+        CreateAnalysisMontageTool(),
+        SplitMontageAnnotationsTool(),
         InspectROIContextTool(),
         MeasureShapesROIAreaTool(),
         ExtractROIValuesTool(),
@@ -2787,42 +3949,8 @@ def workbench_scaffold_tools():
         SAMSegmentFromBoxTool(),
         SAMSegmentFromPointsTool(),
         SAMPropagatePoints3DTool(),
-        PlaceholderTool(
-            ToolSpec(
-                name="sam_refine_mask",
-                display_name="SAM Refine Mask",
-                category="segmentation",
-                description="Refine an existing mask using Segment Anything.",
-                execution_mode="worker",
-                supported_layer_types=("image", "labels"),
-                parameter_schema=(
-                    ParamSpec("image_layer", "string", description="Target image layer."),
-                    ParamSpec("mask_layer", "string", description="Existing mask or labels layer."),
-                    ParamSpec("roi_layer", "string", description="Optional additional ROI prompt."),
-                    ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
-                ),
-                output_type="labels_layer",
-                ui_metadata={"panel_group": "Segmentation"},
-                provenance_metadata={"algorithm": "sam", "deterministic": False},
-            )
-        ),
-        PlaceholderTool(
-            ToolSpec(
-                name="sam_auto_segment",
-                display_name="SAM Auto Segment",
-                category="segmentation",
-                description="Run automatic Segment Anything mask generation on an image.",
-                execution_mode="worker",
-                supported_layer_types=("image",),
-                parameter_schema=(
-                    ParamSpec("image_layer", "string", description="Target image layer."),
-                    ParamSpec("model_name", "string", description="Optional SAM backend/model identifier."),
-                ),
-                output_type="labels_layer",
-                ui_metadata={"panel_group": "Segmentation"},
-                provenance_metadata={"algorithm": "sam", "deterministic": False},
-            )
-        ),
+        SAMRefineMaskTool(),
+        SAMAutoSegmentTool(),
         PlaceholderTool(
             ToolSpec(
                 name="recommend_next_step",

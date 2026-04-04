@@ -5,11 +5,11 @@
 [![Python Version](https://img.shields.io/pypi/pyversions/napari-chat-assistant.svg?color=green)](https://python.org)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-chat-assistant)](https://napari-hub.org/plugins/napari-chat-assistant)
 
-Local, Ollama-powered chat and code assistant for napari image-analysis workflows.
+Local, Ollama-powered AI and deterministic workbench for napari image-analysis workflows.
 
-`napari-chat-assistant` adds a dock widget inside napari that understands the active viewer session, runs built-in image-analysis actions, and generates executable napari Python code when a request goes beyond the current toolset.
+`napari-chat-assistant` adds a dock widget inside napari that understands the active viewer session, runs built-in image-analysis actions, generates executable napari Python code when a request goes beyond the current toolset, and lets users promote repeatable tasks into one-click shortcuts.
 
-The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, and direct control over their data.
+The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
 ## Who It Is For
 
@@ -17,49 +17,93 @@ This plugin is built for:
 - imaging core facility users
 - researchers, staff scientists, and students working with imaging data
 - teachers and educators running imaging demos or training sessions
-- users who already work in napari and want help with code, automation, ROI-driven analysis, and repeatable workflows
+- It is also designed for users who prefer to describe analysis goals in natural language instead of memorizing commands or writing scripts.
 
 It is especially useful when you:
-- inspect large 2D or 3D image stacks in napari
-- move between interactive viewing and Python-based analysis
+- inspect large 2D or 3D image data in napari
+- move between interactive viewing, measurement, and Python-based analysis
 - want a local open-weight model instead of a cloud service
-- need to save, reuse, and teach common imaging workflows
+- need to save, reuse, restore, and teach common imaging workflows
+- want fast deterministic actions and one-click shortcuts for repeated tasks
 
 ## Why It Is Different
 
-This plugin comes out of long practical imaging experience rather than a generic "chat in a sidebar" idea.
+This plugin is built from practical imaging workflow needs, not from the idea of putting a generic chatbot beside a viewer.
 
-It is designed around how imaging work actually happens:
+It is designed around how work actually happens in napari:
 - start from the data already open in the viewer
-- identify objects or regions of interest in the viewer
-- ask for the next analysis step in plain language
-- inspect the result
-- run or refine code when needed
-- save useful prompts and scripts for later reuse
+- inspect layers, objects, and regions of interest
+- run the next analysis step through chat, actions, templates, shortcuts, or code
+- review the result directly in the same session
+- save useful workflows for later reuse
 
-The assistant is grounded in the live napari session. It can inspect loaded layers, use ROI context, run built-in analysis actions, and fall back to executable Python when the request is more specialized. In practice, this makes napari feel closer to a viewer plus notebook-style workbench, without forcing users to leave the image, open QtConsole, or start from a blank script.
+The assistant is grounded in the live napari session. It can inspect loaded layers, use ROI context, run built-in analysis actions, generate or refine viewer-bound Python when needed, and support deterministic one-click workflows through `Actions` and `Shortcuts`. The result is closer to an imaging workbench than a chat panel.
+
+## Interaction Model
+
+The plugin now supports a deliberate spectrum of interaction styles:
+- `Prompt`: AI-first natural language requests
+- `Code`: direct viewer-bound Python for users who want exact control
+- `Templates`: reusable examples and built-in starting points
+- `Actions`: deterministic built-in functions that can be run directly
+- `Shortcuts`: user-defined one-click action buttons for repeated daily work
+
+This is now a core design principle of the plugin: reduce how many clicks and how much time it takes for a user to complete a task.
+
+## Interface Overview
+
+The main dock is organized into a small number of practical work areas:
+
+1. `Connection and model controls`
+   Select the local model, monitor status, and manage the backend connection.
+
+2. `Layer Context`
+   Review the active workspace layers and insert exact layer names into prompts or code.
+
+3. `Library`
+   Browse reusable `Prompts`, `Code`, `Templates`, and deterministic `Actions`.
+
+4. `Shortcuts`
+   Keep your most-used actions as one-click buttons for repeated work.
+
+5. `Session`
+   Save or restore workspace state and access activity, telemetry, and diagnostics.
+
+6. `Chat`
+   See the assistant transcript, generated code, and direct action feedback in one place.
+
+7. `Prompt`
+   Enter natural language requests or paste Python for `Run My Code` and `Refine My Code`.
 
 ## What You Can Do
 
 Current workflows include:
 - inspect the selected layer or named layers with structured summaries
-- profile loaded layers with deterministic semantic and workflow-aware metadata
-- run built-in tools for enhancement, thresholding, mask cleanup, measurement, projection, cropping, presentation, and layer visibility control
-- inspect ROI context and extract grayscale values from `Labels` and `Shapes` layers
+- review live layer context and insert exact layer names into prompts or code
+- run built-in tools for enhancement, thresholding, binary mask cleanup, measurement, projection, cropping, montage, presentation, and layer visibility control
+- use deterministic `Actions` for common workflows without depending on prompt phrasing
+- build and save your own `Shortcuts` layouts for repeated one-click work
+- inspect ROI context and measure or extract values from `Labels`, `Shapes`, and line-based workflows
+- use interactive analysis widgets such as `ROI Intensity Analysis`, `Line Profile Analysis`, and `Group Comparison Statistics`
+- access SAM2 setup, live preview, box prompting, points prompting, and mask refinement from the same workbench
 - generate napari Python code when no built-in tool is the right fit
 - paste and run your own viewer-bound Python from the prompt box with `Run My Code`
 - repair or explain broken pasted Python with `Refine My Code`
-- use `Layer Context` to copy or insert exact layer summaries into the Prompt box
 - save, pin, tag, rename, and reuse prompts and code from the local Library
-- browse built-in templates and demo packs for repeatable teaching, testing, and workflow development
+- browse built-in templates and synthetic data generators for repeatable testing, teaching, and workflow development
+- save and restore workspace state with a JSON manifest plus OME-Zarr assets for generated image and labels data
 
 Example requests:
 - `Inspect the selected layer`
-- `Preview threshold on em_2d_snr_mid`
-- `Apply gaussian denoise to em_2d_snr_low with sigma 1.2`
-- `Measure labels table for rgb_cells_2d_labels`
+- `Preview threshold on the selected image`
+- `Apply gaussian blur to the selected image with sigma 1.2`
+- `Remove small objects from the selected mask with min_size 64`
+- `Run watershed on the selected mask`
+- `Measure labels table for the selected labels layer`
 - `Inspect the current ROI`
-- `Extract ROI values from em_2d_snr_mid using em_2d_mask`
+- `Extract ROI values from the selected image using the current ROI`
+- `Open ROI intensity analysis`
+- `Initialize a SAM2 points prompt layer for the selected image`
 - `Write napari code to plot object area by condition`
 
 ## Local-First By Design
@@ -72,11 +116,15 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.6.1
+## What's New In 1.8.0
 
-- added interactive ROI intensity, line-profile, and group-comparison tools with dedicated measurement/statistics widgets
-- added workspace save/load support so users can restore recoverable layer state later
-- improved Shapes-aware routing, templates, and assistant workflows for ROI-driven analysis
+- expanded deterministic `Masks` workflows with a fuller binary-image toolset, including erosion, dilation, opening, closing, skeletonization, distance map, watershed, and Voronoi-style region generation
+- improved `Actions` previews with parameter hints and prompt examples so users can see what defaults exist and how to fine-tune them in chat
+- upgraded workspace persistence to use a JSON manifest plus OME-Zarr assets for generated image and labels data
+- added workspace round-trip support for `Points` layers, including SAM2 prompt points and their metadata
+- made workspace overwrite safer by replacing manifests and asset folders only after a new save completes successfully
+- simplified expert workflow by moving UI help into the `Help` menu as an explicit toggle instead of an always-on background interceptor
+- continued refining the dock as a mature hybrid workbench that combines chat, code, templates, deterministic actions, shortcuts, and session restore
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -162,7 +210,7 @@ pip install -e .
 5. Use `Load` if you want to warm the selected model before the first request.
 6. Start chatting, or use the Library for repeatable tasks and reusable code.
 
-If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside napari without opening QtConsole.
+If you already have Python code you want to try, paste it into the Prompt box and click `Run My Code`. This runs viewer-bound code directly inside the plugin runtime without opening QtConsole.
 
 If your pasted code fails or needs adaptation to the current viewer session, click `Refine My Code` to send it back through the assistant with the current napari context and local validation feedback.
 
@@ -185,43 +233,45 @@ Examples:
 
 1. Open your image or volume in napari.
 2. Use `Layer Context` if you want to copy or insert exact layer summaries into the Prompt box.
-3. Ask the assistant to inspect the layer and suggest the next step.
-4. Run a built-in tool for denoising, thresholding, cleanup, measurement, layout, or layer visibility.
-5. Select an ROI or object in the viewer if you want local analysis.
-6. Ask for code when you need a custom plot, statistics, or reusable script.
-7. Use `Run My Code` for your own Python and `Refine My Code` when pasted code fails or needs repair for this plugin environment.
-8. Save useful prompts, code snippets, or templates into the Library for later reuse.
+3. Ask the assistant to inspect the layer and suggest the next step, or browse `Actions` if you already know the function you want.
+4. Run a built-in tool for denoising, thresholding, cleanup, measurement, layout, layer visibility, or workspace restore.
+5. Add repeated actions to `Shortcuts` so common tasks become one-click operations.
+6. Select an ROI or object in the viewer if you want local analysis.
+7. Ask for code when you need a custom plot, statistics, or reusable script.
+8. Use `Run My Code` for your own Python and `Refine My Code` when pasted code fails or needs repair for this plugin environment.
+9. Save useful prompts, code snippets, templates, workspaces, and shortcut setups for later reuse.
 
 This is the core value of the plugin: users can stay in the viewer, interact with the data, ask questions, run analysis, and keep the resulting workflow close to the image session.
 
-## Demo Packs
+## Synthetic Data Templates
 
-Use the Library `Code` tab to load built-in demo packs for repeatable testing.
+Use the Library `Templates > Data` area or built-in code snippets to load repeatable synthetic datasets.
 
-Current demo packs include:
-- EM 2D SNR sweep
-- EM 3D SNR sweep
-- RGB cells 2D SNR sweep
-- RGB cells 3D SNR sweep
+Current built-in synthetic generators include:
+- Synthetic 2D SNR Sweep Gray
+- Synthetic 3D SNR Sweep Gray
+- Synthetic 2D SNR Sweep RGB
+- Synthetic 3D SNR Sweep RGB
 - messy masks 2D/3D
 
-These create named layers so you can test built-in tools quickly without hunting for sample data. Labels layers from the demo packs can also be used as ROIs for ROI inspection and value extraction.
+These create named layers so you can test built-in tools quickly without hunting for sample data. Labels layers from these synthetic datasets can also be used as ROIs for ROI inspection and value extraction.
 
 Example pipeline:
-1. Run the `EM 2D SNR Sweep` demo pack.
-2. `Apply gaussian denoise to em_2d_snr_low with sigma 1.0`
-3. `Preview threshold on em_2d_snr_low_gaussian`
-4. `Apply threshold now on em_2d_snr_low_gaussian`
-5. `Fill holes in em_2d_snr_low_gaussian_labels`
-6. `Remove small objects from em_2d_snr_low_gaussian_labels_filled with min_size 64`
-7. `Keep only the largest connected component in em_2d_snr_low_gaussian_labels_filled_clean`
-8. `Measure mask on em_2d_snr_low_gaussian_labels_filled_clean_largest`
+1. Load an RGB image or run `Synthetic 2D SNR Sweep RGB`.
+2. Ask the assistant to split the RGB image into separate grayscale channels.
+3. Create an analysis montage from the split channel images for side-by-side review.
+4. If you want ROI-based intensity measurements, open `ROI Intensity Analysis` and draw area ROIs.
+5. If you want line-based measurements, open `Line Profile Analysis` and draw line ROIs.
+6. Use deterministic `Actions` for thresholding, mask cleanup, watershed, connected components, or ROI-based inspection as needed.
+7. Save the session with `Save Workspace` so the manifest and generated image or labels data are stored together using JSON plus OME-Zarr assets.
+8. If no built-in tool fits the task, ask the assistant to generate code.
+9. If the generated code does not work in the current plugin runtime, use `Refine My Code` and run it again.
 
 ## Current Features
 
 ### Session-aware tools
 
-The assistant currently supports built-in tools for:
+The workbench currently supports built-in tools for:
 - listing all layers
 - inspecting the selected layer
 - inspecting a specific named layer
@@ -244,6 +294,13 @@ The assistant currently supports built-in tools for:
 - showing, hiding, isolating, and restoring layer visibility directly from chat
 - ROI inspection and grayscale value extraction from labels or shapes regions
 - registry-backed tool execution as the foundation for future workflow and pipeline expansion
+- deterministic `Actions` and reusable `Shortcuts` for repeated one-click work
+
+Interactive analysis widgets now built into the workflow include:
+- `ROI Intensity Analysis` for shape-based fluorescence or grayscale ROI measurements with tables, histograms, normalization views, CSV export, and on-canvas ROI labeling
+- `Line Profile Analysis` for profile-based measurements along user-defined lines, including Gaussian fitting
+- `Group Comparison Statistics` for two-group comparison workflows on image-level or ROI-derived measurements, with descriptive statistics, assumption checks, and test summaries
+- `SAM2 Setup` and `SAM2 Live` entry points so segmentation workflows can be opened directly from the same workbench
 
 Layer inspection is backed by a deterministic profile object that includes:
 - `semantic_type`
@@ -311,10 +368,11 @@ This is intentionally not full transcript memory. The model is still grounded pr
 
 ### Library
 
-The assistant includes a persistent Library for repeatable workflows and reusable code:
+The plugin includes a persistent Library for repeatable workflows and reusable code:
 - built-in starter prompts
-- built-in demo packs and reusable code examples in the `Code` tab
+- built-in synthetic data generators and reusable code examples in the `Code` tab
 - built-in categorized starter templates in the `Templates` tab
+- deterministic built-in functions in the `Actions` tab
 - recent prompts captured automatically
 - saved prompts for reusable tasks
 - pinned prompts for high-frequency workflows
@@ -324,6 +382,7 @@ Interaction:
 - single click loads a prompt or code snippet into the editor
 - double click sends a prompt directly or runs a code snippet
 - templates can be previewed, loaded into the Prompt box, or run directly
+- actions can be previewed, added to `Shortcuts`, or run directly
 - right click can rename or edit tags for saved and recent prompt/code items
 - multi-select supports Shift/Ctrl selection for batch actions
 - `Delete` can remove saved prompts, recent prompts, code snippets, or hide built-in prompts
@@ -334,11 +393,23 @@ Logic:
 - `pinned` means keep this prompt surfaced at the top of the library
 - a prompt can be pinned without being saved
 - built-in prompts are shipped examples; deleting them hides them from the current local library view
-- built-in code entries include demo packs and starter `Run My Code` examples
+- built-in code entries include synthetic data generators and starter `Run My Code` examples
 - built-in code entries remain visible even if the same snippet also appears in recent history
 - code snippets can be tagged and renamed so they are easier to reference later in workflows
 
 This is designed for users who want repeatable automation without committing everything to full scripting.
+
+### Actions and Shortcuts
+
+`Actions` is the deterministic side of the plugin. It exposes built-in functions by category so users can browse what the plugin can do without depending on exact prompt phrasing.
+
+`Shortcuts` is the user-defined one-click layer above `Actions`:
+- add your most-used actions from the `Actions` catalog
+- grow the button layout when you need more space
+- save and load shortcut setups for different tasks or teaching sessions
+- remove repeated browsing when you already know the workflow you want
+
+This is now part of the core product direction: keep AI available, but let mature workflows become fast, button-driven, and reusable.
 
 ### Optional ND2 and spectral integration
 
@@ -399,14 +470,16 @@ Typical setup flow:
 - local Ollama base URL
 - model picker with discovered local models
 - `Test`
-- `Use`
+- `Load`
 - `Setup` help with install, `ollama serve`, and model pull examples
 - `Unload`
 
 ### Library
 
 - built-in prompts
-- built-in demo packs and starter code in the `Code` tab
+- built-in synthetic data generators and starter code in the `Code` tab
+- built-in templates in the `Templates` tab
+- deterministic built-in functions in the `Actions` tab
 - recent prompts
 - saved prompts
 - recent and saved code snippets in the `Code` tab
@@ -420,6 +493,13 @@ Typical setup flow:
 - `Delete` works on built-in, recent, saved, and code items
 - `Clear` keeps saved and pinned items and clears unpinned recent items
 - `A-` and `A+` adjust library font size in small steps
+
+### Shortcuts
+
+- one-click user-defined action buttons
+- start with a 3x2 layout and add or remove rows as needed
+- save and load shortcut setups
+- remove single shortcuts from the button grid without resetting the whole layout
 
 ### Chat
 
@@ -439,7 +519,7 @@ Typical setup flow:
 
 `Run Code` is for assistant-generated code that has been staged in the chat.
 
-`Run My Code` is for your own pasted Python from the Prompt box when you want to test or iterate directly inside napari without opening QtConsole.
+`Run My Code` is for your own pasted Python from the Prompt box when you want to test or iterate directly inside the plugin runtime without opening QtConsole.
 
 `Advanced` contains optional integrations such as experimental SAM2 setup and live preview.
 

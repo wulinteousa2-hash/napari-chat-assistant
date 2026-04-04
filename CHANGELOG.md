@@ -2,6 +2,37 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.8.0
+
+- Switched workspace asset storage to a `workspace.json` manifest plus OME-Zarr sidecar assets for generated `Image` and `Labels` layers, making saved workspaces more scalable for large derived data such as montages and presentation outputs.
+- Added safer workspace overwrite behavior by writing new manifests and asset folders to temporary paths first, then replacing the old workspace only after the new save completes.
+- Expanded workspace persistence to include `Points` layers so SAM2 prompt layers now round-trip with coordinates, features, colors, symbols, shown-state, and out-of-slice display.
+- Added a broad set of binary-mask operations to the deterministic `Masks` action library, including `Convert To Mask`, `Erode`, `Dilate`, `Open`, `Close`, `Median`, `Outline`, `Skeletonize`, `Distance Map`, `Ultimate Points`, `Watershed`, and `Voronoi`.
+- Split binary-mask action behavior more cleanly between destructive cleanup operations that snapshot and replace the current mask, and derived-result operations that create new image or labels layers.
+- Improved `Actions -> Masks` preview text so users can see parameter hints and prompt examples for fine adjustment, such as `radius`, `min_size`, `connectivity`, and polarity choices.
+- Simplified plugin help behavior by moving UI help into the `Help` menu as a persistent toggle, defaulting it off for expert workflows, and reducing accidental local-help interception of normal requests.
+- Expanded the `Help` menu into a small plugin information hub with `Prompt Tips`, `What's New`, `About`, `Report Bug`, and `UI Help Enabled`.
+- Updated `Layer Context -> Layers` and related prompt-building workflows so users can insert exact layer names more naturally when editing prompts or code.
+- Added hover and pressed styling for category-colored shortcut buttons so the deterministic shortcut surface feels more responsive without changing the workflow model.
+- Updated README workflow framing to better match the mature dock layout and the plugin’s current hybrid design of chat, code, templates, actions, shortcuts, and workspace state.
+
+## 1.7.0
+
+- Reframed the plugin as a hybrid napari workbench rather than a chat-only dock, with a clearer progression from AI-guided prompting to deterministic one-click execution.
+- Added a full `Actions` catalog so users can browse built-in functions by category and run them directly without routing through the model.
+- Replaced the earlier split `Pinned Actions` and `Quick Actions` concept with a unified `Shortcuts` system for user-defined one-click buttons.
+- Added customizable `Shortcuts` layouts with add-row, remove-row, clear, save-setup, and load-setup support so users can build their own button-driven workflow surfaces.
+- Added `Workspace` as a first-class `Actions` category with deterministic buttons for `Save Workspace`, `Save Workspace As`, `Load Workspace`, and `Restore Last Workspace`.
+- Expanded deterministic layer-control workflows with `Delete All`, `Isolate Selected`, `Hide All`, `Show All`, and improved layer-scale shortcuts.
+- Brought interactive analysis widgets more clearly into the workbench model by exposing `ROI Intensity Analysis`, `Line Profile Analysis`, `Group Comparison Statistics`, `SAM2 Setup`, and `SAM2 Live` through the deterministic `Actions` surface.
+- Continued refining microscopy- and statistics-facing wording so ROI measurement, line-profile analysis, and group comparison read more like imaging software workflows than generic widget terminology.
+- Added a dedicated `delete_all_layers` backend tool so full-viewer cleanup is available from both actions and prompt routing.
+- Improved workspace manifest saving for mixed image and Shapes sessions by fixing Shapes serialization for list-like per-shape display values such as `edge_width`.
+- Improved `Layer Context -> Layers` insertion with a second `Inline` mode so layer names can be inserted at the current cursor position without forcing a new line.
+- Promoted synthetic grayscale and RGB SNR sweeps into stable `Templates > Data` entries for repeatable testing and demos.
+- Clarified plugin-runtime execution in code-facing UI so `Run My Code` and `Refine My Code` better communicate the difference between this plugin environment and generic napari QtConsole scripting.
+- Strengthened the overall design direction around minimizing click count and time-to-task, making deterministic execution and reusable user-defined controls part of the core product rather than an add-on.
+
 ## 1.6.1
 
 - Added interactive ROI measurement tools with a new `ROI Intensity Metrics` widget for live shape-based measurement, histogram and table views, renameable ROI labels, chat insertion, and CSV export.

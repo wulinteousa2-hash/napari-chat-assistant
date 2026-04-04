@@ -5,7 +5,8 @@ from scipy import ndimage as ndi
 from scipy import stats
 from skimage import exposure
 from skimage.filters import threshold_otsu
-from skimage.morphology import ball, disk, remove_small_objects
+from skimage.morphology import ball, disk, local_maxima, remove_small_objects, skeletonize
+from skimage.segmentation import watershed
 
 
 def _binary_mask(data) -> np.ndarray:
@@ -152,6 +153,67 @@ def keep_largest_component(data) -> np.ndarray:
     largest_label = int(np.argmax(counts))
     largest = labeled == largest_label
     return _preserve_dtype(largest, data)
+
+
+def convert_to_mask(data) -> np.ndarray:
+    return _preserve_dtype(_binary_mask(data), data)
+
+
+def median_binary_mask(data, radius: int = 1) -> np.ndarray:
+    filtered = ndi.median_filter(_binary_mask(data).astype(np.uint8), footprint=_footprint(np.asarray(data).ndim, radius)) > 0
+    return _preserve_dtype(filtered, data)
+
+
+def outline_binary_mask(data) -> np.ndarray:
+    mask = _binary_mask(data)
+    outline = mask & ~ndi.binary_erosion(mask, structure=ndi.generate_binary_structure(mask.ndim, 1))
+    return _preserve_dtype(outline, data)
+
+
+def skeletonize_binary_mask(data) -> np.ndarray:
+    mask = _binary_mask(data)
+    if mask.ndim == 3:
+        try:
+            from skimage.morphology import skeletonize_3d
+
+            skeleton = skeletonize_3d(mask)
+        except Exception:
+            skeleton = skeletonize(mask)
+    else:
+        skeleton = skeletonize(mask)
+    return _preserve_dtype(skeleton, data)
+
+
+def distance_map(data) -> np.ndarray:
+    return ndi.distance_transform_edt(_binary_mask(data)).astype(np.float32, copy=False)
+
+
+def ultimate_points(data) -> np.ndarray:
+    mask = _binary_mask(data)
+    distance = ndi.distance_transform_edt(mask)
+    maxima = local_maxima(distance) & mask
+    return maxima.astype(np.int32, copy=False)
+
+
+def watershed_from_mask(data) -> np.ndarray:
+    mask = _binary_mask(data)
+    distance = ndi.distance_transform_edt(mask)
+    maxima = local_maxima(distance) & mask
+    markers, _ = ndi.label(maxima)
+    if int(np.max(markers)) == 0:
+        markers, _ = ndi.label(mask)
+    labels = watershed(-distance, markers=markers, mask=mask)
+    return labels.astype(np.int32, copy=False)
+
+
+def voronoi_from_mask(data) -> np.ndarray:
+    mask = _binary_mask(data)
+    markers, object_count = ndi.label(mask)
+    if object_count == 0:
+        return np.zeros_like(np.asarray(data), dtype=np.int32)
+    distance = ndi.distance_transform_edt(~mask)
+    regions = watershed(distance, markers=markers, mask=np.ones_like(mask, dtype=bool))
+    return regions.astype(np.int32, copy=False)
 
 
 def _normalize_image_to_unit_range(data) -> tuple[np.ndarray, float, float]:

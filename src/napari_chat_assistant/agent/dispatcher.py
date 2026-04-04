@@ -23,6 +23,7 @@ from .tool_registry import TOOL_REGISTRY
 from .tool_types import PreparedJob, ToolContext, ToolResult
 from .tools import (
     TOOL_OPS,
+    TOOL_OP_OUTPUTS,
     next_output_name,
     next_snapshot_name,
     normalize_float,
@@ -314,7 +315,7 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
         lines.extend(
             [
                 "",
-                "If you want an interactive table with renameable ROIs, histogram, percent view, chat insertion, and CSV export, open the ROI Intensity Metrics widget.",
+                "If you want an interactive table with renameable ROIs, histogram, percent view, chat insertion, and CSV export, open the ROI Intensity Analysis widget.",
             ]
         )
         return {"mode": "immediate", "message": "\n".join(lines)}
@@ -330,7 +331,7 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
         return {
             "mode": "immediate",
             "message": (
-                f"Opened ROI Intensity Metrics for [{image_layer.name}].\n\n"
+                f"Opened ROI Intensity Analysis for [{image_layer.name}].\n\n"
                 "Use the Shapes ROI layer to draw or edit one or more regions, then the widget updates the histogram and table live.\n"
                 "Absolute view shows raw measurements such as pixels, mean, std, median, min, max, and sum.\n"
                 "Percent or Normalized view rescales those values relative to the image intensity range or image totals so different ROIs are easier to compare.\n"
@@ -414,6 +415,8 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
                 "kind": "run_mask_op",
                 "layer_name": labels_layer.name,
                 "snapshot_name": next_snapshot_name(viewer, labels_layer.name),
+                "output_kind": TOOL_OP_OUTPUTS[op_name],
+                "output_name": f"{labels_layer.name}_{op_name}",
                 "op_name": op_name,
                 "args": safe_args,
                 "data": np.asarray(labels_layer.data).copy(),
@@ -438,6 +441,8 @@ def prepare_tool_job(viewer: napari.Viewer, tool_name: str, arguments: dict) -> 
                 {
                     "layer_name": layer.name,
                     "snapshot_name": next_snapshot_name(viewer, layer.name),
+                    "output_kind": TOOL_OP_OUTPUTS[op_name],
+                    "output_name": f"{layer.name}_{op_name}",
                     "op_name": op_name,
                     "args": safe_args,
                     "data": np.asarray(layer.data).copy(),
@@ -492,14 +497,22 @@ def run_tool_job(job: dict) -> dict:
     if kind == "run_mask_op":
         op = TOOL_OPS[job["op_name"]]
         result = op(job["data"], job["args"])
-        return {**job, "kind": kind, "result": result, "stats": mask_statistics(result)}
+        output_kind = job.get("output_kind", "replace_labels")
+        payload = {**job, "kind": kind, "result": result}
+        if output_kind in {"replace_labels", "new_labels"}:
+            payload["stats"] = mask_statistics(result)
+        else:
+            payload["stats"] = intensity_statistics(result)
+        return payload
 
     if kind == "run_mask_op_batch":
         results = []
         for item in job["items"]:
             op = TOOL_OPS[item["op_name"]]
             result = op(item["data"], item["args"])
-            results.append({**item, "result": result, "stats": mask_statistics(result)})
+            output_kind = item.get("output_kind", "replace_labels")
+            stats = mask_statistics(result) if output_kind in {"replace_labels", "new_labels"} else intensity_statistics(result)
+            results.append({**item, "result": result, "stats": stats})
         return {"kind": kind, "op_name": job["op_name"], "items": results}
 
     raise ValueError(f"Unsupported worker job kind: {kind}")
@@ -602,12 +615,29 @@ def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
         labels_layer = find_labels_layer(viewer, result["layer_name"])
         if labels_layer is None:
             return f"Labels layer [{result['layer_name']}] is no longer available."
-        snapshot_name = save_mask_snapshot(viewer, labels_layer)
-        labels_layer.data = result["result"]
+        output_kind = result.get("output_kind", "replace_labels")
+        if output_kind == "replace_labels":
+            snapshot_name = save_mask_snapshot(viewer, labels_layer)
+            labels_layer.data = result["result"]
+            stats = result["stats"]
+            return (
+                f"Saved snapshot [{snapshot_name}] and applied {result['op_name']} to [{labels_layer.name}]. "
+                f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
+            )
+        if output_kind == "new_labels":
+            output_name = next_output_name(viewer, result.get("output_name") or f"{labels_layer.name}_{result['op_name']}")
+            viewer.add_labels(result["result"], name=output_name, scale=result["scale"], translate=result["translate"])
+            stats = result["stats"]
+            return (
+                f"Created [{output_name}] from [{labels_layer.name}] using {result['op_name']}. "
+                f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
+            )
+        output_name = next_output_name(viewer, result.get("output_name") or f"{labels_layer.name}_{result['op_name']}")
+        viewer.add_image(result["result"], name=output_name, scale=result["scale"], translate=result["translate"])
         stats = result["stats"]
         return (
-            f"Saved snapshot [{snapshot_name}] and applied {result['op_name']} to [{labels_layer.name}]. "
-            f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
+            f"Created [{output_name}] from [{labels_layer.name}] using {result['op_name']}. "
+            f"mean={stats['mean']:.6g} std={stats['std']:.6g} min={stats['min']:.6g} max={stats['max']:.6g}."
         )
 
     if kind == "run_mask_op_batch":
@@ -618,14 +648,30 @@ def apply_tool_job_result(viewer: napari.Viewer, result: dict) -> str:
             if labels_layer is None:
                 lines.append(f"[{item['layer_name']}] skipped because the layer is no longer available.")
                 continue
-            snapshot_name = save_mask_snapshot(viewer, labels_layer)
-            labels_layer.data = item["result"]
+            output_kind = item.get("output_kind", "replace_labels")
             stats = item["stats"]
             applied += 1
-            lines.append(
-                f"[{labels_layer.name}] snapshot [{snapshot_name}] {item['op_name']} "
-                f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
-            )
+            if output_kind == "replace_labels":
+                snapshot_name = save_mask_snapshot(viewer, labels_layer)
+                labels_layer.data = item["result"]
+                lines.append(
+                    f"[{labels_layer.name}] snapshot [{snapshot_name}] {item['op_name']} "
+                    f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
+                )
+            elif output_kind == "new_labels":
+                output_name = next_output_name(viewer, item.get("output_name") or f"{labels_layer.name}_{item['op_name']}")
+                viewer.add_labels(item["result"], name=output_name, scale=item["scale"], translate=item["translate"])
+                lines.append(
+                    f"[{labels_layer.name}] -> [{output_name}] {item['op_name']} "
+                    f"objects={stats['object_count']} fg={stats['foreground_pixels']} px largest={stats['largest_object']} px."
+                )
+            else:
+                output_name = next_output_name(viewer, item.get("output_name") or f"{labels_layer.name}_{item['op_name']}")
+                viewer.add_image(item["result"], name=output_name, scale=item["scale"], translate=item["translate"])
+                lines.append(
+                    f"[{labels_layer.name}] -> [{output_name}] {item['op_name']} "
+                    f"mean={stats['mean']:.6g} std={stats['std']:.6g} min={stats['min']:.6g} max={stats['max']:.6g}."
+                )
         return f"Applied {result['op_name']} to {applied} labels layers.\n" + "\n".join(lines)
 
     return f"Unsupported tool result: {kind}"
