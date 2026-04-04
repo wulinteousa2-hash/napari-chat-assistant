@@ -960,6 +960,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "1.8.2":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added an explicit `matplotlib` dependency for analysis widgets that embed plots.\n"
+                "- Kept the workspace dependency fallback so the dock can still load if OME-Zarr support is incomplete.\n"
+                "- Continued packaging fixes for cleaner installs in fresh napari environments."
+            )
         if current == "1.8.1":
             return (
                 f"**What's New In {current}**\n"

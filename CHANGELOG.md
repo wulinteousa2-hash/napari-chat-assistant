@@ -2,6 +2,11 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.8.2
+
+- Added an explicit `matplotlib` runtime dependency because the ROI intensity, line-profile, and group-comparison widgets import Matplotlib plot canvases directly.
+- Kept the `1.8.1` workspace dependency fallback so fresh installs continue to load the main dock even when OME-Zarr-related packages are incomplete.
+
 ## 1.8.1
 
 - Fixed a plugin startup failure caused by importing workspace persistence during dock initialization when the OME-Zarr stack was incomplete in the active napari environment.
