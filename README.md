@@ -52,6 +52,8 @@ This is now a core design principle of the plugin: reduce how many clicks and ho
 
 ## Interface Overview
 
+![Interface overview](docs/interface-overview.png)
+
 The main dock is organized into a small number of practical work areas:
 
 1. `Connection and model controls`
