@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import hashlib
+import importlib
 import time
 import uuid
 from contextlib import redirect_stdout
@@ -126,10 +127,25 @@ from napari_chat_assistant.agent.telemetry_summary import (
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_help import answer_ui_question
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
-from napari_chat_assistant.agent.workspace_state import load_workspace_manifest, save_workspace_manifest
 from napari_chat_assistant.widgets.intensity_metrics_widget import open_intensity_metrics_widget
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 from napari_chat_assistant.widgets.line_profile_widget import open_line_profile_gaussian_fit_widget
+
+
+_WORKSPACE_DEPENDENCY_MESSAGE = (
+    "Workspace save/load is not available in this environment.\n\n"
+    "Install or repair the workspace dependencies in the same Python environment as napari:\n"
+    "`pip install numcodecs zarr ome-zarr`\n\n"
+    "The rest of the plugin can still be used without workspace persistence."
+)
+
+
+def _workspace_state_functions():
+    try:
+        module = importlib.import_module("napari_chat_assistant.agent.workspace_state")
+    except Exception as exc:
+        raise RuntimeError(_WORKSPACE_DEPENDENCY_MESSAGE) from exc
+    return module.load_workspace_manifest, module.save_workspace_manifest
 
 
 class ChatInput(QTextEdit):
@@ -944,6 +960,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "1.8.1":
+            return (
+                f"**What's New In {current}**\n"
+                "- Fixed plugin startup failures in environments missing workspace persistence dependencies.\n"
+                "- Added an explicit `numcodecs` package dependency for OME-Zarr workspace support.\n"
+                "- Workspace save/load now fails gracefully with install guidance instead of blocking the whole dock."
+            )
         if current == "1.8.0":
             return (
                 f"**What's New In {current}**\n"
@@ -1759,6 +1782,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
         return str(workspace_dir / "napari_workspace.json")
 
     def save_workspace_common(*, choose_path: bool) -> None:
+        try:
+            _load_workspace_manifest, _save_workspace_manifest = _workspace_state_functions()
+        except Exception as exc:
+            append_log(f"Save workspace unavailable: {exc}")
+            set_status("Status: workspace save unavailable", ok=False)
+            workspace_status.setText(str(exc))
+            return
         destination = workspace_default_path()
         if choose_path or not destination.strip():
             selected, _ = QFileDialog.getSaveFileName(
@@ -1771,7 +1801,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return
             destination = selected
         try:
-            result = save_workspace_manifest(viewer, destination)
+            result = _save_workspace_manifest(viewer, destination)
         except Exception as exc:
             append_log(f"Save workspace failed: {exc}")
             set_status("Status: save workspace failed", ok=False)
@@ -1793,6 +1823,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: workspace saved", ok=True)
 
     def load_workspace_common(*, choose_path: bool) -> None:
+        try:
+            _load_workspace_manifest, _save_workspace_manifest = _workspace_state_functions()
+        except Exception as exc:
+            append_log(f"Load workspace unavailable: {exc}")
+            set_status("Status: workspace load unavailable", ok=False)
+            workspace_status.setText(str(exc))
+            return
         source_path = workspace_default_path()
         if choose_path or not source_path.strip():
             selected, _ = QFileDialog.getOpenFileName(
@@ -1809,7 +1846,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no workspace file selected", ok=False)
             return
         try:
-            result = load_workspace_manifest(
+            result = _load_workspace_manifest(
                 viewer,
                 source_path,
                 clear_existing=bool(workspace_clear_checkbox.isChecked()),

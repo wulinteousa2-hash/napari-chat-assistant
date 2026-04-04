@@ -2,6 +2,12 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.8.1
+
+- Fixed a plugin startup failure caused by importing workspace persistence during dock initialization when the OME-Zarr stack was incomplete in the active napari environment.
+- Added an explicit `numcodecs` dependency so workspace persistence installs with the required codec package more reliably.
+- Changed workspace save/load wiring to import lazily and show a clear install-repair message when workspace dependencies are unavailable, allowing the rest of the plugin to keep loading normally.
+
 ## 1.8.0
 
 - Switched workspace asset storage to a `workspace.json` manifest plus OME-Zarr sidecar assets for generated `Image` and `Labels` layers, making saved workspaces more scalable for large derived data such as montages and presentation outputs.
