@@ -220,6 +220,85 @@ def _coerce_point_label(value) -> int | None:
     return None
 
 
+def _synthetic_2d_gray(seed: int = 7) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    y, x = 256, 256
+    yy, xx = np.meshgrid(np.arange(y), np.arange(x), indexing="ij")
+    image = np.zeros((y, x), dtype=np.float32)
+    for _ in range(12):
+        cy = rng.uniform(24, y - 24)
+        cx = rng.uniform(24, x - 24)
+        ry = rng.uniform(10.0, 28.0)
+        rx = rng.uniform(10.0, 28.0)
+        amp = rng.uniform(0.4, 1.0)
+        blob = np.exp(-(((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2) * 1.6).astype(np.float32)
+        image += amp * blob
+    image += 0.10 * rng.normal(size=image.shape).astype(np.float32)
+    image = ndi.gaussian_filter(image, sigma=1.1)
+    image -= image.min()
+    image /= image.max() + 1e-8
+    return image.astype(np.float32)
+
+
+def _synthetic_3d_gray(seed: int = 7) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    z, y, x = 24, 128, 128
+    zz, yy, xx = np.meshgrid(np.arange(z), np.arange(y), np.arange(x), indexing="ij")
+    volume = np.zeros((z, y, x), dtype=np.float32)
+    for _ in range(10):
+        cz = rng.uniform(3, z - 3)
+        cy = rng.uniform(16, y - 16)
+        cx = rng.uniform(16, x - 16)
+        rz = rng.uniform(1.5, 3.5)
+        ry = rng.uniform(8.0, 18.0)
+        rx = rng.uniform(8.0, 18.0)
+        amp = rng.uniform(0.4, 1.0)
+        blob = np.exp(-(((zz - cz) / rz) ** 2 + ((yy - cy) / ry) ** 2 + ((xx - cx) / rx) ** 2) * 1.6).astype(np.float32)
+        volume += amp * blob
+    volume += 0.08 * rng.normal(size=volume.shape).astype(np.float32)
+    volume = ndi.gaussian_filter(volume, sigma=(0.6, 1.0, 1.0))
+    volume -= volume.min()
+    volume /= volume.max() + 1e-8
+    return volume.astype(np.float32)
+
+
+def _synthetic_2d_rgb(seed: int = 7) -> np.ndarray:
+    base = _synthetic_2d_gray(seed=seed)
+    rgb = np.stack(
+        [
+            np.clip(base * 0.95, 0.0, 1.0),
+            np.clip(np.roll(base, shift=12, axis=0) * 0.80, 0.0, 1.0),
+            np.clip(np.roll(base, shift=10, axis=1) * 0.70, 0.0, 1.0),
+        ],
+        axis=-1,
+    )
+    return rgb.astype(np.float32)
+
+
+def _synthetic_3d_rgb(seed: int = 7) -> np.ndarray:
+    base = _synthetic_3d_gray(seed=seed)
+    rgb = np.stack(
+        [
+            np.clip(base * 0.95, 0.0, 1.0),
+            np.clip(np.roll(base, shift=2, axis=0) * 0.80, 0.0, 1.0),
+            np.clip(np.roll(base, shift=6, axis=2) * 0.70, 0.0, 1.0),
+        ],
+        axis=-1,
+    )
+    return rgb.astype(np.float32)
+
+
+def _synthetic_demo_payload(variant: str, seed: int = 7) -> tuple[np.ndarray, str]:
+    normalized = str(variant or "2d_gray").strip().lower()
+    if normalized == "3d_gray":
+        return _synthetic_3d_gray(seed=seed), "synthetic_demo_3d_gray"
+    if normalized == "2d_rgb":
+        return _synthetic_2d_rgb(seed=seed), "synthetic_demo_2d_rgb"
+    if normalized == "3d_rgb":
+        return _synthetic_3d_rgb(seed=seed), "synthetic_demo_3d_rgb"
+    return _synthetic_2d_gray(seed=seed), "synthetic_demo_2d_gray"
+
+
 def _points_prompt_xy_and_labels(layer: Points) -> tuple[np.ndarray, np.ndarray]:
     indices = sorted(int(i) for i in (getattr(layer, "selected_data", set()) or set()))
     if not indices:
@@ -1389,6 +1468,64 @@ class SetLayerScaleTool:
             return f"No valid scale was resolved for [{layer.name}]."
         layer.scale = resolved_scale
         return f"Set scale for [{layer.name}] to {resolved_scale}."
+
+
+class CreateSyntheticDemoImageTool:
+    spec = ToolSpec(
+        name="create_synthetic_demo_image",
+        display_name="Create Synthetic Demo Image",
+        category="demo",
+        description="Create a small synthetic 2D/3D grayscale or RGB demo image for testing.",
+        execution_mode="immediate",
+        supported_layer_types=(),
+        parameter_schema=(
+            ParamSpec(
+                "variant",
+                "string",
+                description="Synthetic demo variant.",
+                default="2d_gray",
+                enum=("2d_gray", "3d_gray", "2d_rgb", "3d_rgb"),
+            ),
+            ParamSpec("seed", "int", description="Random seed.", default=7),
+        ),
+        output_type="image_layer",
+        ui_metadata={"panel_group": "Demo"},
+        provenance_metadata={"algorithm": "synthetic_demo_generator", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        variant = str(args.get("variant") or "2d_gray").strip().lower() or "2d_gray"
+        if variant not in {"2d_gray", "3d_gray", "2d_rgb", "3d_rgb"}:
+            return "Unsupported synthetic demo variant. Use 2d_gray, 3d_gray, 2d_rgb, or 3d_rgb."
+        seed = normalize_int(args.get("seed", 7), default=7, minimum=0, maximum=1_000_000)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "variant": variant,
+                "seed": seed,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        image, base_name = _synthetic_demo_payload(payload["variant"], seed=int(payload["seed"]))
+        payload["image"] = image
+        payload["base_name"] = base_name
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=payload)
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        output_name = next_output_name(ctx.viewer, payload["base_name"])
+        image = np.asarray(payload["image"], dtype=np.float32)
+        is_rgb = bool(image.ndim >= 3 and image.shape[-1] == 3)
+        kwargs = {"rgb": True} if is_rgb else {"colormap": "gray"}
+        ctx.viewer.add_image(image, name=output_name, **kwargs)
+        variant = str(payload["variant"]).replace("_", " ")
+        return f"Created [{output_name}] as a synthetic {variant} demo image."
 
 
 class ArrangeLayersForPresentationTool:
@@ -3938,6 +4075,7 @@ def workbench_scaffold_tools():
         ShowAllExceptLayersTool(),
         ShowAllLayersTool(),
         SetLayerScaleTool(),
+        CreateSyntheticDemoImageTool(),
         ArrangeLayersForPresentationTool(),
         CreateAnalysisMontageTool(),
         SplitMontageAnnotationsTool(),

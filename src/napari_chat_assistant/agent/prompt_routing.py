@@ -287,6 +287,132 @@ def _prefers_interactive_group_widget(text: str) -> bool:
     return _has_any(source, interactive_terms)
 
 
+def _looks_like_demo_onboarding_request(text: str) -> bool:
+    source = _normalize_text(text)
+    if not source:
+        return False
+    no_image_terms = (
+        "no image",
+        "no images",
+        "dont have any image",
+        "don't have any image",
+        "dont have image",
+        "don't have image",
+        "dont have an image",
+        "don't have an image",
+        "do not have any image",
+        "do not have image",
+        "do not have an image",
+        "without image",
+        "without any image",
+        "no microscopy image",
+        "no microscopy images",
+        "i dont bring image",
+        "i don't bring image",
+        "i have no image",
+        "i have no images",
+    )
+    demo_terms = (
+        "how can i test",
+        "how do i test",
+        "test your ability",
+        "test your power",
+        "test the plugin",
+        "show me a demo",
+        "demo",
+        "what can i test",
+        "what should i do",
+        "not sure how can i test",
+        "not sure how to test",
+    )
+    return _has_any(source, no_image_terms) and _has_any(source, demo_terms)
+
+
+def _demo_onboarding_message() -> str:
+    return (
+        "No problem. You do not need a real microscopy image to test the plugin.\n\n"
+        "The fastest options are:\n"
+        "- Use the Library `Templates` tab, open the `Data` category, and double-click a synthetic dataset template to run it immediately.\n"
+        "- If you prefer, ask me to generate a synthetic image here in chat, such as a 2D grayscale image, a 3D grayscale volume, or an RGB sample.\n\n"
+        "If you are not comfortable with Python, the `Templates` -> `Data` route is the easiest because it creates demo layers for you directly. "
+        "You can also load a template first to inspect the code before running it.\n\n"
+        "Once the demo image is loaded, I can show ROI measurement, histogram plotting, thresholding, segmentation, and widget-based analysis."
+    )
+
+
+def _looks_like_getting_started_request(text: str) -> bool:
+    source = _normalize_text(text)
+    if not source:
+        return False
+    start_terms = (
+        "how do i start",
+        "how should i start",
+        "where do i start",
+        "how can i start",
+        "how do i begin",
+        "where do i begin",
+        "getting started",
+        "get started",
+        "what should i do first",
+        "how to start",
+    )
+    return _has_any(source, start_terms)
+
+
+def _getting_started_message(has_selected_layer: bool) -> str:
+    if has_selected_layer:
+        return (
+            "Start with a simple action on the current viewer. A good first step is to inspect the selected layer, "
+            "plot a histogram, try denoising, preview a threshold, or open a measurement widget depending on what you want to learn.\n\n"
+            "If you want, tell me your goal and I can suggest the best first operation."
+        )
+    return (
+        "The easiest start is to load or generate a test image, then try one simple workflow on it.\n\n"
+        "You can use the Library `Templates` tab, open the `Data` category, and run a synthetic dataset, or I can generate a synthetic 2D grayscale, 3D grayscale, 2D RGB, or 3D RGB demo image here in chat.\n\n"
+        "Once an image is loaded, good first things to try are histogram plotting, denoising, threshold preview, ROI measurement, or opening an analysis widget."
+    )
+
+
+def _infer_synthetic_demo_variant(text: str) -> str:
+    source = _normalize_text(text)
+    if not source:
+        return ""
+    if _has_any(source, ("3d rgb", "rgb 3d", "3-dimensional rgb", "3d color", "3d colour")):
+        return "3d_rgb"
+    if _has_any(source, ("2d rgb", "rgb 2d", "2-dimensional rgb", "2d color", "2d colour", "rgb image")):
+        return "2d_rgb"
+    if _has_any(source, ("3d grayscale", "3d gray", "3d grey", "grayscale 3d", "gray 3d", "grey 3d", "3d volume")):
+        return "3d_gray"
+    if _has_any(source, ("2d grayscale", "2d gray", "2d grey", "grayscale 2d", "gray 2d", "grey 2d")):
+        return "2d_gray"
+    if source in {"rgb", "color", "colour"}:
+        return "2d_rgb"
+    if source in {"3d", "3d grayscale", "3d gray", "3d grey"}:
+        return "3d_gray"
+    if source in {"2d", "2d grayscale", "2d gray", "2d grey", "grayscale", "gray", "grey"}:
+        return "2d_gray"
+    return ""
+
+
+def _looks_like_synthetic_demo_request(text: str) -> bool:
+    source = _normalize_text(text)
+    if not source:
+        return False
+    if _has_any(source, ("synthetic image", "synthetic demo", "demo image", "test image", "sample image")):
+        return True
+    creation_terms = ("create", "generate", "make", "add")
+    variant = _infer_synthetic_demo_variant(source)
+    if variant and _has_any(source, creation_terms):
+        return True
+    if variant and len(source.split()) <= 4:
+        return True
+    return False
+
+
+def _synthetic_demo_choice_message() -> str:
+    return "Sure. I can generate a synthetic 2D grayscale image, 3D grayscale volume, 2D RGB image, or 3D RGB volume. Which one would you like?"
+
+
 def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None = None) -> dict | None:
     source = _normalize_text(text)
     if not source:
@@ -296,6 +422,33 @@ def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None =
     layer_type = str(profile.get("layer_type", "")).strip().lower()
     layer_name = str(profile.get("layer_name", "")).strip()
     semantic_type = str(profile.get("semantic_type", "")).strip().lower()
+    has_selected_layer = bool(layer_type or layer_name or semantic_type)
+
+    if not has_selected_layer and _looks_like_demo_onboarding_request(source):
+        return {
+            "action": "reply",
+            "message": _demo_onboarding_message(),
+        }
+
+    if _looks_like_getting_started_request(source):
+        return {
+            "action": "reply",
+            "message": _getting_started_message(has_selected_layer),
+        }
+
+    if _looks_like_synthetic_demo_request(source):
+        variant = _infer_synthetic_demo_variant(source)
+        if not variant:
+            return {
+                "action": "reply",
+                "message": _synthetic_demo_choice_message(),
+            }
+        return {
+            "action": "tool",
+            "tool": "create_synthetic_demo_image",
+            "arguments": {"variant": variant},
+            "message": f"Creating a synthetic {variant.replace('_', ' ')} demo image.",
+        }
 
     if _looks_like_roi_measurement_request(source):
         roi_layer_name = layer_name if layer_type == "shapes" or semantic_type == "roi_shapes" else ""

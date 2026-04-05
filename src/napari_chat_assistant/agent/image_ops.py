@@ -99,9 +99,12 @@ def compare_intensity_populations(data_a, data_b, *, equal_var: bool = True) -> 
     }
 
 
-def auto_threshold_mask(data, polarity: str = "auto") -> tuple[float, np.ndarray]:
+def auto_threshold_mask(data, polarity: str = "auto", threshold_value: float | None = None) -> tuple[float, np.ndarray]:
     arr = np.asarray(data)
-    threshold_value = float(threshold_otsu(arr))
+    if threshold_value is None:
+        threshold_value = float(threshold_otsu(arr))
+    else:
+        threshold_value = float(threshold_value)
     normalized = str(polarity or "auto").strip().lower()
     if normalized == "dim":
         mask = arr <= threshold_value

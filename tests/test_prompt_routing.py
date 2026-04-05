@@ -50,6 +50,85 @@ def test_route_local_workflow_prompt_skips_non_image_selected_layer():
     assert route is None
 
 
+def test_route_local_workflow_prompt_handles_no_image_demo_onboarding():
+    route = route_local_workflow_prompt(
+        "I dont have any image with me. Not sure how can I test your ability.",
+        None,
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "Templates" in route["message"]
+    assert "Data" in route["message"]
+    assert "synthetic image" in route["message"]
+
+
+def test_route_local_workflow_prompt_handles_no_image_who_are_you_demo_case():
+    route = route_local_workflow_prompt(
+        "Who are you? I don't have an image and just want to test the plugin.",
+        {},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "do not need a real microscopy image" in route["message"]
+
+
+def test_route_local_workflow_prompt_does_not_route_plain_identity_question():
+    route = route_local_workflow_prompt(
+        "Howdy, who are you?",
+        {},
+    )
+
+    assert route is None
+
+
+def test_route_local_workflow_prompt_routes_direct_synthetic_variant_request():
+    route = route_local_workflow_prompt(
+        "create 2D grayscale",
+        {},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool"
+    assert route["tool"] == "create_synthetic_demo_image"
+    assert route["arguments"]["variant"] == "2d_gray"
+
+
+def test_route_local_workflow_prompt_replies_when_synthetic_variant_is_unspecified():
+    route = route_local_workflow_prompt(
+        "can you generate a synthetic image?",
+        {},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "2D grayscale" in route["message"]
+
+
+def test_route_local_workflow_prompt_handles_getting_started_without_layers():
+    route = route_local_workflow_prompt(
+        "how do i start?",
+        {},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "load or generate a test image" in route["message"]
+    assert "Templates" in route["message"]
+
+
+def test_route_local_workflow_prompt_handles_getting_started_with_selected_layer():
+    route = route_local_workflow_prompt(
+        "how do i start?",
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "inspect the selected layer" in route["message"]
+
+
 def test_infer_tool_clarification_request_detects_gaussian_layer_question():
     payload = infer_tool_clarification_request(
         "Which image layer would you like to apply Gaussian denoising to "

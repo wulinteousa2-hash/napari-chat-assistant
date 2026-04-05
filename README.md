@@ -120,6 +120,8 @@ This makes it a better fit for research and facility environments where users wa
 
 ## What's New In 1.8.0
 
+Later updates through `1.8.3` mainly refined chat follow-up routing, demo onboarding, and state-aware tool reuse without changing the main `1.8.0` feature focus.
+
 - expanded deterministic `Masks` workflows with a fuller binary-image toolset, including erosion, dilation, opening, closing, skeletonization, distance map, watershed, and Voronoi-style region generation
 - improved `Actions` previews with parameter hints and prompt examples so users can see what defaults exist and how to fine-tune them in chat
 - upgraded workspace persistence to use a JSON manifest plus OME-Zarr assets for generated image and labels data

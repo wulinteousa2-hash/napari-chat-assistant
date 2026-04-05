@@ -17,3 +17,13 @@ def test_assistant_system_prompt_includes_response_examples():
     assert '"ok", "okay", "go", or "continue"' in prompt
     assert "do not use `run_in_background(...)`" in prompt
     assert "setting layer.scale" in prompt
+    assert "Templates` -> `Data`" in prompt
+    assert "synthetic 2D grayscale, 3D grayscale, or RGB example" in prompt
+    assert 'user says "howdy, who are you?"' in prompt
+    assert "natural, confident, helpful tone" in prompt
+    assert 'user says "how do i start?"' in prompt
+    assert "answer that question directly instead of repeating your full self-introduction" in prompt
+    assert "prefer clear foreground wording such as brighter regions, dimmer regions, or foreground selection" in prompt
+    assert "summarize_intensity is a quick text summary in chat" in prompt
+    assert "plot_histogram is a global image-intensity distribution view" in prompt
+    assert "interactive ROI measurement workflow" in prompt

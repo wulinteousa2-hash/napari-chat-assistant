@@ -4,15 +4,12 @@
 
 Current assistant-exposed tool surface in `napari-chat-assistant`.
 
-## Runtime Split
+## Runtime Model
 
 - `registry-backed`
-  - modern `ToolRegistry` path
+  - all assistant-visible tools now resolve through `ToolRegistry`
   - specs live on tool classes
-  - preferred path for new tools
-- `dispatcher-backed`
-  - exposed to the assistant but still handled by `dispatcher.py`
-  - legacy / transitional path
+  - both `immediate` and `worker` tools use the same `prepare/execute/apply` flow
 - `placeholder`
   - registered name exists
   - not implemented yet
@@ -72,7 +69,7 @@ Current assistant-exposed tool surface in `napari-chat-assistant`.
 - `sam_refine_mask` (`placeholder`)
 - `sam_auto_segment` (`placeholder`)
 
-## Dispatcher-Backed Tools
+## Registry-Backed Tools Migrated From The Legacy Dispatcher
 
 ### Session / Layer Inspection
 
@@ -130,4 +127,4 @@ Current assistant-exposed tool surface in `napari-chat-assistant`.
 
 - add new tools through `ToolRegistry`
 - keep assistant-visible names in sync with `assistant_system_prompt()`
-- migrate dispatcher-backed tools into registry-backed classes over time
+- keep `dispatcher.py` as a thin adapter only, not a second implementation surface

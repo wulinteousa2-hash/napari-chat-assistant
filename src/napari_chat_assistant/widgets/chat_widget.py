@@ -4,6 +4,7 @@ import io
 import json
 import hashlib
 import importlib
+import re
 import time
 import uuid
 from contextlib import redirect_stdout
@@ -97,6 +98,12 @@ from napari_chat_assistant.agent.pending_action import (
     resolve_pending_action,
 )
 from napari_chat_assistant.agent.prompt_routing import route_local_workflow_prompt
+from napari_chat_assistant.agent.recent_action_state import (
+    empty_recent_action_state,
+    latest_recent_action,
+    record_recent_action,
+    route_recent_action_followup,
+)
 from napari_chat_assistant.agent.sam2_backend import (
     discover_sam2_setup,
     get_sam2_backend_status,
@@ -718,6 +725,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
     pending_action_state = empty_pending_action()
     session_memory_state = load_session_memory()
+    recent_action_state = empty_recent_action_state()
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     template_library_state = template_library_payload()
@@ -960,6 +968,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "1.8.3":
+            return (
+                f"**What's New In {current}**\n"
+                "- Improved chat follow-up routing, demo onboarding, and recent-action reuse for more natural multi-turn workflows.\n"
+                "- Kept the broader `1.8.0` workbench feature set as the main release milestone."
+            )
         if current == "1.8.2":
             return (
                 f"**What's New In {current}**\n"
@@ -1142,7 +1156,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             compare_layer_a_combo.setCurrentText(names[0])
             compare_layer_b_combo.setCurrentText(names[0])
 
-    def run_prepared_tool_request(prepared: dict, *, tool_name: str, tool_message: str = ""):
+    def run_prepared_tool_request(prepared: dict, *, tool_name: str, tool_message: str = "", turn_id_value: str = ""):
         nonlocal session_memory_state
         if prepared.get("mode") == "immediate":
             try:
@@ -1161,6 +1175,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
             append_log(f"Tool executed from Analysis panel: {tool_name}")
             set_status(f"Status: {tool_name} completed", ok=True)
+            remember_recent_action(
+                tool_name=tool_name,
+                turn_id_value=turn_id_value or last_turn_metrics.get("turn_id", ""),
+                message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                tool_result=tool_result if "job" in prepared else None,
+            )
             remember_assistant_outcome(
                 tool_message or result_message,
                 target_type="tool_result",
@@ -1186,6 +1206,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
         append_log(f"Tool executed from Analysis panel: {tool_name}")
         set_status(f"Status: {tool_name} completed", ok=True)
+        remember_recent_action(
+            tool_name=tool_name,
+            turn_id_value=turn_id_value or last_turn_metrics.get("turn_id", ""),
+            message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+            tool_result=result,
+        )
         remember_assistant_outcome(
             tool_message or result_message,
             target_type="tool_result",
@@ -1545,7 +1571,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- Combines Prompt, Code, Templates, Actions, and user-defined Shortcuts.\n"
             "- Designed to reduce click count and keep analysis close to the viewer.\n"
             "- MIT License\n"
-            "- Copyright (c) 2025 Wulin Teo",
+            "- Copyright (c) 2026 Wulin Teo",
         )
         append_log(f"Opened about panel for version {__version__}.")
         set_status("Status: about info shown", ok=None)
@@ -1596,6 +1622,269 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if item_id:
             set_last_memory_candidates([item_id])
             persist_session_memory()
+
+    def classify_recent_action_kind(tool_name: str) -> str:
+        token = str(tool_name or "").strip().lower()
+        if "threshold" in token:
+            return "threshold"
+        if "gaussian" in token or "clahe" in token:
+            return "enhancement"
+        if "roi" in token or "measure" in token or "histogram" in token:
+            return "measurement"
+        if "widget" in token:
+            return "widget"
+        if "synthetic" in token or "demo" in token:
+            return "demo"
+        return token or "tool"
+
+    def build_recent_action_entry(
+        *,
+        tool_name: str,
+        turn_id_value: str,
+        message: str,
+        tool_result: dict | None = None,
+    ) -> dict:
+        entry = {
+            "tool_name": str(tool_name or "").strip(),
+            "action_kind": classify_recent_action_kind(tool_name),
+            "turn_id": str(turn_id_value or "").strip(),
+            "message": " ".join(str(message or "").split()).strip(),
+            "input_layers": [],
+            "output_layers": [],
+            "parameters": {},
+            "result_summary": {},
+            "explanation_hints": {},
+        }
+        payload = dict(tool_result or {})
+        if not payload:
+            return entry
+        for key in ("layer_name", "image_layer_name", "layer_name_a", "layer_name_b", "mask_layer_name", "roi_layer_name"):
+            value = str(payload.get(key, "")).strip()
+            if value and value not in entry["input_layers"]:
+                entry["input_layers"].append(value)
+        for key in ("output_name", "layer_name"):
+            value = str(payload.get(key, "")).strip()
+            if key == "layer_name":
+                continue
+            if value and value not in entry["output_layers"]:
+                entry["output_layers"].append(value)
+        if classify_recent_action_kind(tool_name) == "threshold":
+            mode = str(payload.get("polarity", "auto")).strip().lower() or "auto"
+            threshold_value = payload.get("threshold_value")
+            threshold_text = ""
+            try:
+                threshold_text = f"{float(threshold_value):.6g}"
+            except Exception:
+                threshold_text = ""
+            data = np.asarray(payload.get("data")) if payload.get("data") is not None else np.asarray([], dtype=np.float32)
+            finite = data[np.isfinite(data)] if data.size else np.asarray([], dtype=np.float32)
+            if mode == "auto":
+                try:
+                    resolved_mode = "bright" if finite.size and float(threshold_value) >= float(np.mean(finite)) else "dim"
+                except Exception:
+                    resolved_mode = "bright"
+            else:
+                resolved_mode = mode
+            mode_label = (
+                "bright regions"
+                if resolved_mode == "bright"
+                else "dim regions"
+                if resolved_mode == "dim"
+                else "automatic foreground selection"
+            )
+            mode_explanation = (
+                "keep pixels brighter than the threshold as foreground"
+                if resolved_mode == "bright"
+                else "keep pixels dimmer than the threshold as foreground"
+                if resolved_mode == "dim"
+                else "choose whether brighter or dimmer pixels should be foreground automatically"
+            )
+            entry["parameters"] = {
+                "threshold_value": threshold_value,
+                "foreground_mode": mode,
+                "foreground_mode_resolved": resolved_mode,
+                "image_min": float(np.min(finite)) if finite.size else None,
+                "image_max": float(np.max(finite)) if finite.size else None,
+            }
+            entry["result_summary"] = dict(payload.get("stats", {}) or {})
+            entry["explanation_hints"] = {
+                "foreground_label": mode_label,
+                "foreground_explanation": mode_explanation,
+                "threshold_text": threshold_text,
+            }
+        elif str(tool_name).strip() == "plot_histogram":
+            histogram = dict(payload.get("histogram", {}) or {})
+            stats = dict(histogram.get("stats", {}) or {})
+            bins = histogram.get("bins")
+            layer_name = str(payload.get("layer_name", "")).strip()
+            if layer_name:
+                entry["input_layers"] = [layer_name]
+            entry["parameters"] = {"bins": bins}
+            entry["result_summary"] = stats
+            entry["explanation_hints"] = {
+                "kind_label": "global intensity histogram",
+                "meaning": "shows how many pixels fall into each intensity range across the whole image",
+            }
+        elif str(tool_name).strip() == "summarize_intensity":
+            compact = " ".join(str(message or "").split())
+            layer_match = re.search(r"Layer:\s*\[([^\]]+)\]", compact)
+            if layer_match:
+                entry["input_layers"] = [layer_match.group(1)]
+            stats = {}
+            for label, key in (
+                ("Pixels", "count"),
+                ("Mean", "mean"),
+                ("Std Dev", "std"),
+                ("Median", "median"),
+                ("Min", "min"),
+                ("Max", "max"),
+            ):
+                match = re.search(rf"{re.escape(label)}:\s*([0-9.eE+-]+)", compact)
+                if match:
+                    try:
+                        stats[key] = float(match.group(1))
+                    except Exception:
+                        pass
+            entry["result_summary"] = stats
+            entry["explanation_hints"] = {
+                "kind_label": "whole-image intensity summary",
+                "meaning": "reports simple image-wide statistics in chat rather than opening an interactive widget",
+            }
+        return entry
+
+    def remember_recent_action(*, tool_name: str, turn_id_value: str, message: str, tool_result: dict | None = None) -> None:
+        nonlocal recent_action_state
+        recent_action_state = record_recent_action(
+            recent_action_state,
+            build_recent_action_entry(
+                tool_name=tool_name,
+                turn_id_value=turn_id_value,
+                message=message,
+                tool_result=tool_result,
+            ),
+        )
+
+    def looks_like_threshold_followup(text: str) -> bool:
+        source = " ".join(str(text or "").strip().lower().split())
+        if not source:
+            return False
+        phrases = (
+            "what is polarity",
+            "what is bright",
+            "what is dim",
+            "what does bright mean",
+            "what does dim mean",
+            "what parameter",
+            "how did you do that",
+            "how did you do it",
+            "how did you make that mask",
+            "how do you adjust",
+            "how did you adjust",
+            "how did you choose",
+            "how did you come out with the mask",
+            "what threshold",
+            "explain the threshold",
+        )
+        return any(phrase in source for phrase in phrases)
+
+    def looks_like_histogram_followup(text: str) -> bool:
+        source = " ".join(str(text or "").strip().lower().split())
+        if not source:
+            return False
+        phrases = (
+            "what does this histogram mean",
+            "what does the histogram mean",
+            "what is this histogram",
+            "what am i looking at",
+            "is this bimodal",
+            "can i use this for thresholding",
+            "what does bimodal mean",
+        )
+        return any(phrase in source for phrase in phrases)
+
+    def looks_like_intensity_summary_followup(text: str) -> bool:
+        source = " ".join(str(text or "").strip().lower().split())
+        if not source:
+            return False
+        phrases = (
+            "what does mean mean",
+            "what does std mean",
+            "what does median mean",
+            "is this roi",
+            "is this whole image",
+            "what do these numbers mean",
+            "what does max mean",
+            "what does min mean",
+        )
+        return any(phrase in source for phrase in phrases)
+
+    def reply_for_threshold_followup(text: str) -> str:
+        action = latest_recent_action(recent_action_state, lambda item: item.get("action_kind") == "threshold")
+        if not action:
+            return ""
+        source = " ".join(str(text or "").strip().lower().split())
+        hints = dict(action.get("explanation_hints", {}) or {})
+        threshold_value = str(hints.get("threshold_text", "")).strip()
+        mode_name = str(hints.get("foreground_label", "")).strip() or "foreground selection"
+        mode_explanation = str(hints.get("foreground_explanation", "")).strip() or "select foreground pixels with thresholding"
+        inputs = list(action.get("input_layers", []) or [])
+        outputs = list(action.get("output_layers", []) or [])
+        image_name = inputs[0] if inputs else ""
+        output_name = outputs[0] if outputs else ""
+
+        if any(phrase in source for phrase in ("what is polarity", "what is bright", "what is dim", "what does bright mean", "what does dim mean")):
+            detail = f'In this threshold tool, "{mode_name}" means {mode_explanation}.'
+            if threshold_value:
+                detail += f" The threshold value was {threshold_value}."
+            if image_name and output_name:
+                detail += f" That is how [{image_name}] became the mask layer [{output_name}]."
+            return detail
+
+        detail = "I made the mask with thresholding."
+        if image_name and output_name:
+            detail += f" I took [{image_name}] and created [{output_name}] from pixels on one side of the threshold."
+        detail += f" For this result I used {mode_name}, which means {mode_explanation}."
+        if threshold_value:
+            detail += f" The cutoff was {threshold_value}, so pixels beyond that cutoff were included in the mask."
+        return detail
+
+    def reply_for_histogram_followup(text: str) -> str:
+        action = latest_recent_action(recent_action_state, lambda item: item.get("tool_name") == "plot_histogram")
+        if not action:
+            return ""
+        source = " ".join(str(text or "").strip().lower().split())
+        hints = dict(action.get("explanation_hints", {}) or {})
+        stats = dict(action.get("result_summary", {}) or {})
+        layer_name = (action.get("input_layers") or [""])[0]
+        base = (
+            f"The histogram is a {str(hints.get('kind_label', 'intensity histogram')).strip()} for "
+            f"[{layer_name}]. It {str(hints.get('meaning', 'shows intensity distribution across the image')).strip()}."
+        )
+        if "bimodal" in source:
+            return base + " A bimodal histogram means there are two main intensity populations, which can make thresholding easier if one peak is background and the other is foreground."
+        if "threshold" in source:
+            mean_text = f" The image-wide mean intensity is {float(stats.get('mean', 0.0)):.6g}." if "mean" in stats else ""
+            return base + " It is useful for thresholding because separated peaks or a long bright tail can suggest a foreground/background split." + mean_text
+        return base + " The x-axis is intensity and the y-axis is the number of pixels in each intensity range."
+
+    def reply_for_intensity_summary_followup(text: str) -> str:
+        action = latest_recent_action(recent_action_state, lambda item: item.get("tool_name") == "summarize_intensity")
+        if not action:
+            return ""
+        source = " ".join(str(text or "").strip().lower().split())
+        stats = dict(action.get("result_summary", {}) or {})
+        layer_name = (action.get("input_layers") or [""])[0]
+        if any(phrase in source for phrase in ("is this roi", "is this whole image")):
+            return f"This summary is for the whole image layer [{layer_name}], not an ROI. For region-based intensity measurement, use ROI Intensity Analysis or an ROI-specific measurement tool."
+        if "std" in source:
+            return f"For [{layer_name}], std means how spread out the pixel intensities are around the mean. A larger std usually means broader contrast or more variation in brightness across the image."
+        if "median" in source:
+            return f"For [{layer_name}], the median is the middle pixel intensity when all intensities are sorted. It is often less sensitive to a few very bright pixels than the mean."
+        if "max" in source or "min" in source:
+            return f"For [{layer_name}], min and max are the darkest and brightest pixel values in the whole image. They tell you the range of intensities currently present."
+        mean_text = f"{float(stats.get('mean', 0.0)):.6g}" if "mean" in stats else "n/a"
+        std_text = f"{float(stats.get('std', 0.0)):.6g}" if "std" in stats else "n/a"
+        return f"This intensity summary is a quick whole-image readout for [{layer_name}]. Mean={mean_text} gives the average brightness, std={std_text} shows intensity spread, and median/min/max help describe the image without opening an interactive widget."
 
     def reject_last_memory(*_args):
         nonlocal session_memory_state
@@ -4242,6 +4531,84 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
             )
             return
+        recent_action_route = route_recent_action_followup(
+            text,
+            recent_action_state,
+            selected_layer_name=str((selected_layer_profile() or {}).get("layer_name", "")).strip(),
+            selected_layer_type=str((selected_layer_profile() or {}).get("layer_type", "")).strip(),
+        )
+        if isinstance(recent_action_route, dict) and recent_action_route.get("tool"):
+            tool_name = str(recent_action_route.get("tool", "")).strip()
+            prepared = prepare_tool_job(viewer, tool_name, recent_action_route.get("arguments", {}))
+            set_pending_action(None)
+            run_prepared_tool_request(
+                prepared,
+                tool_name=tool_name,
+                tool_message=str(recent_action_route.get("message", "")).strip(),
+                turn_id_value=turn_id,
+            )
+            append_log(f"Handled recent-action follow-up locally: {tool_name}")
+            return
+        threshold_followup_reply = reply_for_threshold_followup(text) if looks_like_threshold_followup(text) else ""
+        if threshold_followup_reply:
+            set_pending_action(None)
+            append_chat_message("assistant", threshold_followup_reply)
+            append_log("Answered threshold follow-up locally.")
+            set_status("Status: threshold explanation ready", ok=True)
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": "local_threshold_explainer",
+                    "base_url": "",
+                    "prompt_hash": prompt_hash(text),
+                    "prompt_category": "local_threshold_explanation",
+                    "response_action": "reply",
+                    "pending_code_generated": False,
+                    **selected_layer_snapshot(),
+                },
+            )
+            return
+        histogram_followup_reply = reply_for_histogram_followup(text) if looks_like_histogram_followup(text) else ""
+        if histogram_followup_reply:
+            set_pending_action(None)
+            append_chat_message("assistant", histogram_followup_reply)
+            append_log("Answered histogram follow-up locally.")
+            set_status("Status: histogram explanation ready", ok=True)
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": "local_histogram_explainer",
+                    "base_url": "",
+                    "prompt_hash": prompt_hash(text),
+                    "prompt_category": "local_histogram_explanation",
+                    "response_action": "reply",
+                    "pending_code_generated": False,
+                    **selected_layer_snapshot(),
+                },
+            )
+            return
+        intensity_summary_followup_reply = reply_for_intensity_summary_followup(text) if looks_like_intensity_summary_followup(text) else ""
+        if intensity_summary_followup_reply:
+            set_pending_action(None)
+            append_chat_message("assistant", intensity_summary_followup_reply)
+            append_log("Answered intensity-summary follow-up locally.")
+            set_status("Status: intensity summary explanation ready", ok=True)
+            record_telemetry(
+                "turn_completed",
+                {
+                    "turn_id": turn_id,
+                    "model": "local_intensity_summary_explainer",
+                    "base_url": "",
+                    "prompt_hash": prompt_hash(text),
+                    "prompt_category": "local_intensity_summary_explanation",
+                    "response_action": "reply",
+                    "pending_code_generated": False,
+                    **selected_layer_snapshot(),
+                },
+            )
+            return
         current_profile = selected_layer_profile() or {}
         selected_layer_name = str(current_profile.get("layer_name", "")).strip()
         available_names = image_layer_names()
@@ -4282,6 +4649,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
         if isinstance(local_workflow_route, dict):
             set_pending_action(None)
+            route_action = str(local_workflow_route.get("action", "")).strip().lower()
+            if route_action == "reply":
+                reply_message = str(local_workflow_route.get("message", "")).strip() or "I could not resolve that request."
+                append_chat_message("assistant", reply_message)
+                append_log("Handled request via local workflow route: reply")
+                set_status("Status: local workflow reply completed", ok=True)
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "reply",
+                        "tool_name": "",
+                        "tool_success": True,
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
             tool_name = str(local_workflow_route.get("tool", "")).strip()
             arguments = local_workflow_route.get("arguments", {})
             tool_message = str(local_workflow_route.get("message", "")).strip()
@@ -4291,6 +4680,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
                 append_log(f"Handled request via local workflow route: {tool_name}")
                 set_status(f"Status: {tool_name} completed", ok=True)
+                remember_recent_action(
+                    tool_name=tool_name,
+                    turn_id_value=turn_id,
+                    message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                )
                 record_telemetry(
                     "turn_completed",
                     {
@@ -4329,6 +4723,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
                     append_log(f"Handled request via local workflow route: {tool_name}")
                     set_status(f"Status: {tool_name} completed", ok=True)
+                    remember_recent_action(
+                        tool_name=tool_name,
+                        turn_id_value=turn_id,
+                        message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                        tool_result=tool_result,
+                    )
                     record_telemetry(
                         "turn_completed",
                         {
@@ -4459,6 +4859,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             **turn_layer_snapshot,
                         },
                     )
+                    remember_recent_action(
+                        tool_name=tool_name,
+                        turn_id_value=turn_id,
+                        message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                    )
                     remember_assistant_outcome(
                         tool_message or result_message,
                         target_type="tool_result",
@@ -4514,6 +4919,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     )
                     session_memory_state = approve_items(session_memory_state, last_memory_candidate_ids)
                     persist_session_memory()
+                    remember_recent_action(
+                        tool_name=tool_name,
+                        turn_id_value=turn_id,
+                        message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                        tool_result=tool_result,
+                    )
                     remember_assistant_outcome(
                         tool_message or result_message,
                         target_type="tool_result",

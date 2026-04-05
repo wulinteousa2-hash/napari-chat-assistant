@@ -2,6 +2,15 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.8.3
+
+- Improved chat onboarding so broad questions such as `who are you?`, `how do I start?`, and no-image demo requests are routed more naturally instead of falling into analysis-specific clarification loops.
+- Added built-in synthetic demo image generation for quick 2D grayscale, 3D grayscale, and RGB testing workflows directly from chat.
+- Unified more multi-turn behavior around recent-action state so the assistant can explain the last threshold result, distinguish histogram versus intensity-summary workflows more clearly, and keep follow-up questions on topic.
+- Added local follow-up handling for threshold refinement requests such as making a mask stricter or including more area, with reuse of the last threshold settings on the current or recent image.
+- Improved recent-action handoff so users can more naturally continue into histogram views or ROI Intensity Analysis from the image they were just working on.
+- Replaced threshold jargon like `polarity=bright` in chat-facing replies with more imaging-friendly wording such as keeping brighter or dimmer regions as foreground.
+
 ## 1.8.2
 
 - Added an explicit `matplotlib` runtime dependency because the ROI intensity, line-profile, and group-comparison widgets import Matplotlib plot canvases directly.
