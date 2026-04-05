@@ -39,6 +39,7 @@ class IntensityMetricsWidget(QWidget):
         self._rows: list[dict[str, Any]] = []
         self._refresh_pending = False
         self._refresh_apply_visibility = True
+        self._refresh_requeue = False
         self._updating_table = False
         self._hidden_shape_indices: set[int] = set()
 
@@ -171,6 +172,7 @@ class IntensityMetricsWidget(QWidget):
         del event
         if self._refresh_pending:
             self._refresh_apply_visibility = True
+            self._refresh_requeue = True
             return
         self._refresh_pending = True
         self._refresh_apply_visibility = True
@@ -179,6 +181,7 @@ class IntensityMetricsWidget(QWidget):
     def _schedule_measurement_refresh(self, event=None) -> None:
         del event
         if self._refresh_pending:
+            self._refresh_requeue = True
             return
         self._refresh_pending = True
         self._refresh_apply_visibility = False
@@ -186,9 +189,15 @@ class IntensityMetricsWidget(QWidget):
 
     def _run_scheduled_refresh(self) -> None:
         apply_visibility = self._refresh_apply_visibility
+        requeue = self._refresh_requeue
         self._refresh_pending = False
         self._refresh_apply_visibility = True
+        self._refresh_requeue = False
         self.refresh(apply_visibility=apply_visibility)
+        if requeue:
+            self._refresh_pending = True
+            self._refresh_apply_visibility = True
+            QTimer.singleShot(0, self._run_scheduled_refresh)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._disconnect_events()
@@ -414,11 +423,19 @@ class IntensityMetricsWidget(QWidget):
         active = self.viewer.layers.selection.active
         if self._is_live_shapes_layer(active) and self._area_shape_indices(active):
             return active
+        if image_layer_name:
+            paired_active = self._find_paired_shapes_layer(image_layer_name)
+            if self._is_live_shapes_layer(active) and active is paired_active:
+                return active
         if self._is_live_shapes_layer(self.shapes_layer) and self._area_shape_indices(self.shapes_layer):
             return self.shapes_layer
         if image_layer_name:
+            paired_current = self._find_paired_shapes_layer(image_layer_name)
+            if self._is_live_shapes_layer(self.shapes_layer) and self.shapes_layer is paired_current:
+                return self.shapes_layer
+        if image_layer_name:
             paired = self._find_paired_shapes_layer(image_layer_name)
-            if self._is_live_shapes_layer(paired) and self._area_shape_indices(paired):
+            if self._is_live_shapes_layer(paired):
                 return paired
         return None
 
@@ -470,6 +487,17 @@ class IntensityMetricsWidget(QWidget):
         data = np.asarray(layer.data, dtype=np.float32)
         if data.ndim < 2:
             raise ValueError(f"Layer '{layer.name}' must have at least 2 dimensions.")
+        if bool(getattr(layer, "rgb", False)) and data.ndim >= 3:
+            channels = min(int(data.shape[-1]), 3)
+            if channels <= 0:
+                raise ValueError(f"Layer '{layer.name}' does not contain usable RGB channels.")
+            if channels == 1:
+                plane = data[..., 0]
+            else:
+                weights = np.asarray([0.2126, 0.7152, 0.0722][:channels], dtype=np.float32)
+                weights = weights / float(np.sum(weights))
+                plane = np.tensordot(data[..., :channels], weights, axes=([-1], [0]))
+            return np.asarray(plane, dtype=np.float32), "full image RGB luminance"
         if data.ndim == 2:
             return data, "full image"
 

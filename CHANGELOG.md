@@ -2,6 +2,26 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 1.9.0
+
+- Added a new annotation workflow focus with non-destructive text overlays, deterministic promptable annotation tools, and Action-tab entries for common annotation tasks.
+- Added automatic labels-to-text annotation so users can annotate objects in a `Labels` layer by centroid with prompts such as `annotate template_blob_labels with particle 1 to 4`.
+- Added Legion-style callout annotation with outside label boxes and leader lines for 2D labels layers, so segmentation results can be presented more like figure callouts instead of plain text points.
+- Added boxed title labeling above 2D images with `outside_top` placement and `left`, `center`, or `right` alignment for prompts such as `add title WT Group N=10 above the image on the left`.
+- Added a dedicated text annotation editor dialog under `Advanced`, plus prompt routing examples so annotation requests map more reliably to deterministic tools.
+- Expanded workspace persistence for managed annotation layers so text-overlay state round-trips more cleanly with saved workspaces.
+- Improved workspace loading responsiveness with staged restore, a lightweight progress popup, deferred heavy source-backed layer loading, and final saved-layer-order preservation during restore.
+- Improved dock resizing so the main assistant widget expands with the napari dock instead of staying stuck at a compact initial height.
+- Fixed ROI intensity refresh behavior so newly drawn Shapes ROIs update more reliably without requiring visibility-mode toggles.
+- Added RGB support to ROI intensity measurement by reducing truecolor layers to a luminance plane for histogram and ROI summary workflows.
+
+## 1.8.4
+
+- Added a spectral-aware workspace path so layers derived from `napari-nd2-spectral-ome-zarr` are saved as source-plus-view recipes instead of being re-exported as standalone OME-Zarr image assets.
+- Workspace restore can now rebuild spectral-derived `visible sum`, `truecolor`, and raw spectral views from the original source `.ome.zarr` through the spectral reader when that plugin is installed.
+- Fixed workspace save failures caused by non-JSON runtime metadata attached to spectral-derived napari layers, such as dask-backed `spectral_cube` objects.
+- Added regression coverage for sanitized non-JSON metadata and spectral source-recipe save/load behavior in the workspace test suite.
+
 ## 1.8.3
 
 - Improved chat onboarding so broad questions such as `who are you?`, `how do I start?`, and no-image demo requests are routed more naturally instead of falling into analysis-specific clarification loops.

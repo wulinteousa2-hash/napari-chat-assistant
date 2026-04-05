@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 from pathlib import Path
@@ -15,6 +16,7 @@ from ome_zarr.writer import write_image, write_labels
 INLINE_MAX_ELEMENTS = 1_000_000
 WORKSPACE_VERSION = 2
 OME_ZARR_LABEL_NAME = "labels"
+SPECTRAL_READER_PLUGIN = "napari-nd2-spectral-ome-zarr"
 
 
 def _sequence_values(value: Any) -> tuple[Any, ...]:
@@ -27,8 +29,14 @@ def _sequence_values(value: Any) -> tuple[Any, ...]:
 
 
 def _json_ready(value: Any):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, np.ndarray):
         return _json_ready(value.tolist())
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
@@ -42,7 +50,19 @@ def _json_ready(value: Any):
         return {str(key): _json_ready(val) for key, val in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
-    return value
+    shape = getattr(value, "shape", None)
+    dtype = getattr(value, "dtype", None)
+    if shape is not None or dtype is not None:
+        try:
+            ready_shape = None if shape is None else [int(v) for v in tuple(shape)]
+        except Exception:
+            ready_shape = None
+        return {
+            "python_type": f"{type(value).__module__}.{type(value).__name__}",
+            "shape": ready_shape,
+            "dtype": None if dtype is None else str(dtype),
+        }
+    return {"python_type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
 def _safe_source_info(layer) -> dict[str, Any]:
@@ -57,8 +77,41 @@ def _safe_source_info(layer) -> dict[str, Any]:
     }
 
 
-def _layer_common_state(layer) -> dict[str, Any]:
+def _spectral_recipe_for_layer(layer) -> dict[str, Any] | None:
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    source_path = str(metadata.get("source_path") or "").strip()
+    if not source_path:
+        return None
+    dataset_metadata = metadata.get("dataset_metadata")
+    wavelengths = metadata.get("wavelengths_nm")
+    spectral_cube = metadata.get("spectral_cube")
+    if spectral_cube is None and wavelengths is None and not isinstance(dataset_metadata, dict):
+        return None
+    layer_name = str(getattr(layer, "name", "") or "").strip()
+    lowered = layer_name.lower()
+    view_type = ""
+    if "truecolor" in lowered:
+        view_type = "truecolor"
+    elif "visible sum" in lowered:
+        view_type = "visible_sum"
+    elif lowered.endswith(" spectral") or " spectral " in lowered:
+        view_type = "raw_spectral"
+    if not view_type:
+        return None
     return {
+        "kind": "spectral_view",
+        "source_path": source_path,
+        "reader_plugin": SPECTRAL_READER_PLUGIN,
+        "view_type": view_type,
+        "zarr_use_preview": lowered.endswith(" preview"),
+        "source_layer_name": str(metadata.get("source_layer_name") or "").strip(),
+    }
+
+
+def _layer_common_state(layer) -> dict[str, Any]:
+    record = {
         "layer_type": layer.__class__.__name__,
         "name": str(getattr(layer, "name", "")),
         "visible": bool(getattr(layer, "visible", True)),
@@ -68,6 +121,10 @@ def _layer_common_state(layer) -> dict[str, Any]:
         "translate": [float(v) for v in _sequence_values(getattr(layer, "translate", ()))],
         "source": _safe_source_info(layer),
     }
+    spectral_recipe = _spectral_recipe_for_layer(layer)
+    if spectral_recipe is not None:
+        record["source_recipe"] = spectral_recipe
+    return record
 
 
 def _asset_dir_for_manifest(path: Path) -> Path:
@@ -254,6 +311,46 @@ def _serialize_asset_image_like(layer, layer_type: str, *, asset_dir: Path, asse
     }
 
 
+def _load_spectral_layer_from_recipe(viewer: napari.Viewer, record: dict[str, Any]):
+    recipe = record.get("source_recipe") or {}
+    if not isinstance(recipe, dict):
+        return None
+    if str(recipe.get("kind", "")).strip() != "spectral_view":
+        return None
+    source_path = str(recipe.get("source_path", "")).strip()
+    if not source_path:
+        raise ValueError("spectral view recipe is missing source_path")
+    try:
+        build_layer_data = getattr(
+            importlib.import_module("napari_nd2_spectral_ome_zarr._reader"),
+            "build_layer_data",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Spectral workspace restore requires napari-nd2-spectral-ome-zarr to be installed."
+        ) from exc
+
+    view_type = str(recipe.get("view_type", "")).strip().lower()
+    include_visible = view_type == "visible_sum"
+    include_truecolor = view_type == "truecolor"
+    include_raw = view_type == "raw_spectral"
+    payloads = build_layer_data(
+        source_path,
+        use_gpu=False,
+        include_visible_layer=include_visible,
+        include_truecolor_layer=include_truecolor,
+        include_raw_layer=include_raw,
+        zarr_use_preview=bool(recipe.get("zarr_use_preview", True)),
+    )
+    image_payloads = [item for item in payloads if len(item) == 3 and item[2] == "image"]
+    if not image_payloads:
+        raise ValueError(f"No spectral image payload could be rebuilt from {source_path}")
+    if len(image_payloads) != 1:
+        raise ValueError(f"Expected one spectral payload for {view_type}, got {len(image_payloads)}")
+    data, kwargs, _layer_type = image_payloads[0]
+    return viewer.add_image(data, **kwargs)
+
+
 def _serialize_shapes(layer: napari.layers.Shapes) -> dict[str, Any]:
     features = getattr(layer, "features", None)
     labels = None
@@ -274,6 +371,7 @@ def _serialize_shapes(layer: napari.layers.Shapes) -> dict[str, Any]:
 
 
 def _serialize_points(layer: napari.layers.Points) -> dict[str, Any]:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
     features = getattr(layer, "features", None)
     feature_payload: dict[str, Any] = {}
     if features is not None:
@@ -286,10 +384,47 @@ def _serialize_points(layer: napari.layers.Points) -> dict[str, Any]:
                     feature_payload[str(key)] = _json_ready(value)
             except Exception:
                 feature_payload = {}
+    feature_defaults_payload: dict[str, Any] = {}
+    feature_defaults = getattr(layer, "feature_defaults", None)
+    if feature_defaults is not None:
+        try:
+            for key in list(feature_defaults.columns):
+                values = list(feature_defaults[key])
+                feature_defaults_payload[str(key)] = _json_ready(values[0] if values else None)
+        except Exception:
+            feature_defaults_payload = {}
+    text_payload = None
+    managed_text_style = metadata.get("text_annotation_text_style")
+    if isinstance(managed_text_style, dict) and managed_text_style:
+        text_payload = _json_ready(dict(managed_text_style))
+    else:
+        text = getattr(layer, "text", None)
+        if text is not None:
+            string_value = getattr(getattr(text, "string", None), "format", None)
+            if string_value:
+                text_payload = {
+                    "string": str(string_value),
+                    "size": float(getattr(text, "size", 12.0)),
+                    "visible": bool(getattr(text, "visible", True)),
+                    "anchor": str(getattr(text, "anchor", "center")),
+                    "translation": _json_ready(np.asarray(getattr(text, "translation", 0.0), dtype=float)),
+                    "rotation": float(getattr(text, "rotation", 0.0)),
+                    "scaling": bool(getattr(text, "scaling", False)),
+                    "blending": str(
+                        getattr(getattr(text, "blending", None), "value", getattr(text, "blending", "translucent"))
+                    ),
+                }
+                color_value = getattr(getattr(text, "color", None), "constant", None)
+                if color_value is not None:
+                    try:
+                        text_payload["color"] = _json_ready(np.asarray(color_value, dtype=float))
+                    except Exception:
+                        pass
     return {
         "inline_kind": "Points",
         "data": _json_ready(np.asarray(getattr(layer, "data", []), dtype=float)),
         "features": feature_payload,
+        "feature_defaults": feature_defaults_payload,
         "size": _json_ready(getattr(layer, "size", 10)),
         "symbol": _json_ready(getattr(layer, "symbol", "o")),
         "face_color": _json_ready(getattr(layer, "face_color", None)),
@@ -297,6 +432,7 @@ def _serialize_points(layer: napari.layers.Points) -> dict[str, Any]:
         "border_width": _json_ready(getattr(layer, "border_width", None)),
         "shown": _json_ready(getattr(layer, "shown", None)),
         "out_of_slice_display": bool(getattr(layer, "out_of_slice_display", False)),
+        "text": text_payload,
     }
 
 
@@ -307,8 +443,9 @@ def capture_workspace_manifest(viewer: napari.Viewer, *, asset_dir: Path | None 
     for layer_index, layer in enumerate(list(viewer.layers)):
         record = _layer_common_state(layer)
         source_path = record["source"].get("path")
+        source_recipe = record.get("source_recipe")
         layer_type = str(record["layer_type"])
-        if source_path:
+        if source_path or source_recipe:
             if isinstance(layer, napari.layers.Image):
                 record.update(
                     {
@@ -474,7 +611,7 @@ def _restore_inline_layer(viewer: napari.Viewer, record: dict[str, Any]):
             features=features,
         )
     if inline_kind == "Points":
-        return viewer.add_points(
+        layer = viewer.add_points(
             data=np.asarray(record.get("data", []), dtype=float),
             name=str(record.get("name", "Points")),
             features=record.get("features") or {},
@@ -486,6 +623,26 @@ def _restore_inline_layer(viewer: napari.Viewer, record: dict[str, Any]):
             shown=record.get("shown", None),
             out_of_slice_display=bool(record.get("out_of_slice_display", False)),
         )
+        feature_defaults = record.get("feature_defaults") or {}
+        if feature_defaults:
+            try:
+                layer.feature_defaults = feature_defaults
+            except Exception:
+                pass
+            try:
+                layer.current_properties = {
+                    str(key): np.asarray([value], dtype=object)
+                    for key, value in dict(feature_defaults).items()
+                }
+            except Exception:
+                pass
+        text_payload = record.get("text")
+        if isinstance(text_payload, dict) and text_payload:
+            try:
+                layer.text = dict(text_payload)
+            except Exception:
+                pass
+        return layer
     if inline_kind in {"Labels", "Image"} and ("inline_data" in record or "asset_path" in record):
         if "inline_data" in record:
             data = np.asarray(record["inline_data"], dtype=np.dtype(record.get("dtype") or "float32"))
@@ -500,6 +657,9 @@ def _restore_inline_layer(viewer: napari.Viewer, record: dict[str, Any]):
 def _restore_layer_from_record(viewer: napari.Viewer, record: dict[str, Any], *, manifest_path: Path):
     source_info = record.get("source") or {}
     source_path = source_info.get("path")
+    source_recipe = record.get("source_recipe") or {}
+    if isinstance(source_recipe, dict) and source_recipe.get("kind") == "spectral_view":
+        return _load_spectral_layer_from_recipe(viewer, record)
     if source_path and Path(source_path).exists():
         loaded = viewer.open(
             [source_path],
@@ -529,30 +689,39 @@ def _remove_all_layers(viewer: napari.Viewer) -> None:
         viewer.layers.remove(viewer.layers[0])
 
 
-def load_workspace_manifest(viewer: napari.Viewer, source: str | Path, *, clear_existing: bool = True) -> dict[str, Any]:
+def read_workspace_manifest(source: str | Path) -> tuple[Path, dict[str, Any]]:
     path = Path(source).expanduser()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if clear_existing:
-        _remove_all_layers(viewer)
+    return path, payload
 
-    restored_names: list[str] = []
-    skipped_layers: list[dict[str, str]] = []
-    for record in payload.get("layers", []):
-        layer = None
-        try:
-            layer = _restore_layer_from_record(viewer, record, manifest_path=path)
-        except Exception as exc:
-            skipped_layers.append({"name": str(record.get("name", "unknown")), "reason": str(exc)})
-            continue
 
-        if layer is None:
-            skipped_layers.append(
-                {"name": str(record.get("name", "unknown")), "reason": "could not restore layer from source or inline data"}
-            )
-            continue
-        _apply_common_state(layer, record)
-        restored_names.append(str(getattr(layer, "name", "")))
+def clear_workspace_layers(viewer: napari.Viewer) -> None:
+    _remove_all_layers(viewer)
 
+
+def workspace_record_loading_kind(record: dict[str, Any]) -> str:
+    source_info = record.get("source") or {}
+    source_path = str(source_info.get("path") or "").strip()
+    source_recipe = record.get("source_recipe") or {}
+    if isinstance(source_recipe, dict) and str(source_recipe.get("kind") or "").strip():
+        return "recipe"
+    if source_path:
+        return "source"
+    if "asset_path" in record:
+        return "asset"
+    return "inline"
+
+
+def restore_workspace_layer(viewer: napari.Viewer, record: dict[str, Any], *, manifest_path: str | Path):
+    path = Path(manifest_path).expanduser()
+    layer = _restore_layer_from_record(viewer, record, manifest_path=path)
+    if layer is None:
+        return None
+    _apply_common_state(layer, record)
+    return layer
+
+
+def apply_workspace_viewer_state(viewer: napari.Viewer, payload: dict[str, Any]) -> None:
     selected_name = str(((payload.get("viewer") or {}).get("selected_layer_name")) or "").strip()
     if selected_name:
         for layer in viewer.layers:
@@ -568,6 +737,30 @@ def load_workspace_manifest(viewer: napari.Viewer, source: str | Path, *, clear_
             viewer.dims.current_step = tuple(int(v) for v in dims_step)
         except Exception:
             pass
+
+
+def load_workspace_manifest(viewer: napari.Viewer, source: str | Path, *, clear_existing: bool = True) -> dict[str, Any]:
+    path, payload = read_workspace_manifest(source)
+    if clear_existing:
+        clear_workspace_layers(viewer)
+
+    restored_names: list[str] = []
+    skipped_layers: list[dict[str, str]] = []
+    for record in payload.get("layers", []):
+        try:
+            layer = restore_workspace_layer(viewer, record, manifest_path=path)
+        except Exception as exc:
+            skipped_layers.append({"name": str(record.get("name", "unknown")), "reason": str(exc)})
+            continue
+
+        if layer is None:
+            skipped_layers.append(
+                {"name": str(record.get("name", "unknown")), "reason": "could not restore layer from source or inline data"}
+            )
+            continue
+        restored_names.append(str(getattr(layer, "name", "")))
+
+    apply_workspace_viewer_state(viewer, payload)
 
     return {
         "path": str(path),

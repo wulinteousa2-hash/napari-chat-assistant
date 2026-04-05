@@ -83,6 +83,7 @@ Current workflows include:
 - inspect the selected layer or named layers with structured summaries
 - review live layer context and insert exact layer names into prompts or code
 - run built-in tools for enhancement, thresholding, binary mask cleanup, measurement, projection, cropping, montage, presentation, and layer visibility control
+- add non-destructive annotation overlays including free text, automatic particle labels, Legion-style callouts, and boxed title labels above the image
 - use deterministic `Actions` for common workflows without depending on prompt phrasing
 - build and save your own `Shortcuts` layouts for repeated one-click work
 - inspect ROI context and measure or extract values from `Labels`, `Shapes`, and line-based workflows
@@ -102,6 +103,9 @@ Example requests:
 - `Remove small objects from the selected mask with min_size 64`
 - `Run watershed on the selected mask`
 - `Measure labels table for the selected labels layer`
+- `Annotate template_blob_labels with particle 1 to 4`
+- `Annotate template_blob_labels in legion style`
+- `Add title WT Group N=10 above the image on the left`
 - `Inspect the current ROI`
 - `Extract ROI values from the selected image using the current ROI`
 - `Open ROI intensity analysis`
@@ -118,17 +122,17 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.8.0
+## What's New In 1.9.0
 
-Later updates through `1.8.3` mainly refined chat follow-up routing, demo onboarding, and state-aware tool reuse without changing the main `1.8.0` feature focus.
+Version `1.9.0` adds annotation as a first-class workbench workflow.
 
-- expanded deterministic `Masks` workflows with a fuller binary-image toolset, including erosion, dilation, opening, closing, skeletonization, distance map, watershed, and Voronoi-style region generation
-- improved `Actions` previews with parameter hints and prompt examples so users can see what defaults exist and how to fine-tune them in chat
-- upgraded workspace persistence to use a JSON manifest plus OME-Zarr assets for generated image and labels data
-- added workspace round-trip support for `Points` layers, including SAM2 prompt points and their metadata
-- made workspace overwrite safer by replacing manifests and asset folders only after a new save completes successfully
-- simplified expert workflow by moving UI help into the `Help` menu as an explicit toggle instead of an always-on background interceptor
-- continued refining the dock as a mature hybrid workbench that combines chat, code, templates, deterministic actions, shortcuts, and session restore
+- Added non-destructive text annotation tools and Action-tab entries for writing, listing, renaming, and deleting overlay labels.
+- Added automatic labels-to-text annotation for object layers, including prompts such as `annotate template_blob_labels with particle 1 to 4`.
+- Added Legion-style callout labels for 2D segmentations, with outside boxes and leader lines so labels can sit beside the object instead of on top of it.
+- Added boxed title labels above the image with `outside_top` placement and `left`, `center`, or `right` alignment.
+- Added a dedicated text annotation editor under `Advanced`.
+- Improved workspace restore responsiveness with staged loading, a progress popup, deferred heavy-source restore, and saved layer-order preservation.
+- Improved ROI intensity behavior for refreshed Shapes ROIs and added RGB luminance support for truecolor measurement workflows.
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -228,6 +232,9 @@ Examples:
 - `Remove small objects from mask_messy_2d with min_size 64`
 - `Keep only the largest connected component in mask_messy_2d`
 - `Measure labels table for rgb_cells_2d_labels`
+- `Annotate template_blob_labels in legion style`
+- `Move the particle labels outside with boxes and lines`
+- `Place title Control outside top right`
 - `Create a max intensity projection from em_3d_snr_mid along axis 0`
 - `Crop em_2d_snr_high to the bounding box of em_2d_mask with padding 8`
 - `Inspect the current ROI`

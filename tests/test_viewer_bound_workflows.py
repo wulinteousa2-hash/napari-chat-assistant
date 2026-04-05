@@ -4,6 +4,7 @@ import numpy as np
 
 from napari_chat_assistant.agent.context import layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.widgets.intensity_metrics_widget import IntensityMetricsWidget
 
 
 def test_layer_summary_reports_selected_layer(make_napari_viewer_proxy):
@@ -482,6 +483,183 @@ def test_split_montage_annotations_to_sources_exports_points_per_image(make_napa
     assert np.allclose(np.asarray(points_b.data), np.array([[1.5, 0.5]], dtype=np.float32))
     assert points_b.metadata["montage_split"]["source_kind"] == "points"
     assert "with 2 point(s)" in split_message
+
+
+def test_text_annotation_tools_create_rename_list_delete(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((20, 20), dtype=np.float32), name="image_a")
+
+    create_message = prepare_tool_job(
+        viewer,
+        "create_text_annotation",
+        {"source_layer": "image_a", "text": "XXX", "position": [12, 5]},
+    )["message"]
+
+    assert "Added text annotation [XXX]" in create_message
+    assert "image_a_text_annotations" in viewer.layers
+    annotation_layer = viewer.layers["image_a_text_annotations"]
+    assert np.allclose(np.asarray(annotation_layer.data), np.array([[5.0, 12.0]], dtype=float))
+    assert list(annotation_layer.features["label"]) == ["XXX"]
+
+    list_message = prepare_tool_job(viewer, "list_text_annotations", {"annotation_layer": "image_a_text_annotations"})[
+        "message"
+    ]
+    assert "[XXX]" in list_message
+    assert "(5.0, 12.0)" in list_message
+
+    rename_message = prepare_tool_job(
+        viewer,
+        "rename_text_annotation",
+        {"annotation_layer": "image_a_text_annotations", "old_text": "XXX", "new_text": "tumor core"},
+    )["message"]
+    assert "Renamed text annotation [XXX] to [tumor core]" in rename_message
+    assert list(annotation_layer.features["label"]) == ["tumor core"]
+
+    delete_message = prepare_tool_job(
+        viewer,
+        "delete_text_annotation",
+        {"annotation_layer": "image_a_text_annotations", "text": "tumor core"},
+    )["message"]
+    assert "Deleted 1 text annotation(s)" in delete_message
+    assert np.asarray(annotation_layer.data).shape[0] == 0
+
+
+def test_annotate_labels_with_text_places_labels_at_centroids(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((20, 20), dtype=np.float32), name="image_a")
+    labels = np.zeros((20, 20), dtype=np.uint8)
+    labels[1:4, 1:4] = 1
+    labels[10:14, 12:16] = 2
+    labels[15:18, 2:6] = 3
+    viewer.add_labels(labels, name="template_blob_labels")
+
+    message = prepare_tool_job(
+        viewer,
+        "annotate_labels_with_text",
+        {"labels_layer": "template_blob_labels", "source_layer": "image_a", "prefix": "particle", "start_index": 1},
+    )["message"]
+
+    assert "Added 3 text annotation(s)" in message
+    assert "image_a_text_annotations" in viewer.layers
+    annotation_layer = viewer.layers["image_a_text_annotations"]
+    assert list(annotation_layer.features["label"]) == ["particle 1", "particle 2", "particle 3"]
+    assert np.asarray(annotation_layer.data).shape == (3, 2)
+
+
+def test_annotate_labels_with_callouts_builds_text_boxes_and_lines(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((24, 24), dtype=np.float32), name="image_a")
+    labels = np.zeros((24, 24), dtype=np.uint8)
+    labels[2:6, 2:6] = 1
+    labels[10:15, 12:17] = 2
+    labels[17:21, 3:8] = 3
+    viewer.add_labels(labels, name="template_blob_labels")
+
+    message = prepare_tool_job(
+        viewer,
+        "annotate_labels_with_callouts",
+        {"labels_layer": "template_blob_labels", "source_layer": "image_a", "prefix": "particle", "start_index": 1},
+    )["message"]
+
+    assert "Legion-style callout annotation(s)" in message
+    assert "image_a_callout_text" in viewer.layers
+    assert "image_a_callout_boxes" in viewer.layers
+    assert "image_a_callout_lines" in viewer.layers
+    text_layer = viewer.layers["image_a_callout_text"]
+    boxes_layer = viewer.layers["image_a_callout_boxes"]
+    leaders_layer = viewer.layers["image_a_callout_lines"]
+    assert list(text_layer.features["label"]) == ["particle 1", "particle 2", "particle 3"]
+    assert len(boxes_layer.data) == 3
+    assert len(leaders_layer.data) == 3
+
+
+def test_create_title_label_builds_boxed_heading(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((30, 40), dtype=np.float32), name="image_a")
+
+    message = prepare_tool_job(
+        viewer,
+        "create_title_label",
+        {"source_layer": "image_a", "text": "WT Group N=10", "placement": "outside_top", "align": "left"},
+    )["message"]
+
+    assert "Added title label [WT Group N=10]" in message
+    assert "image_a_title_text" in viewer.layers
+    assert "image_a_title_box" in viewer.layers
+    text_layer = viewer.layers["image_a_title_text"]
+    box_layer = viewer.layers["image_a_title_box"]
+    assert list(text_layer.features["label"]) == ["WT Group N=10"]
+    assert len(box_layer.data) == 1
+    assert float(np.asarray(text_layer.data)[0, 0]) < 0.0
+    box = np.asarray(box_layer.data[0], dtype=float)
+    assert abs(float(np.min(box[:, 1])) - 8.0) < 1e-6
+    assert "placement=outside_top" in message
+    assert "align=left" in message
+
+
+def test_create_title_label_supports_right_alignment_outside_top(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((30, 60), dtype=np.float32), name="image_a")
+
+    prepare_tool_job(
+        viewer,
+        "create_title_label",
+        {"source_layer": "image_a", "text": "Control", "placement": "outside_top", "align": "right"},
+    )
+
+    text_layer = viewer.layers["image_a_title_text"]
+    box_layer = viewer.layers["image_a_title_box"]
+    position = np.asarray(text_layer.data)[0]
+    assert float(position[0]) < 0.0
+    box = np.asarray(box_layer.data[0], dtype=float)
+    assert abs(float(np.max(box[:, 1])) - (60.0 - 8.0)) < 1e-6
+
+
+def test_text_annotation_tool_can_report_empty_and_clear_all(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((20, 20), dtype=np.float32), name="image_a")
+    prepare_tool_job(viewer, "create_text_annotation", {"source_layer": "image_a", "text": "A", "position": [1, 2]})
+    prepare_tool_job(viewer, "create_text_annotation", {"source_layer": "image_a", "text": "B", "position": [3, 4]})
+
+    clear_message = prepare_tool_job(
+        viewer,
+        "delete_text_annotation",
+        {"annotation_layer": "image_a_text_annotations", "delete_all": True},
+    )["message"]
+    assert "Deleted all text annotations" in clear_message
+
+    empty_message = prepare_tool_job(
+        viewer,
+        "list_text_annotations",
+        {"annotation_layer": "image_a_text_annotations"},
+    )["message"]
+    assert "does not contain any text annotations" in empty_message
+
+
+def test_roi_intensity_widget_measures_rgb_layer_via_luminance(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    rgb = np.zeros((6, 6, 3), dtype=np.float32)
+    rgb[..., 0] = 1.0
+    rgb[..., 1] = 0.5
+    image = viewer.add_image(rgb, name="rgb_a", rgb=True)
+    roi = viewer.add_shapes(
+        [np.array([[1.0, 1.0], [1.0, 5.0], [5.0, 5.0], [5.0, 1.0]], dtype=np.float32)],
+        shape_type="rectangle",
+        name="rgb_a_intensity_roi",
+        metadata={"paired_image_layer": "rgb_a"},
+        features={"label": np.asarray(["ROI 1"], dtype=object)},
+    )
+
+    widget = IntensityMetricsWidget(viewer)
+    widget.measurement_image_layer = image
+    widget._attach_shapes_layer(roi)
+    widget.refresh(apply_visibility=False)
+
+    assert len(widget._rows) == 1
+    row = widget._rows[0]
+    assert row["pixels_value"] > 0
+    assert row["mean_value"] is not None
+    assert "RGB luminance" in widget.status_label.text()
 
 
 def test_edit_mask_in_roi_applies_operation_only_inside_shapes_roi(make_napari_viewer_proxy):

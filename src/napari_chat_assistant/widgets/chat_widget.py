@@ -155,6 +155,13 @@ def _workspace_state_functions():
     return module.load_workspace_manifest, module.save_workspace_manifest
 
 
+def _workspace_state_module():
+    try:
+        return importlib.import_module("napari_chat_assistant.agent.workspace_state")
+    except Exception as exc:
+        raise RuntimeError(_WORKSPACE_DEPENDENCY_MESSAGE) from exc
+
+
 class ChatInput(QTextEdit):
     sendRequested = Signal()
 
@@ -175,6 +182,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     ui_state = load_ui_state()
 
     root = QWidget()
+    root.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     layout = QVBoxLayout(root)
 
     header = QLabel("Local Chat Assistant")
@@ -237,15 +245,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     layout.addWidget(connection_details)
 
     splitter = QSplitter(Qt.Horizontal)
+    splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     layout.addWidget(splitter, 1)
 
     left_panel = QWidget()
-    left_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    left_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     left_panel.setMinimumWidth(360)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
 
     right_panel = QWidget()
+    right_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -594,6 +604,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     advanced_menu = QMenu(advanced_btn)
     sam2_setup_action = advanced_menu.addAction("SAM2 Setup")
     sam2_live_action = advanced_menu.addAction("SAM2 Live")
+    text_annotation_action = advanced_menu.addAction("Text Annotation")
     advanced_btn.setMenu(advanced_menu)
     run_code_btn = QPushButton("Run Code")
     run_my_code_btn = QPushButton("Run My Code")
@@ -708,6 +719,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
         "model": "nemotron-cascade-2:30b",
     }
     active_workers: list[object] = []
+    workspace_load_state = {
+        "active": False,
+        "dialog": None,
+        "label": None,
+        "bar": None,
+        "module": None,
+        "path": "",
+        "payload": None,
+        "records": [],
+        "index": 0,
+        "restored_layers": [],
+        "skipped_layers": [],
+        "clear_existing": True,
+        "phase": "prepare",
+        "source_layers": 0,
+        "base_layer_count": 0,
+        "restored_records": [],
+    }
     available_models: list[str] = []
     pending_code = {
         "code": "",
@@ -750,6 +779,47 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def refresh_workspace_path_label() -> None:
         current_path = str(ui_state.get("last_workspace_path", "")).strip()
         workspace_path_label.setText(f"Workspace file: {current_path if current_path else '[none]'}")
+
+    def set_workspace_controls_enabled(enabled: bool) -> None:
+        for widget in (
+            save_workspace_btn,
+            save_workspace_as_btn,
+            load_workspace_btn,
+            restore_workspace_btn,
+            workspace_clear_checkbox,
+        ):
+            widget.setEnabled(enabled)
+
+    def close_workspace_load_dialog() -> None:
+        dialog = workspace_load_state.get("dialog")
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+        workspace_load_state["dialog"] = None
+        workspace_load_state["label"] = None
+        workspace_load_state["bar"] = None
+
+    def update_workspace_load_progress() -> None:
+        label = workspace_load_state.get("label")
+        bar = workspace_load_state.get("bar")
+        if label is None or bar is None:
+            return
+        total = len(workspace_load_state.get("records", []))
+        completed = int(workspace_load_state.get("index", 0))
+        current_name = ""
+        if completed < total:
+            record = workspace_load_state["records"][completed]
+            current_name = str(record.get("name", "layer")).strip() or "layer"
+        phase = str(workspace_load_state.get("phase", "prepare") or "prepare")
+        phase_label = "Loading"
+        if phase == "deferred_sources":
+            phase_label = "Opening source data"
+        if current_name:
+            label.setText(f"{phase_label} {completed + 1}/{total}: {current_name}")
+        else:
+            label.setText(f"{phase_label} {completed}/{total} layer(s)")
+        bar.setMaximum(max(total, 1))
+        bar.setValue(min(completed, max(total, 1)))
 
     def shortcuts_default_path() -> str:
         current = str(ui_state.get("last_shortcuts_path", "")).strip()
@@ -968,6 +1038,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "1.8.4":
+            return (
+                f"**What's New In {current}**\n"
+                "- Workspace save/load now understands spectral-derived views from `napari-nd2-spectral-ome-zarr` as source-plus-view recipes.\n"
+                "- Fixed workspace save failures caused by non-JSON spectral runtime metadata on derived napari layers."
+            )
         if current == "1.8.3":
             return (
                 f"**What's New In {current}**\n"
@@ -2079,7 +2155,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def save_workspace_common(*, choose_path: bool) -> None:
         try:
-            _load_workspace_manifest, _save_workspace_manifest = _workspace_state_functions()
+            _workspace_module = _workspace_state_module()
         except Exception as exc:
             append_log(f"Save workspace unavailable: {exc}")
             set_status("Status: workspace save unavailable", ok=False)
@@ -2097,7 +2173,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 return
             destination = selected
         try:
-            result = _save_workspace_manifest(viewer, destination)
+            result = _workspace_module.save_workspace_manifest(viewer, destination)
         except Exception as exc:
             append_log(f"Save workspace failed: {exc}")
             set_status("Status: save workspace failed", ok=False)
@@ -2119,8 +2195,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
         set_status("Status: workspace saved", ok=True)
 
     def load_workspace_common(*, choose_path: bool) -> None:
+        if workspace_load_state["active"]:
+            workspace_status.setText("A workspace load is already in progress.")
+            set_status("Status: workspace load already running", ok=None)
+            return
         try:
-            _load_workspace_manifest, _save_workspace_manifest = _workspace_state_functions()
+            _workspace_module = _workspace_state_module()
         except Exception as exc:
             append_log(f"Load workspace unavailable: {exc}")
             set_status("Status: workspace load unavailable", ok=False)
@@ -2142,32 +2222,212 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no workspace file selected", ok=False)
             return
         try:
-            result = _load_workspace_manifest(
-                viewer,
-                source_path,
-                clear_existing=bool(workspace_clear_checkbox.isChecked()),
-            )
+            manifest_path, payload = _workspace_module.read_workspace_manifest(source_path)
         except Exception as exc:
             append_log(f"Load workspace failed: {exc}")
             set_status("Status: load workspace failed", ok=False)
             workspace_status.setText(f"Load failed: {exc}")
             return
-        ui_state["last_workspace_path"] = str(result["path"])
-        save_ui_state(ui_state)
-        refresh_workspace_path_label()
-        refresh_context()
-        skipped = result.get("skipped_layers", []) or []
-        restored_count = len(result.get("restored_layers", []) or [])
-        if skipped:
+        records = []
+        for saved_index, original_record in enumerate(list(payload.get("layers", []) or [])):
+            record = dict(original_record)
+            record["__workspace_saved_index__"] = saved_index
+            records.append(record)
+        source_records = []
+        fast_records = []
+        for record in records:
+            kind = _workspace_module.workspace_record_loading_kind(record)
+            if kind in {"source", "recipe"}:
+                source_records.append(record)
+            else:
+                fast_records.append(record)
+        ordered_records = fast_records + source_records
+        total_layers = len(ordered_records)
+        dialog = QDialog(root, Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+        dialog.setWindowTitle("Loading Workspace")
+        dialog.setModal(False)
+        dialog.resize(360, 108)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(16, 14, 16, 14)
+        dialog_layout.setSpacing(8)
+        progress_label = QLabel(f"Preparing {total_layers} layer(s)...")
+        progress_label.setWordWrap(True)
+        progress_bar = QProgressBar()
+        progress_bar.setTextVisible(False)
+        progress_bar.setRange(0, max(total_layers, 1))
+        progress_bar.setValue(0)
+        dialog_layout.addWidget(progress_label)
+        dialog_layout.addWidget(progress_bar)
+        dialog.setStyleSheet(
+            "QDialog { background: #f6f7f9; }"
+            "QLabel { color: #1d2430; font-size: 12px; }"
+            "QProgressBar {"
+            " background: #e7ebf0;"
+            " border: 1px solid #d6dde6;"
+            " border-radius: 5px;"
+            " min-height: 12px;"
+            " max-height: 12px;"
+            " }"
+            "QProgressBar::chunk { background: #4f9cf9; border-radius: 4px; }"
+        )
+
+        workspace_load_state["active"] = True
+        workspace_load_state["dialog"] = dialog
+        workspace_load_state["label"] = progress_label
+        workspace_load_state["bar"] = progress_bar
+        workspace_load_state["module"] = _workspace_module
+        workspace_load_state["path"] = str(manifest_path)
+        workspace_load_state["payload"] = payload
+        workspace_load_state["records"] = ordered_records
+        workspace_load_state["index"] = 0
+        workspace_load_state["restored_layers"] = []
+        workspace_load_state["skipped_layers"] = []
+        workspace_load_state["clear_existing"] = bool(workspace_clear_checkbox.isChecked())
+        workspace_load_state["phase"] = "fast_layers" if fast_records else "deferred_sources"
+        workspace_load_state["source_layers"] = len(source_records)
+        workspace_load_state["base_layer_count"] = 0 if bool(workspace_clear_checkbox.isChecked()) else len(viewer.layers)
+        workspace_load_state["restored_records"] = []
+        set_workspace_controls_enabled(False)
+        if source_records:
             workspace_status.setText(
-                f"Restored {restored_count} layer(s). Skipped {len(skipped)} layer(s) that could not be reopened."
+                f"Loading {total_layers} layer(s) from {manifest_path.name}..."
+                f" {len(source_records)} source-backed layer(s) will open last."
             )
         else:
-            workspace_status.setText(f"Restored {restored_count} layer(s) from {result['path']}.")
+            workspace_status.setText(f"Loading {total_layers} layer(s) from {manifest_path.name}...")
+        set_status("Status: loading workspace...", ok=None)
         append_log(
-            f"Loaded workspace manifest: {result['path']} | restored_layers={restored_count} skipped={len(skipped)}"
+            f"Starting workspace load: {manifest_path} | layers={total_layers} source_layers={len(source_records)}"
         )
-        set_status("Status: workspace loaded", ok=True)
+
+        def finish_workspace_load() -> None:
+            payload = workspace_load_state.get("payload") or {}
+            _workspace_module = workspace_load_state.get("module")
+            if _workspace_module is not None:
+                try:
+                    _workspace_module.apply_workspace_viewer_state(viewer, payload)
+                except Exception as exc:
+                    append_log(f"Workspace viewer-state restore warning: {exc}")
+            result = {
+                "path": workspace_load_state["path"],
+                "restored_layers": list(workspace_load_state["restored_layers"]),
+                "skipped_layers": list(workspace_load_state["skipped_layers"]),
+            }
+            ui_state["last_workspace_path"] = str(result["path"])
+            save_ui_state(ui_state)
+            refresh_workspace_path_label()
+            refresh_context()
+            skipped = result.get("skipped_layers", []) or []
+            restored_count = len(result.get("restored_layers", []) or [])
+            if skipped:
+                workspace_status.setText(
+                    f"Restored {restored_count} layer(s). Skipped {len(skipped)} layer(s) that could not be reopened."
+                )
+            else:
+                workspace_status.setText(f"Restored {restored_count} layer(s) from {result['path']}.")
+            append_log(
+                f"Loaded workspace manifest: {result['path']} | restored_layers={restored_count} skipped={len(skipped)}"
+            )
+            set_status("Status: workspace loaded", ok=True)
+            workspace_load_state["active"] = False
+            workspace_load_state["module"] = None
+            workspace_load_state["payload"] = None
+            workspace_load_state["records"] = []
+            workspace_load_state["phase"] = "prepare"
+            workspace_load_state["source_layers"] = 0
+            workspace_load_state["base_layer_count"] = 0
+            workspace_load_state["restored_records"] = []
+            set_workspace_controls_enabled(True)
+            close_workspace_load_dialog()
+
+        def process_next_workspace_layer() -> None:
+            if not workspace_load_state["active"]:
+                return
+            if workspace_load_state["index"] == 0 and workspace_load_state["clear_existing"]:
+                try:
+                    workspace_load_state["module"].clear_workspace_layers(viewer)
+                except Exception as exc:
+                    workspace_load_state["active"] = False
+                    workspace_load_state["module"] = None
+                    workspace_load_state["payload"] = None
+                    workspace_load_state["records"] = []
+                    workspace_load_state["phase"] = "prepare"
+                    workspace_load_state["source_layers"] = 0
+                    workspace_load_state["base_layer_count"] = 0
+                    workspace_load_state["restored_records"] = []
+                    set_workspace_controls_enabled(True)
+                    close_workspace_load_dialog()
+                    append_log(f"Load workspace failed while clearing layers: {exc}")
+                    set_status("Status: load workspace failed", ok=False)
+                    workspace_status.setText(f"Load failed: {exc}")
+                    return
+            records = workspace_load_state["records"]
+            if workspace_load_state["index"] >= len(records):
+                finish_workspace_load()
+                return
+            deferred_start = len(records) - int(workspace_load_state.get("source_layers", 0))
+            if (
+                workspace_load_state["phase"] != "deferred_sources"
+                and int(workspace_load_state.get("source_layers", 0)) > 0
+                and workspace_load_state["index"] >= deferred_start
+            ):
+                workspace_load_state["phase"] = "deferred_sources"
+                workspace_status.setText(
+                    f"Loaded lightweight layers. Opening {workspace_load_state['source_layers']} source-backed layer(s)..."
+                )
+            update_workspace_load_progress()
+            record = records[workspace_load_state["index"]]
+            try:
+                layer = workspace_load_state["module"].restore_workspace_layer(
+                    viewer,
+                    record,
+                    manifest_path=workspace_load_state["path"],
+                )
+            except Exception as exc:
+                workspace_load_state["skipped_layers"].append(
+                    {"name": str(record.get("name", "unknown")), "reason": str(exc)}
+                )
+            else:
+                if layer is None:
+                    workspace_load_state["skipped_layers"].append(
+                        {
+                            "name": str(record.get("name", "unknown")),
+                            "reason": "could not restore layer from source or inline data",
+                        }
+                    )
+                else:
+                    workspace_load_state["restored_layers"].append(str(getattr(layer, "name", "")))
+                    try:
+                        target_order = int(record.get("__workspace_saved_index__", workspace_load_state["index"]))
+                    except Exception:
+                        target_order = int(workspace_load_state["index"])
+                    restored_records = list(workspace_load_state.get("restored_records", []))
+                    insertion_rank = sum(
+                        1
+                        for item in restored_records
+                        if int(item.get("saved_index", 0)) < target_order
+                    )
+                    workspace_load_state["restored_records"].append(
+                        {"saved_index": target_order, "name": str(getattr(layer, "name", ""))}
+                    )
+                    try:
+                        current_index = len(viewer.layers) - 1
+                        desired_index = int(workspace_load_state.get("base_layer_count", 0)) + insertion_rank
+                        if current_index != desired_index:
+                            viewer.layers.move(current_index, desired_index)
+                    except Exception as exc:
+                        append_log(
+                            f"Workspace layer reorder warning for {getattr(layer, 'name', '')}: {exc}"
+                        )
+            workspace_load_state["index"] += 1
+            progress_bar.setValue(workspace_load_state["index"])
+            delay_ms = 15 if workspace_load_state["phase"] == "deferred_sources" else 0
+            QTimer.singleShot(delay_ms, process_next_workspace_layer)
+
+        dialog.show()
+        dialog.raise_()
+        update_workspace_load_progress()
+        QTimer.singleShot(0, process_next_workspace_layer)
 
     save_workspace_btn.clicked.connect(lambda _checked=False: save_workspace_common(choose_path=False))
     save_workspace_as_btn.clicked.connect(lambda _checked=False: save_workspace_common(choose_path=True))
@@ -2747,6 +3007,393 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log(f"Initialized SAM2 points layer [{layer.name}] for image [{selected.name}].")
         set_status("Status: SAM2 points initialized", ok=True)
         return layer.name
+
+    def annotation_anchor_layer():
+        active = viewer.layers.selection.active if viewer is not None else None
+        if active is not None and int(getattr(active, "ndim", 0) or 0) in {2, 3}:
+            return active
+        for layer in viewer.layers if viewer is not None else []:
+            if isinstance(layer, napari.layers.Image) and int(getattr(layer, "ndim", 0) or 0) in {2, 3}:
+                return layer
+        return None
+
+    def text_annotation_layer_name(anchor_layer=None) -> str:
+        if anchor_layer is None:
+            return "text_annotations"
+        base_name = str(getattr(anchor_layer, "name", "") or "").strip()
+        return f"{base_name}_text_annotations" if base_name else "text_annotations"
+
+    def default_text_annotation_style() -> dict[str, object]:
+        return {
+            "string": "{label}",
+            "size": 12,
+            "color": "yellow",
+            "anchor": "upper_left",
+            "translation": [0.0, -6.0],
+            "blending": "translucent",
+            "visible": True,
+            "scaling": False,
+            "rotation": 0.0,
+        }
+
+    def text_annotation_style_from_layer(layer) -> dict[str, object]:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        style = default_text_annotation_style()
+        saved = metadata.get("text_annotation_text_style")
+        if isinstance(saved, dict):
+            style.update(saved)
+        return style
+
+    def configure_text_annotation_layer(
+        layer,
+        *,
+        source_layer_name: str,
+        current_text: str | None = None,
+        style_updates: dict[str, object] | None = None,
+    ) -> None:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        metadata["text_annotations_managed"] = True
+        metadata["text_annotation_source_layer"] = source_layer_name
+        style = text_annotation_style_from_layer(layer)
+        if style_updates:
+            style.update(style_updates)
+        metadata["text_annotation_text_style"] = style
+        layer.metadata = metadata
+        try:
+            layer.text = dict(style)
+        except Exception:
+            pass
+        if current_text is not None:
+            try:
+                layer.feature_defaults = {"label": str(current_text)}
+            except Exception:
+                pass
+            try:
+                layer.current_properties = {"label": np.asarray([str(current_text)], dtype=object)}
+            except Exception:
+                pass
+
+    def text_annotation_labels(layer) -> list[str]:
+        labels: list[str] = []
+        features = getattr(layer, "features", None)
+        if features is None:
+            return labels
+        try:
+            if "label" in features:
+                labels = [str(value or "").strip() for value in list(features["label"])]
+        except Exception:
+            labels = []
+        return labels
+
+    def ensure_text_annotation_layer():
+        anchor_layer = annotation_anchor_layer()
+        if anchor_layer is None:
+            raise ValueError("Select a 2D or 3D layer, or load an image, before adding text annotations.")
+        if int(getattr(anchor_layer, "ndim", 0) or 0) not in {2, 3}:
+            raise ValueError("Text annotations currently support 2D or 3D layers only.")
+        layer_name = text_annotation_layer_name(anchor_layer)
+        if layer_name in viewer.layers:
+            layer = viewer.layers[layer_name]
+            if not isinstance(layer, napari.layers.Points):
+                raise ValueError(f"Layer [{layer_name}] already exists and is not a Points layer.")
+        else:
+            empty = np.empty((0, int(getattr(anchor_layer, "ndim", 2) or 2)), dtype=np.float32)
+            layer = viewer.add_points(
+                empty,
+                name=layer_name,
+                features={"label": np.empty((0,), dtype=object)},
+                size=6,
+                face_color="transparent",
+                border_color="#ffd54f",
+                border_width=1,
+            )
+        configure_text_annotation_layer(layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""))
+        return layer, anchor_layer
+
+    def start_text_annotation_mode(*_args):
+        try:
+            layer, anchor_layer = ensure_text_annotation_layer()
+        except Exception as exc:
+            append_log(f"Text annotation setup failed: {exc}")
+            set_status("Status: text annotation unavailable", ok=False)
+            workspace_status.setText(f"Text annotation failed: {exc}")
+            return
+        existing_defaults = getattr(layer, "feature_defaults", None)
+        default_text = ""
+        try:
+            if existing_defaults is not None and "label" in existing_defaults:
+                default_text = str(list(existing_defaults["label"])[0] or "").strip()
+        except Exception:
+            default_text = ""
+        text_value, accepted = QInputDialog.getText(
+            root,
+            "Text Annotation",
+            "Annotation text:",
+            text=default_text,
+        )
+        if not accepted:
+            return
+        current_text = str(text_value or "").strip()
+        if not current_text:
+            set_status("Status: annotation text is empty", ok=False)
+            append_log("Text annotation start skipped: empty text.")
+            return
+        configure_text_annotation_layer(
+            layer,
+            source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+            current_text=current_text,
+        )
+        try:
+            layer.mode = "add"
+        except Exception:
+            pass
+        try:
+            viewer.layers.selection.active = layer
+        except Exception:
+            pass
+        append_chat_message(
+            "assistant",
+            f"Text annotation mode is ready on [{layer.name}] for [{anchor_layer.name}].\n"
+            f"Current text: `{current_text}`\n"
+            "Click in the viewer to place the text as an overlay. Run Text Annotation again to change the text.",
+        )
+        append_log(f"Text annotation mode enabled on [{layer.name}] with label [{current_text}].")
+        set_status("Status: text annotation mode enabled", ok=True)
+
+    def show_text_annotation_editor(*_args):
+        try:
+            layer, anchor_layer = ensure_text_annotation_layer()
+        except Exception as exc:
+            append_log(f"Text annotation editor unavailable: {exc}")
+            set_status("Status: text annotation unavailable", ok=False)
+            workspace_status.setText(f"Text annotation failed: {exc}")
+            return
+
+        dialog = QDialog(root)
+        dialog.setWindowTitle("Text Annotation")
+        dialog.resize(480, 420)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(16, 16, 16, 14)
+        dialog_layout.setSpacing(10)
+
+        hint = QLabel(
+            "Place non-destructive text labels on the viewer. "
+            "Annotations are stored in a managed Points layer and do not modify image pixels."
+        )
+        hint.setWordWrap(True)
+        dialog_layout.addWidget(hint)
+
+        form = QFormLayout()
+        layer_label = QLabel(f"{layer.name}  |  source: {anchor_layer.name}")
+        layer_label.setWordWrap(True)
+        text_edit = QLineEdit()
+        size_edit = QLineEdit()
+        size_edit.setPlaceholderText("12")
+        color_combo = QComboBox()
+        color_choices = [
+            ("Yellow", "yellow"),
+            ("White", "white"),
+            ("Cyan", "cyan"),
+            ("Green", "#66bb6a"),
+            ("Red", "#ef5350"),
+            ("Orange", "#ffa726"),
+        ]
+        for label_text, color_value in color_choices:
+            color_combo.addItem(label_text, color_value)
+        form.addRow("Layer:", layer_label)
+        form.addRow("Text:", text_edit)
+        form.addRow("Size:", size_edit)
+        form.addRow("Color:", color_combo)
+        dialog_layout.addLayout(form)
+
+        annotations_list = QListWidget()
+        annotations_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        annotations_list.setStyleSheet(
+            "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; } "
+            "QListWidget::item:selected { background: #1d2a44; color: #e8f1ff; }"
+        )
+        dialog_layout.addWidget(annotations_list, 1)
+
+        status_label = QLabel("Choose text and click Place Text, then click in the viewer.")
+        status_label.setWordWrap(True)
+        dialog_layout.addWidget(status_label)
+
+        button_row = QWidget()
+        button_layout = QHBoxLayout(button_row)
+        place_btn = QPushButton("Place Text")
+        rename_btn = QPushButton("Rename Selected")
+        delete_btn = QPushButton("Delete Selected")
+        close_btn = QPushButton("Close")
+        button_layout.addWidget(place_btn)
+        button_layout.addWidget(rename_btn)
+        button_layout.addWidget(delete_btn)
+        button_layout.addStretch(1)
+        button_layout.addWidget(close_btn)
+        dialog_layout.addWidget(button_row)
+
+        def refresh_editor_fields() -> None:
+            nonlocal layer, anchor_layer
+            try:
+                current_layer, current_anchor = ensure_text_annotation_layer()
+                layer = current_layer
+                anchor_layer = current_anchor
+            except Exception:
+                pass
+            layer_label.setText(f"{layer.name}  |  source: {anchor_layer.name}")
+            defaults = getattr(layer, "feature_defaults", None)
+            current_text = ""
+            try:
+                if defaults is not None and "label" in defaults:
+                    values = list(defaults["label"])
+                    current_text = str(values[0] or "").strip() if values else ""
+            except Exception:
+                current_text = ""
+            if not current_text:
+                labels = text_annotation_labels(layer)
+                if labels:
+                    current_text = labels[-1]
+            text_edit.setText(current_text)
+            style = text_annotation_style_from_layer(layer)
+            size_edit.setText(str(int(float(style.get("size", 12) or 12))))
+            color_value = str(style.get("color", "yellow"))
+            combo_index = color_combo.findData(color_value)
+            color_combo.setCurrentIndex(combo_index if combo_index >= 0 else 0)
+
+        def refresh_annotation_list() -> None:
+            annotations_list.clear()
+            labels = text_annotation_labels(layer)
+            coordinates = np.asarray(getattr(layer, "data", []), dtype=float)
+            for index, label_text in enumerate(labels):
+                point_text = ""
+                if coordinates.ndim == 2 and index < len(coordinates):
+                    point_text = ", ".join(f"{value:.1f}" for value in coordinates[index].tolist())
+                item = QListWidgetItem(
+                    f"{index + 1}. {label_text or '[empty]'}" + (f"  ({point_text})" if point_text else "")
+                )
+                item.setData(Qt.UserRole, index)
+                annotations_list.addItem(item)
+
+        def selected_annotation_index() -> int | None:
+            item = annotations_list.currentItem()
+            if item is None:
+                return None
+            data = item.data(Qt.UserRole)
+            try:
+                return int(data)
+            except Exception:
+                return None
+
+        def current_style_updates() -> dict[str, object]:
+            color_value = color_combo.currentData() or "yellow"
+            size_value = 12
+            try:
+                size_value = max(6, min(72, int(float(size_edit.text().strip() or "12"))))
+            except Exception:
+                size_value = 12
+            size_edit.setText(str(size_value))
+            return {"size": size_value, "color": str(color_value)}
+
+        def place_text() -> None:
+            current_text = text_edit.text().strip()
+            if not current_text:
+                status_label.setText("Enter annotation text first.")
+                return
+            configure_text_annotation_layer(
+                layer,
+                source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+                current_text=current_text,
+                style_updates=current_style_updates(),
+            )
+            try:
+                layer.mode = "add"
+            except Exception:
+                pass
+            try:
+                viewer.layers.selection.active = layer
+            except Exception:
+                pass
+            refresh_annotation_list()
+            status_label.setText("Placement mode is active. Click in the viewer to place the text.")
+            set_status("Status: text annotation placement enabled", ok=True)
+
+        def rename_selected_annotation() -> None:
+            index = selected_annotation_index()
+            if index is None:
+                status_label.setText("Select an annotation to rename.")
+                return
+            labels = text_annotation_labels(layer)
+            if index < 0 or index >= len(labels):
+                status_label.setText("Selected annotation is no longer available.")
+                refresh_annotation_list()
+                return
+            new_label, accepted = QInputDialog.getText(
+                dialog,
+                "Rename Annotation",
+                "Annotation text:",
+                text=labels[index],
+            )
+            if not accepted:
+                return
+            updated = str(new_label or "").strip()
+            if not updated:
+                status_label.setText("Annotation text cannot be empty.")
+                return
+            labels[index] = updated
+            try:
+                layer.features = {"label": np.asarray(labels, dtype=object)}
+            except Exception as exc:
+                status_label.setText(f"Rename failed: {exc}")
+                return
+            configure_text_annotation_layer(
+                layer,
+                source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+                current_text=updated,
+                style_updates=current_style_updates(),
+            )
+            refresh_annotation_list()
+            if index < annotations_list.count():
+                annotations_list.setCurrentRow(index)
+            text_edit.setText(updated)
+            status_label.setText("Renamed the selected annotation.")
+
+        def delete_selected_annotation() -> None:
+            index = selected_annotation_index()
+            if index is None:
+                status_label.setText("Select an annotation to delete.")
+                return
+            try:
+                layer.selected_data = {int(index)}
+                layer.remove_selected()
+                layer.selected_data = set()
+            except Exception as exc:
+                status_label.setText(f"Delete failed: {exc}")
+                return
+            refresh_annotation_list()
+            status_label.setText("Deleted the selected annotation.")
+
+        def sync_selection_from_list() -> None:
+            index = selected_annotation_index()
+            if index is None:
+                return
+            try:
+                layer.selected_data = {int(index)}
+            except Exception:
+                pass
+            labels = text_annotation_labels(layer)
+            if 0 <= index < len(labels):
+                text_edit.setText(labels[index])
+
+        refresh_editor_fields()
+        refresh_annotation_list()
+        annotations_list.currentItemChanged.connect(lambda *_args: sync_selection_from_list())
+        place_btn.clicked.connect(place_text)
+        rename_btn.clicked.connect(rename_selected_annotation)
+        delete_btn.clicked.connect(delete_selected_annotation)
+        close_btn.clicked.connect(dialog.accept)
+        dialog.finished.connect(lambda *_args: refresh_context())
+        dialog.show()
+        dialog.raise_()
+        dialog.exec_()
 
     def launch_widget_template(record: dict) -> bool:
         template_id = str(record.get("id", "")).strip()
@@ -5491,6 +6138,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     reject_memory_btn.clicked.connect(reject_last_memory)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
+    text_annotation_action.triggered.connect(show_text_annotation_editor)
     help_prompt_tips_action.triggered.connect(show_help_tips)
     help_whats_new_action.triggered.connect(show_whats_new)
     help_about_action.triggered.connect(show_about_assistant)

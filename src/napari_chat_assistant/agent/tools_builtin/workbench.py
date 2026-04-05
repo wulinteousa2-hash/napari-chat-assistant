@@ -167,6 +167,467 @@ def _resolve_points_layer(viewer, points_layer_name: object | None = None):
     return None
 
 
+def _default_text_annotation_style() -> dict[str, object]:
+    return {
+        "string": "{label}",
+        "size": 12,
+        "color": "yellow",
+        "anchor": "upper_left",
+        "translation": [0.0, -6.0],
+        "blending": "translucent",
+        "visible": True,
+        "scaling": False,
+        "rotation": 0.0,
+    }
+
+
+def _text_annotation_style_from_layer(layer: Points) -> dict[str, object]:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    style = _default_text_annotation_style()
+    saved = metadata.get("text_annotation_text_style")
+    if isinstance(saved, dict):
+        style.update(saved)
+    return style
+
+
+def _configure_text_annotation_layer(
+    layer: Points,
+    *,
+    source_layer_name: str,
+    current_text: str | None = None,
+    style_updates: dict[str, object] | None = None,
+) -> None:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata["text_annotations_managed"] = True
+    metadata["text_annotation_source_layer"] = source_layer_name
+    style = _text_annotation_style_from_layer(layer)
+    if style_updates:
+        style.update(style_updates)
+    metadata["text_annotation_text_style"] = style
+    layer.metadata = metadata
+    try:
+        layer.text = dict(style)
+    except Exception:
+        pass
+    if current_text is not None:
+        try:
+            layer.feature_defaults = {"label": str(current_text)}
+        except Exception:
+            pass
+        try:
+            layer.current_properties = {"label": np.asarray([str(current_text)], dtype=object)}
+        except Exception:
+            pass
+
+
+def _text_annotation_labels(layer: Points) -> list[str]:
+    features = getattr(layer, "features", None)
+    if features is None:
+        return []
+    try:
+        if "label" in features:
+            return [str(value or "").strip() for value in list(features["label"])]
+    except Exception:
+        pass
+    return []
+
+
+def _text_annotation_layer_name(source_layer_name: str) -> str:
+    base = str(source_layer_name or "").strip()
+    return f"{base}_text_annotations" if base else "text_annotations"
+
+
+def _callout_group_names(source_layer_name: str) -> dict[str, str]:
+    base = str(source_layer_name or "").strip() or "annotations"
+    return {
+        "text": f"{base}_callout_text",
+        "boxes": f"{base}_callout_boxes",
+        "leaders": f"{base}_callout_lines",
+    }
+
+
+def _title_group_names(source_layer_name: str) -> dict[str, str]:
+    base = str(source_layer_name or "").strip() or "annotations"
+    return {
+        "text": f"{base}_title_text",
+        "box": f"{base}_title_box",
+    }
+
+
+def _default_callout_text_style() -> dict[str, object]:
+    return {
+        "string": "{label}",
+        "size": 12,
+        "color": "#f4f7fb",
+        "anchor": "center",
+        "translation": [0.0, 0.0],
+        "blending": "translucent",
+        "visible": True,
+        "scaling": False,
+        "rotation": 0.0,
+    }
+
+
+def _callout_text_style_from_layer(layer: Points) -> dict[str, object]:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    style = _default_callout_text_style()
+    saved = metadata.get("callout_text_style")
+    if isinstance(saved, dict):
+        style.update(saved)
+    return style
+
+
+def _configure_callout_text_layer(
+    layer: Points,
+    *,
+    source_layer_name: str,
+    style_updates: dict[str, object] | None = None,
+) -> None:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata["callout_annotations_managed"] = True
+    metadata["callout_annotation_source_layer"] = source_layer_name
+    style = _callout_text_style_from_layer(layer)
+    if style_updates:
+        style.update(style_updates)
+    metadata["callout_text_style"] = style
+    layer.metadata = metadata
+    try:
+        layer.text = dict(style)
+    except Exception:
+        pass
+
+
+def _configure_callout_shapes_layer(layer: Shapes, *, source_layer_name: str, role: str) -> None:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata["callout_annotations_managed"] = True
+    metadata["callout_annotation_source_layer"] = source_layer_name
+    metadata["callout_annotation_role"] = role
+    layer.metadata = metadata
+
+
+def _resolve_callout_text_layer(viewer, layer_name: object | None = None):
+    name = str(layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        if isinstance(layer, Points):
+            metadata = dict(getattr(layer, "metadata", {}) or {})
+            if bool(metadata.get("callout_annotations_managed")):
+                return layer
+        return None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, Points) and bool(dict(getattr(selected, "metadata", {}) or {}).get("callout_annotations_managed")):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        if isinstance(layer, Points) and bool(metadata.get("callout_annotations_managed")):
+            return layer
+    return None
+
+
+def _ensure_callout_annotation_layers(
+    viewer,
+    *,
+    source_layer_name: object | None = None,
+) -> tuple[Points, Shapes, Shapes, object]:
+    anchor_layer = _resolve_text_annotation_anchor_layer(viewer, source_layer_name)
+    if anchor_layer is None:
+        raise ValueError("No usable 2D source layer is available for callout annotations.")
+    if int(getattr(anchor_layer, "ndim", 0) or 0) != 2:
+        raise ValueError("Legion-style callout annotations currently support 2D source layers only.")
+    names = _callout_group_names(str(getattr(anchor_layer, "name", "") or ""))
+
+    existing_text = find_any_layer(viewer, names["text"])
+    if existing_text is not None and not isinstance(existing_text, Points):
+        raise ValueError(f"Layer [{names['text']}] already exists and is not a Points layer.")
+    if isinstance(existing_text, Points):
+        text_layer = existing_text
+    else:
+        text_layer = viewer.add_points(
+            np.empty((0, 2), dtype=np.float32),
+            name=names["text"],
+            features={"label": np.empty((0,), dtype=object)},
+            size=6,
+            face_color="transparent",
+            border_color="transparent",
+            border_width=0,
+        )
+
+    existing_boxes = find_any_layer(viewer, names["boxes"])
+    if existing_boxes is not None and not isinstance(existing_boxes, Shapes):
+        raise ValueError(f"Layer [{names['boxes']}] already exists and is not a Shapes layer.")
+    if isinstance(existing_boxes, Shapes):
+        boxes_layer = existing_boxes
+    else:
+        boxes_layer = viewer.add_shapes(
+            [],
+            shape_type="rectangle",
+            name=names["boxes"],
+            edge_width=2.0,
+            edge_color="#f4f7fb",
+            face_color=[1.0, 1.0, 1.0, 0.12],
+        )
+
+    existing_leaders = find_any_layer(viewer, names["leaders"])
+    if existing_leaders is not None and not isinstance(existing_leaders, Shapes):
+        raise ValueError(f"Layer [{names['leaders']}] already exists and is not a Shapes layer.")
+    if isinstance(existing_leaders, Shapes):
+        leaders_layer = existing_leaders
+    else:
+        leaders_layer = viewer.add_shapes(
+            [],
+            shape_type="line",
+            name=names["leaders"],
+            edge_width=1.5,
+            edge_color="#d9e4f2",
+            face_color="transparent",
+        )
+
+    source_name = str(getattr(anchor_layer, "name", "") or "")
+    _configure_callout_text_layer(text_layer, source_layer_name=source_name)
+    _configure_callout_shapes_layer(boxes_layer, source_layer_name=source_name, role="boxes")
+    _configure_callout_shapes_layer(leaders_layer, source_layer_name=source_name, role="leaders")
+    return text_layer, boxes_layer, leaders_layer, anchor_layer
+
+
+def _ensure_title_annotation_layers(
+    viewer,
+    *,
+    source_layer_name: object | None = None,
+) -> tuple[Points, Shapes, object]:
+    anchor_layer = _resolve_text_annotation_anchor_layer(viewer, source_layer_name)
+    if anchor_layer is None:
+        raise ValueError("No usable 2D source layer is available for title annotations.")
+    if int(getattr(anchor_layer, "ndim", 0) or 0) != 2:
+        raise ValueError("Title annotations currently support 2D source layers only.")
+    names = _title_group_names(str(getattr(anchor_layer, "name", "") or ""))
+
+    existing_text = find_any_layer(viewer, names["text"])
+    if existing_text is not None and not isinstance(existing_text, Points):
+        raise ValueError(f"Layer [{names['text']}] already exists and is not a Points layer.")
+    if isinstance(existing_text, Points):
+        text_layer = existing_text
+    else:
+        text_layer = viewer.add_points(
+            np.empty((0, 2), dtype=np.float32),
+            name=names["text"],
+            features={"label": np.empty((0,), dtype=object)},
+            size=6,
+            face_color="transparent",
+            border_color="transparent",
+            border_width=0,
+        )
+
+    existing_box = find_any_layer(viewer, names["box"])
+    if existing_box is not None and not isinstance(existing_box, Shapes):
+        raise ValueError(f"Layer [{names['box']}] already exists and is not a Shapes layer.")
+    if isinstance(existing_box, Shapes):
+        box_layer = existing_box
+    else:
+        box_layer = viewer.add_shapes(
+            [],
+            shape_type="rectangle",
+            name=names["box"],
+            edge_width=2.2,
+            edge_color="#f4f7fb",
+            face_color=[1.0, 1.0, 1.0, 0.14],
+        )
+
+    source_name = str(getattr(anchor_layer, "name", "") or "")
+    _configure_callout_text_layer(text_layer, source_layer_name=source_name)
+    _configure_callout_shapes_layer(box_layer, source_layer_name=source_name, role="title_box")
+    return text_layer, box_layer, anchor_layer
+
+
+def _text_box_size(text: str, *, size: float) -> tuple[float, float]:
+    cleaned = str(text or "").strip() or "Label"
+    box_height = max(18.0, float(size) * 1.8)
+    box_width = max(34.0, float(size) * (1.6 + 0.68 * len(cleaned)))
+    return float(box_height), float(box_width)
+
+
+def _rectangle_from_center(center_y: float, center_x: float, *, height: float, width: float) -> np.ndarray:
+    half_h = float(height) / 2.0
+    half_w = float(width) / 2.0
+    return np.asarray(
+        [
+            [center_y - half_h, center_x - half_w],
+            [center_y - half_h, center_x + half_w],
+            [center_y + half_h, center_x + half_w],
+            [center_y + half_h, center_x - half_w],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _box_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float], *, margin: float = 6.0) -> bool:
+    ay0, ay1, ax0, ax1 = a
+    by0, by1, bx0, bx1 = b
+    return not (ax1 + margin < bx0 or bx1 + margin < ax0 or ay1 + margin < by0 or by1 + margin < ay0)
+
+
+def _fit_callout_box(
+    centroid_y: float,
+    centroid_x: float,
+    *,
+    image_shape: tuple[int, int],
+    box_height: float,
+    box_width: float,
+    side: int,
+    occupied_boxes: list[tuple[float, float, float, float]],
+    base_offset: float,
+) -> tuple[float, float, tuple[float, float, float, float]]:
+    image_height = float(image_shape[0])
+    image_width = float(image_shape[1])
+    center_x = centroid_x + float(side) * (float(base_offset) + box_width / 2.0)
+    center_x = float(np.clip(center_x, box_width / 2.0 + 2.0, image_width - box_width / 2.0 - 2.0))
+    base_center_y = float(np.clip(centroid_y, box_height / 2.0 + 2.0, image_height - box_height / 2.0 - 2.0))
+    step = max(8.0, box_height + 6.0)
+    candidate_offsets = [0.0]
+    for ring in range(1, 24):
+        candidate_offsets.append(ring * step)
+        candidate_offsets.append(-ring * step)
+    for delta_y in candidate_offsets:
+        center_y = float(np.clip(base_center_y + delta_y, box_height / 2.0 + 2.0, image_height - box_height / 2.0 - 2.0))
+        bbox = (
+            center_y - box_height / 2.0,
+            center_y + box_height / 2.0,
+            center_x - box_width / 2.0,
+            center_x + box_width / 2.0,
+        )
+        if not any(_box_overlap(bbox, existing) for existing in occupied_boxes):
+            return center_y, center_x, bbox
+    bbox = (
+        base_center_y - box_height / 2.0,
+        base_center_y + box_height / 2.0,
+        center_x - box_width / 2.0,
+        center_x + box_width / 2.0,
+    )
+    return base_center_y, center_x, bbox
+
+
+def _callout_entry_geometry(
+    *,
+    text: str,
+    centroid_y: float,
+    centroid_x: float,
+    bbox_y0: float,
+    bbox_y1: float,
+    bbox_x0: float,
+    bbox_x1: float,
+    image_shape: tuple[int, int],
+    occupied_boxes: list[tuple[float, float, float, float]],
+    size: float,
+) -> dict[str, object]:
+    box_height, box_width = _text_box_size(text, size=size)
+    object_width = max(1.0, float(bbox_x1) - float(bbox_x0))
+    side = 1 if centroid_x <= float(image_shape[1]) * 0.58 else -1
+    base_offset = max(16.0, object_width * 0.8 + 12.0)
+    center_y, center_x, bbox = _fit_callout_box(
+        centroid_y,
+        centroid_x,
+        image_shape=image_shape,
+        box_height=box_height,
+        box_width=box_width,
+        side=side,
+        occupied_boxes=occupied_boxes,
+        base_offset=base_offset,
+    )
+    occupied_boxes.append(bbox)
+    rectangle = _rectangle_from_center(center_y, center_x, height=box_height, width=box_width)
+    line_end_x = center_x - side * (box_width / 2.0)
+    line = np.asarray([[centroid_y, centroid_x], [center_y, line_end_x]], dtype=np.float32)
+    return {
+        "text": text,
+        "text_position": [center_y, center_x],
+        "box_shape": rectangle.tolist(),
+        "leader_shape": line.tolist(),
+    }
+
+def _resolve_text_annotation_anchor_layer(viewer, source_layer_name: object | None = None):
+    name = str(source_layer_name or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        if layer is not None and int(getattr(layer, "ndim", 0) or 0) in {2, 3}:
+            return layer
+        return None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if selected is not None and int(getattr(selected, "ndim", 0) or 0) in {2, 3}:
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        if isinstance(layer, Image) and int(getattr(layer, "ndim", 0) or 0) in {2, 3}:
+            return layer
+    return None
+
+
+def _resolve_text_annotation_layer(viewer, annotation_layer: object | None = None):
+    name = str(annotation_layer or "").strip()
+    if name:
+        layer = find_any_layer(viewer, name)
+        if isinstance(layer, Points):
+            return layer
+        return None
+    selected = viewer.layers.selection.active if viewer is not None else None
+    if isinstance(selected, Points) and bool(dict(getattr(selected, "metadata", {}) or {}).get("text_annotations_managed")):
+        return selected
+    for layer in viewer.layers if viewer is not None else []:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        if isinstance(layer, Points) and bool(metadata.get("text_annotations_managed")):
+            return layer
+    return None
+
+
+def _ensure_text_annotation_layer(
+    viewer,
+    *,
+    source_layer_name: object | None = None,
+    annotation_layer_name: object | None = None,
+) -> tuple[Points, object]:
+    anchor_layer = _resolve_text_annotation_anchor_layer(viewer, source_layer_name)
+    if anchor_layer is None:
+        raise ValueError("No usable 2D or 3D source layer is available for text annotations.")
+    requested_name = str(annotation_layer_name or "").strip()
+    layer_name = requested_name or _text_annotation_layer_name(str(getattr(anchor_layer, "name", "") or ""))
+    existing = find_any_layer(viewer, layer_name)
+    if existing is not None and not isinstance(existing, Points):
+        raise ValueError(f"Layer [{layer_name}] already exists and is not a Points layer.")
+    if isinstance(existing, Points):
+        layer = existing
+    else:
+        ndim = int(getattr(anchor_layer, "ndim", 2) or 2)
+        layer = viewer.add_points(
+            np.empty((0, ndim), dtype=np.float32),
+            name=layer_name,
+            features={"label": np.empty((0,), dtype=object)},
+            size=6,
+            face_color="transparent",
+            border_color="#ffd54f",
+            border_width=1,
+        )
+    _configure_text_annotation_layer(layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""))
+    return layer, anchor_layer
+
+
+def _normalize_text_annotation_position(value: object, *, ndim: int) -> tuple[float, ...]:
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
+        coords = [float(part) for part in parts]
+    elif isinstance(value, (list, tuple, np.ndarray)):
+        coords = [float(v) for v in list(value)]
+    else:
+        coords = []
+    if ndim == 2:
+        if len(coords) != 2:
+            raise ValueError("2D text annotations need position=[x, y].")
+        x, y = coords
+        return (float(y), float(x))
+    if ndim == 3:
+        if len(coords) == 3:
+            z, y, x = coords
+            return (float(z), float(y), float(x))
+        raise ValueError("3D text annotations need position=[z, y, x].")
+    raise ValueError("Text annotations currently support 2D or 3D layers only.")
+
+
 def _shape_bbox_xyxy(layer: Shapes, shape_index: int | None = None) -> tuple[tuple[float, float, float, float], int]:
     indices = _shape_indices(layer)
     if not indices:
@@ -1936,6 +2397,675 @@ class SplitMontageAnnotationsTool:
             )
 
         return "Montage annotation splitting currently supports Labels or Points layers only."
+
+
+class CreateTextAnnotationTool:
+    spec = ToolSpec(
+        name="create_text_annotation",
+        display_name="Create Text Annotation",
+        category="annotation",
+        description="Create or reuse a managed text-annotation points layer and add one text label at a viewer position.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "points"),
+        parameter_schema=(
+            ParamSpec("text", "string", description="Annotation text to place.", required=True),
+            ParamSpec("position", "float_or_list", description="2D [x, y] or 3D [z, y, x] position.", required=True),
+            ParamSpec("source_layer", "string", description="Optional source image or anchor layer."),
+            ParamSpec("annotation_layer", "string", description="Optional managed text-annotation layer name."),
+            ParamSpec("size", "float", description="Optional text size.", default=12.0, minimum=6.0, maximum=72.0),
+            ParamSpec("color", "string", description="Optional text color.", default="yellow"),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "text_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        text = str(args.get("text", "") or "").strip()
+        if not text:
+            return "Provide annotation text."
+        try:
+            layer, anchor_layer = _ensure_text_annotation_layer(
+                ctx.viewer,
+                source_layer_name=args.get("source_layer"),
+                annotation_layer_name=args.get("annotation_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        ndim = int(getattr(anchor_layer, "ndim", 0) or 0)
+        try:
+            data_position = _normalize_text_annotation_position(args.get("position"), ndim=ndim)
+        except Exception as exc:
+            return str(exc)
+        size = float(args.get("size", 12.0) or 12.0)
+        color = str(args.get("color", "yellow") or "yellow").strip() or "yellow"
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "text": text,
+                "position": list(data_position),
+                "annotation_layer": str(layer.name),
+                "source_layer": str(getattr(anchor_layer, "name", "") or ""),
+                "size": max(6.0, min(72.0, size)),
+                "color": color,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        try:
+            layer, anchor_layer = _ensure_text_annotation_layer(
+                ctx.viewer,
+                source_layer_name=payload.get("source_layer"),
+                annotation_layer_name=payload.get("annotation_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        text = str(payload.get("text", "") or "").strip()
+        position = np.asarray(payload.get("position", []), dtype=float)
+        if position.ndim != 1 or position.size != int(getattr(anchor_layer, "ndim", 0) or 0):
+            return "Text annotation position is not compatible with the target layer dimensionality."
+        current_data = np.asarray(getattr(layer, "data", []), dtype=float)
+        if current_data.size == 0:
+            current_data = np.empty((0, position.size), dtype=float)
+        new_data = np.vstack([current_data, position.reshape(1, -1)])
+        labels = _text_annotation_labels(layer)
+        labels.append(text)
+        layer.data = new_data
+        layer.features = {"label": np.asarray(labels, dtype=object)}
+        _configure_text_annotation_layer(
+            layer,
+            source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+            current_text=text,
+            style_updates={"size": float(payload.get("size", 12.0) or 12.0), "color": str(payload.get("color", "yellow"))},
+        )
+        return (
+            f"Added text annotation [{text}] to [{layer.name}] at {tuple(float(v) for v in position.tolist())} "
+            f"for source layer [{anchor_layer.name}]."
+        )
+
+
+class RenameTextAnnotationTool:
+    spec = ToolSpec(
+        name="rename_text_annotation",
+        display_name="Rename Text Annotation",
+        category="annotation",
+        description="Rename one text annotation inside a managed text-annotation points layer.",
+        execution_mode="immediate",
+        supported_layer_types=("points",),
+        parameter_schema=(
+            ParamSpec("old_text", "string", description="Existing annotation text to rename.", required=True),
+            ParamSpec("new_text", "string", description="Replacement annotation text.", required=True),
+            ParamSpec("annotation_layer", "string", description="Optional managed text-annotation layer name."),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "text_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        old_text = str(args.get("old_text", "") or "").strip()
+        new_text = str(args.get("new_text", "") or "").strip()
+        if not old_text or not new_text:
+            return "Provide both old_text and new_text for renaming."
+        layer = _resolve_text_annotation_layer(ctx.viewer, args.get("annotation_layer"))
+        if layer is None:
+            return "No managed text annotation layer is available to rename."
+        labels = _text_annotation_labels(layer)
+        if old_text not in labels:
+            return f"No annotation text [{old_text}] was found in [{layer.name}]."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "annotation_layer": str(layer.name),
+                "old_text": old_text,
+                "new_text": new_text,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        layer = _resolve_text_annotation_layer(ctx.viewer, payload.get("annotation_layer"))
+        if layer is None:
+            return "No usable managed text annotation layer was available to rename."
+        labels = _text_annotation_labels(layer)
+        old_text = str(payload.get("old_text", "") or "").strip()
+        new_text = str(payload.get("new_text", "") or "").strip()
+        try:
+            index = labels.index(old_text)
+        except ValueError:
+            return f"No annotation text [{old_text}] was found in [{layer.name}]."
+        labels[index] = new_text
+        layer.features = {"label": np.asarray(labels, dtype=object)}
+        source_name = str(dict(getattr(layer, "metadata", {}) or {}).get("text_annotation_source_layer", "") or "")
+        _configure_text_annotation_layer(layer, source_layer_name=source_name, current_text=new_text)
+        return f"Renamed text annotation [{old_text}] to [{new_text}] in [{layer.name}]."
+
+
+class DeleteTextAnnotationTool:
+    spec = ToolSpec(
+        name="delete_text_annotation",
+        display_name="Delete Text Annotation",
+        category="annotation",
+        description="Delete one or more text annotations from a managed text-annotation points layer.",
+        execution_mode="immediate",
+        supported_layer_types=("points",),
+        parameter_schema=(
+            ParamSpec("text", "string", description="Annotation text to delete."),
+            ParamSpec("annotation_layer", "string", description="Optional managed text-annotation layer name."),
+            ParamSpec("delete_all", "bool", description="Delete all annotations from the layer.", default=False),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "text_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layer = _resolve_text_annotation_layer(ctx.viewer, args.get("annotation_layer"))
+        if layer is None:
+            return "No managed text annotation layer is available to delete from."
+        delete_all = bool(args.get("delete_all", False))
+        text = str(args.get("text", "") or "").strip()
+        labels = _text_annotation_labels(layer)
+        if not labels:
+            return f"Layer [{layer.name}] does not contain any text annotations."
+        if not delete_all and not text:
+            return "Provide annotation text to delete, or set delete_all=true."
+        if not delete_all and text not in labels:
+            return f"No annotation text [{text}] was found in [{layer.name}]."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "annotation_layer": str(layer.name),
+                "text": text,
+                "delete_all": delete_all,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        layer = _resolve_text_annotation_layer(ctx.viewer, payload.get("annotation_layer"))
+        if layer is None:
+            return "No usable managed text annotation layer was available to delete from."
+        labels = _text_annotation_labels(layer)
+        if not labels:
+            return f"Layer [{layer.name}] does not contain any text annotations."
+        delete_all = bool(payload.get("delete_all", False))
+        if delete_all:
+            layer.data = np.empty((0, int(getattr(layer, "ndim", 2) or 2)), dtype=float)
+            layer.features = {"label": np.empty((0,), dtype=object)}
+            return f"Deleted all text annotations from [{layer.name}]."
+        text = str(payload.get("text", "") or "").strip()
+        keep_indices = [index for index, value in enumerate(labels) if value != text]
+        removed_count = len(labels) - len(keep_indices)
+        if removed_count <= 0:
+            return f"No annotation text [{text}] was found in [{layer.name}]."
+        data = np.asarray(getattr(layer, "data", []), dtype=float)
+        if keep_indices:
+            layer.data = data[keep_indices]
+            layer.features = {"label": np.asarray([labels[index] for index in keep_indices], dtype=object)}
+        else:
+            layer.data = np.empty((0, data.shape[1] if data.ndim == 2 and data.shape[1] > 0 else int(getattr(layer, "ndim", 2) or 2)), dtype=float)
+            layer.features = {"label": np.empty((0,), dtype=object)}
+        return f"Deleted {removed_count} text annotation(s) matching [{text}] from [{layer.name}]."
+
+
+class ListTextAnnotationsTool:
+    spec = ToolSpec(
+        name="list_text_annotations",
+        display_name="List Text Annotations",
+        category="annotation",
+        description="List the current text annotations in a managed text-annotation points layer.",
+        execution_mode="immediate",
+        supported_layer_types=("points",),
+        parameter_schema=(ParamSpec("annotation_layer", "string", description="Optional managed text-annotation layer name."),),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "text_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        layer = _resolve_text_annotation_layer(ctx.viewer, (arguments or {}).get("annotation_layer"))
+        if layer is None:
+            return "No managed text annotation layer is available."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "annotation_layer": str(layer.name)},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layer = _resolve_text_annotation_layer(ctx.viewer, result.payload.get("annotation_layer"))
+        if layer is None:
+            return "No usable managed text annotation layer is available."
+        labels = _text_annotation_labels(layer)
+        if not labels:
+            return f"Layer [{layer.name}] does not contain any text annotations."
+        coordinates = np.asarray(getattr(layer, "data", []), dtype=float)
+        entries: list[str] = []
+        for index, label in enumerate(labels):
+            if coordinates.ndim == 2 and index < len(coordinates):
+                point = ", ".join(f"{value:.1f}" for value in coordinates[index].tolist())
+                entries.append(f"{index + 1}. [{label}] at ({point})")
+            else:
+                entries.append(f"{index + 1}. [{label}]")
+        return f"Text annotations in [{layer.name}]: " + "; ".join(entries) + "."
+
+
+class AnnotateLabelsWithTextTool:
+    spec = ToolSpec(
+        name="annotate_labels_with_text",
+        display_name="Annotate Labels With Text",
+        category="annotation",
+        description="Create text annotations at labeled-object centroids from a labels layer.",
+        execution_mode="immediate",
+        supported_layer_types=("labels", "points", "image"),
+        parameter_schema=(
+            ParamSpec("labels_layer", "string", description="Labels layer to annotate."),
+            ParamSpec("source_layer", "string", description="Optional image or anchor layer for the text overlay."),
+            ParamSpec("annotation_layer", "string", description="Optional managed text-annotation layer name."),
+            ParamSpec("prefix", "string", description="Text prefix such as Particle or Cell.", default="Particle"),
+            ParamSpec("start_index", "int", description="Starting display index.", default=1, minimum=0),
+            ParamSpec("size", "float", description="Optional text size.", default=12.0, minimum=6.0, maximum=72.0),
+            ParamSpec("color", "string", description="Optional text color.", default="yellow"),
+            ParamSpec("replace_existing", "bool", description="Clear existing annotations in the managed annotation layer first.", default=False),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "labels_centroid_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        labels_layer = find_labels_layer(ctx.viewer, args.get("labels_layer"))
+        if labels_layer is None:
+            return "No valid labels layer is available for automatic text annotation."
+        try:
+            layer, anchor_layer = _ensure_text_annotation_layer(
+                ctx.viewer,
+                source_layer_name=args.get("source_layer") or labels_layer.name,
+                annotation_layer_name=args.get("annotation_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        labeled = np.asarray(labels_layer.data)
+        if labeled.ndim < 2:
+            return f"Labels layer [{labels_layer.name}] must have at least 2 dimensions."
+        props = regionprops(labeled)
+        if not props:
+            return f"Labels layer [{labels_layer.name}] does not contain any labeled objects."
+        prefix = str(args.get("prefix", "Particle") or "Particle").strip() or "Particle"
+        start_index = normalize_int(args.get("start_index", 1), default=1, minimum=0, maximum=1_000_000)
+        entries: list[dict[str, object]] = []
+        ordered = sorted(props, key=lambda prop: int(getattr(prop, "label", 0)))
+        for display_offset, prop in enumerate(ordered):
+            centroid = tuple(float(v) for v in tuple(getattr(prop, "centroid", ()) or ()))
+            if len(centroid) < int(getattr(anchor_layer, "ndim", 0) or 0):
+                continue
+            entries.append(
+                {
+                    "label_id": int(getattr(prop, "label", 0)),
+                    "text": f"{prefix} {start_index + display_offset}",
+                    "position": list(centroid[: int(getattr(anchor_layer, 'ndim', 0) or len(centroid))]),
+                }
+            )
+        if not entries:
+            return f"Labels layer [{labels_layer.name}] does not contain usable centroid positions."
+        size = float(args.get("size", 12.0) or 12.0)
+        color = str(args.get("color", "yellow") or "yellow").strip() or "yellow"
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "labels_layer": labels_layer.name,
+                "annotation_layer": str(layer.name),
+                "source_layer": str(getattr(anchor_layer, "name", "") or ""),
+                "entries": entries,
+                "size": max(6.0, min(72.0, size)),
+                "color": color,
+                "replace_existing": bool(args.get("replace_existing", False)),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        labels_layer = find_labels_layer(ctx.viewer, payload.get("labels_layer"))
+        if labels_layer is None:
+            return "No usable labels layer was available for automatic text annotation."
+        try:
+            layer, anchor_layer = _ensure_text_annotation_layer(
+                ctx.viewer,
+                source_layer_name=payload.get("source_layer"),
+                annotation_layer_name=payload.get("annotation_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        entries = list(payload.get("entries", []) or [])
+        if not entries:
+            return f"Labels layer [{labels_layer.name}] does not contain any usable labeled objects."
+        current_data = np.asarray(getattr(layer, "data", []), dtype=float)
+        if current_data.ndim != 2:
+            current_data = np.empty((0, int(getattr(anchor_layer, "ndim", 2) or 2)), dtype=float)
+        current_labels = [] if bool(payload.get("replace_existing", False)) else _text_annotation_labels(layer)
+        if bool(payload.get("replace_existing", False)):
+            current_data = np.empty((0, int(getattr(anchor_layer, "ndim", 2) or 2)), dtype=float)
+        appended_positions: list[np.ndarray] = []
+        appended_texts: list[str] = []
+        for entry in entries:
+            position = np.asarray(entry.get("position", []), dtype=float)
+            if position.ndim != 1 or position.size != int(getattr(anchor_layer, "ndim", 0) or 0):
+                continue
+            appended_positions.append(position)
+            appended_texts.append(str(entry.get("text", "") or "").strip())
+        if not appended_positions:
+            return f"Labels layer [{labels_layer.name}] does not contain usable centroid positions."
+        new_data = np.vstack([current_data] + [pos.reshape(1, -1) for pos in appended_positions])
+        layer.data = new_data
+        layer.features = {"label": np.asarray(current_labels + appended_texts, dtype=object)}
+        _configure_text_annotation_layer(
+            layer,
+            source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+            current_text=appended_texts[-1],
+            style_updates={"size": float(payload.get("size", 12.0) or 12.0), "color": str(payload.get("color", "yellow"))},
+        )
+        created = ", ".join(f"[{text}]" for text in appended_texts)
+        return (
+            f"Added {len(appended_texts)} text annotation(s) from labels layer [{labels_layer.name}] "
+            f"to [{layer.name}]: {created}."
+        )
+
+
+class AnnotateLabelsWithCalloutsTool:
+    spec = ToolSpec(
+        name="annotate_labels_with_callouts",
+        display_name="Annotate Labels With Callouts",
+        category="annotation",
+        description="Create Legion-style numbered callouts with leader lines and label boxes from a labels layer.",
+        execution_mode="immediate",
+        supported_layer_types=("labels", "image"),
+        parameter_schema=(
+            ParamSpec("labels_layer", "string", description="Labels layer to annotate."),
+            ParamSpec("source_layer", "string", description="Optional image or anchor layer for the callouts."),
+            ParamSpec("prefix", "string", description="Label prefix such as Particle or Cell.", default="Particle"),
+            ParamSpec("start_index", "int", description="Starting display index.", default=1, minimum=0),
+            ParamSpec("size", "float", description="Optional text size.", default=12.0, minimum=6.0, maximum=72.0),
+            ParamSpec("color", "string", description="Optional text color.", default="#f4f7fb"),
+            ParamSpec("replace_existing", "bool", description="Rebuild the managed callout group instead of appending.", default=True),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "labels_callout_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        labels_layer = find_labels_layer(ctx.viewer, args.get("labels_layer"))
+        if labels_layer is None:
+            return "No valid labels layer is available for callout annotation."
+        try:
+            text_layer, boxes_layer, leaders_layer, anchor_layer = _ensure_callout_annotation_layers(
+                ctx.viewer,
+                source_layer_name=args.get("source_layer") or labels_layer.name,
+            )
+        except Exception as exc:
+            return str(exc)
+        labeled = np.asarray(labels_layer.data)
+        if labeled.ndim != 2:
+            return f"Callout annotation currently supports 2D labels layers only. Got ndim={labeled.ndim}."
+        props = regionprops(labeled)
+        if not props:
+            return f"Labels layer [{labels_layer.name}] does not contain any labeled objects."
+        prefix = str(args.get("prefix", "Particle") or "Particle").strip() or "Particle"
+        start_index = normalize_int(args.get("start_index", 1), default=1, minimum=0, maximum=1_000_000)
+        size = max(6.0, min(72.0, float(args.get("size", 12.0) or 12.0)))
+        color = str(args.get("color", "#f4f7fb") or "#f4f7fb").strip() or "#f4f7fb"
+        occupied_boxes: list[tuple[float, float, float, float]] = []
+        entries: list[dict[str, object]] = []
+        ordered = sorted(props, key=lambda prop: int(getattr(prop, "label", 0)))
+        for display_offset, prop in enumerate(ordered):
+            centroid = tuple(float(v) for v in tuple(getattr(prop, "centroid", ()) or ()))
+            bbox = tuple(float(v) for v in tuple(getattr(prop, "bbox", ()) or ()))
+            if len(centroid) < 2 or len(bbox) < 4:
+                continue
+            entries.append(
+                _callout_entry_geometry(
+                    text=f"{prefix} {start_index + display_offset}",
+                    centroid_y=float(centroid[0]),
+                    centroid_x=float(centroid[1]),
+                    bbox_y0=float(bbox[0]),
+                    bbox_y1=float(bbox[2]),
+                    bbox_x0=float(bbox[1]),
+                    bbox_x1=float(bbox[3]),
+                    image_shape=tuple(int(v) for v in labeled.shape),
+                    occupied_boxes=occupied_boxes,
+                    size=size,
+                )
+            )
+        if not entries:
+            return f"Labels layer [{labels_layer.name}] does not contain usable 2D object geometry."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "labels_layer": labels_layer.name,
+                "source_layer": str(getattr(anchor_layer, "name", "") or ""),
+                "text_layer": text_layer.name,
+                "boxes_layer": boxes_layer.name,
+                "leaders_layer": leaders_layer.name,
+                "entries": entries,
+                "size": size,
+                "color": color,
+                "replace_existing": bool(args.get("replace_existing", True)),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        labels_layer = find_labels_layer(ctx.viewer, payload.get("labels_layer"))
+        if labels_layer is None:
+            return "No usable labels layer was available for callout annotation."
+        try:
+            text_layer, boxes_layer, leaders_layer, anchor_layer = _ensure_callout_annotation_layers(
+                ctx.viewer,
+                source_layer_name=payload.get("source_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        entries = list(payload.get("entries", []) or [])
+        if not entries:
+            return f"Labels layer [{labels_layer.name}] does not contain usable callout geometry."
+        replace_existing = bool(payload.get("replace_existing", True))
+
+        text_labels = [str(entry.get("text", "") or "").strip() for entry in entries]
+        text_positions = [np.asarray(entry.get("text_position", []), dtype=float) for entry in entries]
+        valid_positions = [position for position in text_positions if position.ndim == 1 and position.size == 2]
+        if len(valid_positions) != len(text_labels):
+            return f"Could not build valid callout text positions for [{labels_layer.name}]."
+
+        if replace_existing:
+            existing_text_data = np.empty((0, 2), dtype=float)
+            existing_labels: list[str] = []
+        else:
+            existing_text_data = np.asarray(getattr(text_layer, "data", []), dtype=float)
+            if existing_text_data.ndim != 2:
+                existing_text_data = np.empty((0, 2), dtype=float)
+            existing_labels = _text_annotation_labels(text_layer)
+        text_layer.data = np.vstack([existing_text_data] + [position.reshape(1, -1) for position in valid_positions])
+        text_layer.features = {"label": np.asarray(existing_labels + text_labels, dtype=object)}
+        _configure_callout_text_layer(
+            text_layer,
+            source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+            style_updates={"size": float(payload.get("size", 12.0) or 12.0), "color": str(payload.get("color", "#f4f7fb"))},
+        )
+
+        box_shapes = [np.asarray(entry.get("box_shape", []), dtype=np.float32) for entry in entries]
+        leader_shapes = [np.asarray(entry.get("leader_shape", []), dtype=np.float32) for entry in entries]
+        boxes_layer.data = box_shapes
+        boxes_layer.shape_type = ["rectangle"] * len(box_shapes)
+        boxes_layer.features = {"label": np.asarray(text_labels, dtype=object)}
+        _configure_callout_shapes_layer(boxes_layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""), role="boxes")
+
+        leaders_layer.data = leader_shapes
+        leaders_layer.shape_type = ["line"] * len(leader_shapes)
+        leaders_layer.features = {"label": np.asarray(text_labels, dtype=object)}
+        _configure_callout_shapes_layer(leaders_layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""), role="leaders")
+
+        created = ", ".join(f"[{label}]" for label in text_labels)
+        return (
+            f"Added {len(text_labels)} Legion-style callout annotation(s) from labels layer [{labels_layer.name}] "
+            f"using [{text_layer.name}], [{boxes_layer.name}], and [{leaders_layer.name}]: {created}."
+        )
+
+
+class CreateTitleLabelTool:
+    spec = ToolSpec(
+        name="create_title_label",
+        display_name="Create Title Label",
+        category="annotation",
+        description="Create a boxed title label aligned left, center, or right above a 2D source layer without modifying image pixels.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels"),
+        parameter_schema=(
+            ParamSpec("text", "string", description="Title text to place.", required=True),
+            ParamSpec("source_layer", "string", description="Optional 2D source image or anchor layer."),
+            ParamSpec("placement", "string", description="Title placement, currently outside_top.", default="outside_top"),
+            ParamSpec("align", "string", description="Horizontal alignment: left, center, or right.", default="center"),
+            ParamSpec("size", "float", description="Optional text size.", default=16.0, minimum=8.0, maximum=96.0),
+            ParamSpec("color", "string", description="Optional text color.", default="#f4f7fb"),
+            ParamSpec("margin", "float", description="Outer margin from the image edge.", default=8.0, minimum=0.0, maximum=256.0),
+            ParamSpec("gap", "float", description="Gap between the image top edge and the title box.", default=10.0, minimum=0.0, maximum=256.0),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Annotation"},
+        provenance_metadata={"algorithm": "title_label_annotation", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        text = str(args.get("text", "") or "").strip()
+        if not text:
+            return "Provide title text."
+        try:
+            text_layer, box_layer, anchor_layer = _ensure_title_annotation_layers(
+                ctx.viewer,
+                source_layer_name=args.get("source_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        data = np.asarray(getattr(anchor_layer, "data", None))
+        if data.ndim != 2:
+            return f"Title labels currently support 2D source layers only. Got ndim={data.ndim}."
+        placement = str(args.get("placement", "outside_top") or "outside_top").strip().lower() or "outside_top"
+        if placement not in {"outside_top"}:
+            return f"Unsupported title placement [{placement}]. Use outside_top."
+        align = str(args.get("align", "center") or "center").strip().lower() or "center"
+        if align not in {"left", "center", "right"}:
+            return f"Unsupported title alignment [{align}]. Use left, center, or right."
+        size = max(8.0, min(96.0, float(args.get("size", 16.0) or 16.0)))
+        margin = normalize_float(args.get("margin", 8.0), 8.0, minimum=0.0, maximum=256.0)
+        gap = normalize_float(args.get("gap", 10.0), 10.0, minimum=0.0, maximum=256.0)
+        box_height, box_width = _text_box_size(text, size=size)
+        image_height = float(data.shape[0])
+        image_width = float(data.shape[1])
+        center_y = -(gap + box_height / 2.0)
+        if align == "left":
+            center_x = margin + box_width / 2.0
+        elif align == "right":
+            center_x = image_width - margin - box_width / 2.0
+        else:
+            center_x = image_width / 2.0
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={
+                "kind": self.spec.name,
+                "text": text,
+                "source_layer": str(getattr(anchor_layer, "name", "") or ""),
+                "text_layer": text_layer.name,
+                "box_layer": box_layer.name,
+                "text_position": [center_y, center_x],
+                "box_shape": _rectangle_from_center(center_y, center_x, height=box_height, width=box_width).tolist(),
+                "placement": placement,
+                "align": align,
+                "size": size,
+                "color": str(args.get("color", "#f4f7fb") or "#f4f7fb").strip() or "#f4f7fb",
+                "margin": margin,
+                "gap": gap,
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = dict(result.payload)
+        try:
+            text_layer, box_layer, anchor_layer = _ensure_title_annotation_layers(
+                ctx.viewer,
+                source_layer_name=payload.get("source_layer"),
+            )
+        except Exception as exc:
+            return str(exc)
+        text = str(payload.get("text", "") or "").strip()
+        if not text:
+            return "Title text is empty."
+        text_position = np.asarray(payload.get("text_position", []), dtype=float)
+        box_shape = np.asarray(payload.get("box_shape", []), dtype=np.float32)
+        if text_position.ndim != 1 or text_position.size != 2:
+            return "Title label position is invalid."
+        if box_shape.ndim != 2 or box_shape.shape != (4, 2):
+            return "Title label box geometry is invalid."
+        text_layer.data = np.asarray([text_position], dtype=float)
+        text_layer.features = {"label": np.asarray([text], dtype=object)}
+        _configure_callout_text_layer(
+            text_layer,
+            source_layer_name=str(getattr(anchor_layer, "name", "") or ""),
+            style_updates={"size": float(payload.get("size", 16.0) or 16.0), "color": str(payload.get("color", "#f4f7fb"))},
+        )
+        box_layer.data = [box_shape]
+        box_layer.shape_type = ["rectangle"]
+        box_layer.features = {"label": np.asarray([text], dtype=object)}
+        _configure_callout_shapes_layer(box_layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""), role="title_box")
+        return (
+            f"Added title label [{text}] to [{anchor_layer.name}] using [{text_layer.name}] and [{box_layer.name}] "
+            f"with placement={payload.get('placement', 'outside_top')} align={payload.get('align', 'center')}."
+        )
 
 
 class GaussianDenoiseTool:
@@ -4079,6 +5209,13 @@ def workbench_scaffold_tools():
         ArrangeLayersForPresentationTool(),
         CreateAnalysisMontageTool(),
         SplitMontageAnnotationsTool(),
+        CreateTextAnnotationTool(),
+        AnnotateLabelsWithTextTool(),
+        AnnotateLabelsWithCalloutsTool(),
+        CreateTitleLabelTool(),
+        RenameTextAnnotationTool(),
+        DeleteTextAnnotationTool(),
+        ListTextAnnotationsTool(),
         InspectROIContextTool(),
         MeasureShapesROIAreaTool(),
         ExtractROIValuesTool(),

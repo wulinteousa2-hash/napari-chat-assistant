@@ -8,6 +8,7 @@ def test_action_library_payload_has_categories_and_actions():
 
     assert "Widgets" in payload["categories"]
     assert "Workspace" in payload["categories"]
+    assert "Annotation" in payload["categories"]
     assert "Enhance" in payload["categories"]
     assert "Montage" in payload["categories"]
     assert "Segmentation" in payload["categories"]
@@ -33,6 +34,12 @@ def test_action_library_contains_function_and_tool_actions():
     assert "Save Workspace As" in titles
     assert "Load Workspace" in titles
     assert "Restore Last Workspace" in titles
+    assert "Add Text Annotation" in titles
+    assert "List Text Annotations" in titles
+    assert "Legion Callouts" in titles
+    assert "Title Label" in titles
+    assert "Rename Text Annotation" in titles
+    assert "Delete Text Annotation" in titles
     assert "Hide All" in titles
     assert "Isolate Selected" in titles
     assert "Set Uniform Scale 0.1" in titles

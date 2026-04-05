@@ -1,0 +1,58 @@
+{
+    "multiscales": [
+        {
+            "axes": [
+                {
+                    "name": "y",
+                    "type": "space",
+                    "unit": "micrometer"
+                },
+                {
+                    "name": "x",
+                    "type": "space",
+                    "unit": "micrometer"
+                }
+            ],
+            "datasets": [
+                {
+                    "coordinateTransformations": [
+                        {
+                            "scale": [
+                                1.0,
+                                1.0
+                            ],
+                            "type": "scale"
+                        }
+                    ],
+                    "path": "0"
+                }
+            ],
+            "name": "/",
+            "omero": {
+                "name": "rgb_cells_2d_snr_high_B"
+            },
+            "version": "0.4"
+        }
+    ],
+    "napari_chat_assistant": {
+        "microscopy_metadata": {
+            "acquisition_software": "unknown",
+            "axes": [
+                "y",
+                "x"
+            ],
+            "instrument_model": "unknown",
+            "metadata_source": "placeholder",
+            "scale": [
+                1.0,
+                1.0
+            ],
+            "units": [
+                "micrometer",
+                "micrometer"
+            ],
+            "vendor": "unknown"
+        },
+        "workspace_layer_name": "rgb_cells_2d_snr_high_B"
+    }
+}

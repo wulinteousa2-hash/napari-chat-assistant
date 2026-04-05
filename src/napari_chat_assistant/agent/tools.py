@@ -107,6 +107,13 @@ ASSISTANT_TOOL_NAMES = {
     "arrange_layers_for_presentation",
     "create_analysis_montage",
     "split_montage_annotations_to_sources",
+    "create_text_annotation",
+    "annotate_labels_with_text",
+    "annotate_labels_with_callouts",
+    "create_title_label",
+    "rename_text_annotation",
+    "delete_text_annotation",
+    "list_text_annotations",
     "extract_roi_values",
     "sam_segment_from_box",
     "sam_segment_from_points",
@@ -214,6 +221,17 @@ def assistant_system_prompt() -> str:
         '- Example delete intent: user says "delete all shape layers" -> {"action":"tool","tool":"delete_layers","arguments":{"layer_type":"shapes"},"message":"Deleting all Shapes layers."}\n'
         '- Example montage intent: user says "create an analysis montage in 4x2 with spacing 2 and tile boxes" -> {"action":"tool","tool":"create_analysis_montage","arguments":{"rows":4,"columns":2,"spacing":2,"show_tile_boxes":true,"create_mask_layer":true},"message":"Creating an analysis montage canvas."}\n'
         '- Example split-back intent: user says "split this montage mask back to the source images" -> {"action":"tool","tool":"split_montage_annotations_to_sources","arguments":{"annotation_layer":"analysis_montage_mask"},"message":"Splitting montage annotations back to source layers."}\n'
+        '- Example text-annotation create intent: user says "write XXX on image_a at x 120 y 45" -> {"action":"tool","tool":"create_text_annotation","arguments":{"source_layer":"image_a","text":"XXX","position":[120,45]},"message":"Adding a text annotation to image_a."}\n'
+        '- Example labels-annotation intent: user says "annotate the 4 particles in template_blob_labels as particle 1 to 4" -> {"action":"tool","tool":"annotate_labels_with_text","arguments":{"labels_layer":"template_blob_labels","prefix":"particle","start_index":1},"message":"Adding centroid text annotations for the labeled particles."}\n'
+        '- Example Legion-style annotation intent: user says "annotate template_blob_labels in legion style" -> {"action":"tool","tool":"annotate_labels_with_callouts","arguments":{"labels_layer":"template_blob_labels","prefix":"particle","start_index":1},"message":"Adding Legion-style callout labels for the segmented objects."}\n'
+        '- Example Legion-style segmentation intent: user says "annotate this segmentation like legion" -> {"action":"tool","tool":"annotate_labels_with_callouts","arguments":{"labels_layer":"template_blob_labels","prefix":"particle","start_index":1},"message":"Adding Legion-style callout labels for the segmented objects."}\n'
+        '- Example outside-callout phrasing: user says "move the particle labels outside with boxes and lines" -> {"action":"tool","tool":"annotate_labels_with_callouts","arguments":{"labels_layer":"template_blob_labels","prefix":"particle","start_index":1,"replace_existing":true},"message":"Rebuilding the particle labels as outside callout boxes."}\n'
+        '- Example title-label intent: user says "add title WT Group N=10 above the image on the left" -> {"action":"tool","tool":"create_title_label","arguments":{"source_layer":"template_blob_image","text":"WT Group N=10","placement":"outside_top","align":"left"},"message":"Adding a boxed title label above the image."}\n'
+        '- Example right-title intent: user says "place title Control outside top right" -> {"action":"tool","tool":"create_title_label","arguments":{"source_layer":"template_blob_image","text":"Control","placement":"outside_top","align":"right"},"message":"Adding a boxed title label above the image."}\n'
+        '- Example centered-title intent: user says "put Sample A as a centered title above the image" -> {"action":"tool","tool":"create_title_label","arguments":{"source_layer":"template_blob_image","text":"Sample A","placement":"outside_top","align":"center"},"message":"Adding a boxed title label above the image."}\n'
+        '- Example text-annotation rename intent: user says "rename text annotation XXX to tumor core" -> {"action":"tool","tool":"rename_text_annotation","arguments":{"old_text":"XXX","new_text":"tumor core"},"message":"Renaming the text annotation."}\n'
+        '- Example text-annotation delete intent: user says "remove the text annotation tumor core" -> {"action":"tool","tool":"delete_text_annotation","arguments":{"text":"tumor core"},"message":"Deleting the text annotation."}\n'
+        '- Example text-annotation inspect intent: user says "what text labels are on this annotation layer?" -> {"action":"tool","tool":"list_text_annotations","arguments":{},"message":"Listing the text annotations on the current annotation layer."}\n'
         '- Example code refinement: if pasted code uses placeholders such as ["img_a","img_b"] and layer_binding_hints suggests real image layers ["em_2d_snr_low","em_2d_snr_mid"], return action=code with corrected runnable Python that replaces the placeholders with those real layer names.\n'
         '- Example repair focus: if local_validation says code used `layer.shape`, rewrite it to use `data = np.asarray(layer.data)` and `data.shape` instead of repeating the same invalid access.\n'
         '- Example background choice: if the code only sets `layer.scale`, toggles visibility, deletes layers, or adds a small immediate result layer, do not use `run_in_background(...)`. Use it only when the compute step is array-heavy enough to likely block the UI.\n'
@@ -265,6 +283,13 @@ def assistant_system_prompt() -> str:
         '- arrange_layers_for_presentation: {"layer_names": optional list, "layout": optional "row|column|grid|pairs", "spacing": optional float, "columns": optional int, "group_size": optional int, "use_copies": optional bool, "match_origin": optional bool}\n'
         '- create_analysis_montage: {"layer_names": optional list, "rows": optional int, "columns": optional int, "spacing": optional int, "show_tile_boxes": optional bool, "create_mask_layer": optional bool, "background_value": optional float}\n'
         '- split_montage_annotations_to_sources: {"annotation_layer": optional string, "montage_layer": optional string}\n'
+        '- create_text_annotation: {"text": string, "position": [x, y] for 2D or [z, y, x] for 3D, "source_layer": optional string, "annotation_layer": optional string, "size": optional float, "color": optional string}\n'
+        '- annotate_labels_with_text: {"labels_layer": optional string, "source_layer": optional string, "annotation_layer": optional string, "prefix": optional string, "start_index": optional int, "size": optional float, "color": optional string, "replace_existing": optional bool}\n'
+        '- annotate_labels_with_callouts: {"labels_layer": optional string, "source_layer": optional string, "prefix": optional string, "start_index": optional int, "size": optional float, "color": optional string, "replace_existing": optional bool}\n'
+        '- create_title_label: {"text": string, "source_layer": optional string, "placement": optional "outside_top", "align": optional "left|center|right", "size": optional float, "color": optional string, "margin": optional float, "gap": optional float}\n'
+        '- rename_text_annotation: {"old_text": string, "new_text": string, "annotation_layer": optional string}\n'
+        '- delete_text_annotation: {"text": optional string, "annotation_layer": optional string, "delete_all": optional bool}\n'
+        '- list_text_annotations: {"annotation_layer": optional string}\n'
         '- extract_roi_values: {"image_layer": optional string, "roi_layer": optional string}\n'
         '- sam_segment_from_box: {"image_layer": optional string, "roi_layer": optional string, "shape_index": optional int, "multimask_output": optional bool, "model_name": optional string}\n'
         '- sam_segment_from_points: {"image_layer": optional string, "points_layer": optional string, "multimask_output": optional bool, "model_name": optional string}\n'
@@ -364,6 +389,14 @@ def assistant_system_prompt() -> str:
         "- If the user asks for an analysis montage, montage canvas, ROI montage, composite canvas for mask drawing, or one combined image view for annotation across multiple images, use create_analysis_montage.\n"
         "- create_analysis_montage builds a real composite image array, optional blank mask layer, and optional tile-boundary Shapes layer. It is intended for shared ROI and mask work across many images.\n"
         "- If the user asks to split a montage mask back to source images, export montage labels to per-image masks, restore montage annotations to individual source layers, or send montage points back to the original source images, use split_montage_annotations_to_sources.\n"
+        "- If the user asks to write text on an image without burning pixels into the image, add a text label at x/y, mark a spot with text, or place a text annotation overlay, use create_text_annotation.\n"
+        "- If the user asks to annotate each object or particle in a labels layer automatically, add labels like Particle 1, Particle 2, etc., or place text at object centroids from a labels layer, use annotate_labels_with_text.\n"
+        "- If the user asks for Legion-style labels, outside callouts, numbered boxes with leader lines, or to move particle labels to the side of segmented objects, use annotate_labels_with_callouts.\n"
+        "- If the user asks for a boxed title, figure title, layer title, heading label, left/right title alignment, or a title above the image outside the data area, use create_title_label.\n"
+        "- Text annotations are non-destructive overlay points with labels. For 2D requests, treat positions as [x, y] in viewer/image space.\n"
+        "- If the user asks to rename an existing text annotation overlay, use rename_text_annotation.\n"
+        "- If the user asks to remove/delete one text annotation label or clear all text annotations from the managed annotation layer, use delete_text_annotation.\n"
+        "- If the user asks what text labels currently exist on an annotation layer, what the annotation text says, or to list current text annotations, use list_text_annotations.\n"
         "- If the user asks to compare two image layers with a Student t-test or Welch t-test, use compare_image_layers_ttest when the populations are the image intensities from those layers.\n"
         "- If the user asks for area, total area, or per-shape ROI area from a Shapes layer, use measure_shapes_roi_area.\n"
         "- Use action=code only when the request needs custom napari/python logic that is not covered by the built-in tools.\n"

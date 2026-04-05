@@ -1,6 +1,6 @@
 name: napari-chat-assistant
 display_name: Local Chat Assistant
-description: Local chat assistant scaffold for napari image-analysis workflows
+description: Local AI and deterministic workbench for napari image-analysis workflows
 visibility: public
 categories:
   - Utilities

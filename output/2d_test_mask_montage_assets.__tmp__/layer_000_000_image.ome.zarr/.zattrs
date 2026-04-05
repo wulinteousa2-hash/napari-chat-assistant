@@ -1,0 +1,42 @@
+{
+    "multiscales": [
+        {
+            "axes": [
+                {
+                    "name": "y",
+                    "type": "space",
+                    "unit": "micrometer"
+                },
+                {
+                    "name": "x",
+                    "type": "space",
+                    "unit": "micrometer"
+                },
+                {
+                    "name": "c",
+                    "type": "unknown"
+                }
+            ],
+            "datasets": [
+                {
+                    "coordinateTransformations": [
+                        {
+                            "scale": [
+                                1.0,
+                                1.0,
+                                1.0
+                            ],
+                            "type": "scale"
+                        }
+                    ],
+                    "path": "0"
+                }
+            ],
+            "name": "/",
+            "omero": {
+                "name": "031326_664_wt_sn_1x_4%_(wt might be hnpp)06.ome truecolor"
+            },
+            "version": "0.4"
+        }
+    ]
+}
