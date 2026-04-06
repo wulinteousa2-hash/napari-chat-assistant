@@ -626,9 +626,9 @@ ACTION_RECORDS: list[dict[str, Any]] = [
     },
     {
         "id": "visualize_max_projection",
-        "title": "Z Projection (Max)",
+        "title": "Max Intensity Projection",
         "category": "Visualize",
-        "description": "Create a max-intensity projection from the selected 3D image.",
+        "description": "Create a max-intensity projection from the selected 3D grayscale image.",
         "tags": ["visualize", "projection", "mip", "selected-layer"],
         "best_for": "Flattening a 3D grayscale image into a quick 2D overview.",
         "expected_input": "A selected 3D grayscale image layer.",
