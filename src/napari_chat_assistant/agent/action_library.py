@@ -415,11 +415,11 @@ ACTION_RECORDS: list[dict[str, Any]] = [
         },
     },
     {
-        "id": "annotation_legion_callouts",
+        "id": "annotation_numbered_callouts",
         "title": "Numbered Callouts",
         "category": "Annotation",
         "description": "Build numbered outside callout boxes with leader lines for each object in a labels layer.",
-        "tags": ["annotation", "callout", "legion", "labels"],
+        "tags": ["annotation", "callout", "numbered", "labels"],
         "best_for": "Turning segmented objects into figure-style numbered labels that sit beside the object instead of on top of it.",
         "expected_input": "A selected or named 2D Labels layer with one or more labeled objects.",
         "load_prompt": "Annotate the current labels layer with numbered outside callouts.",

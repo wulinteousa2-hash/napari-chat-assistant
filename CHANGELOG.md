@@ -6,7 +6,7 @@ All notable user-facing changes to `napari-chat-assistant` should be documented 
 
 - Added a new annotation workflow focus with non-destructive text overlays, deterministic promptable annotation tools, and Action-tab entries for common annotation tasks.
 - Added automatic labels-to-text annotation so users can annotate objects in a `Labels` layer by centroid with prompts such as `annotate template_blob_labels with particle 1 to 4`.
-- Added Legion-style callout annotation with outside label boxes and leader lines for 2D labels layers, so segmentation results can be presented more like figure callouts instead of plain text points.
+- Added publication-style callout annotations with external label boxes and leader lines for 2D label layers, allowing segmentation results to be presented as figure-style callouts instead of plain text markers.
 - Added boxed title labeling above 2D images with `outside_top` placement and `left`, `center`, or `right` alignment for prompts such as `add title WT Group N=10 above the image on the left`.
 - Added a dedicated text annotation editor dialog under `Advanced`, plus prompt routing examples so annotation requests map more reliably to deterministic tools.
 - Expanded workspace persistence for managed annotation layers so text-overlay state round-trips more cleanly with saved workspaces.

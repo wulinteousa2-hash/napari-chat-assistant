@@ -83,7 +83,7 @@ Current workflows include:
 - inspect the selected layer or named layers with structured summaries
 - review live layer context and insert exact layer names into prompts or code
 - run built-in tools for enhancement, thresholding, binary mask cleanup, measurement, projection, cropping, montage, presentation, and layer visibility control
-- add non-destructive annotation overlays including free text, automatic particle labels, Legion-style callouts, and boxed title labels above the image
+- Added non-destructive annotation overlays, including free text, automatic particle labels, publication-style callout annotations with leader lines, and boxed title labels above the image.
 - use deterministic `Actions` for common workflows without depending on prompt phrasing
 - build and save your own `Shortcuts` layouts for repeated one-click work
 - inspect ROI context and measure or extract values from `Labels`, `Shapes`, and line-based workflows
@@ -104,7 +104,7 @@ Example requests:
 - `Run watershed on the selected mask`
 - `Measure labels table for the selected labels layer`
 - `Annotate template_blob_labels with particle 1 to 4`
-- `Annotate template_blob_labels in legion style`
+- `Annotate template_blob_labels using publication-style callout labels with leader lines.`
 - `Add title WT Group N=10 above the image on the left`
 - `Inspect the current ROI`
 - `Extract ROI values from the selected image using the current ROI`
@@ -128,7 +128,7 @@ Version `1.9.0` adds annotation as a first-class workbench workflow.
 
 - Added non-destructive text annotation tools and Action-tab entries for writing, listing, renaming, and deleting overlay labels.
 - Added automatic labels-to-text annotation for object layers, including prompts such as `annotate template_blob_labels with particle 1 to 4`.
-- Added Legion-style callout labels for 2D segmentations, with outside boxes and leader lines so labels can sit beside the object instead of on top of it.
+- Added publication-style callout labels for 2D segmentations, with external label boxes and leader lines so annotations can be positioned beside objects instead of directly on top of them.
 - Added boxed title labels above the image with `outside_top` placement and `left`, `center`, or `right` alignment.
 - Added a dedicated text annotation editor under `Advanced`.
 - Improved workspace restore responsiveness with staged loading, a progress popup, deferred heavy-source restore, and saved layer-order preservation.
@@ -232,7 +232,7 @@ Examples:
 - `Remove small objects from mask_messy_2d with min_size 64`
 - `Keep only the largest connected component in mask_messy_2d`
 - `Measure labels table for rgb_cells_2d_labels`
-- `Annotate template_blob_labels in legion style`
+- `Annotate template_blob_labels with publication-style callout labels`
 - `Move the particle labels outside with boxes and lines`
 - `Place title Control outside top right`
 - `Create a max intensity projection from em_3d_snr_mid along axis 0`

@@ -333,7 +333,7 @@ def _ensure_callout_annotation_layers(
     if anchor_layer is None:
         raise ValueError("No usable 2D source layer is available for callout annotations.")
     if int(getattr(anchor_layer, "ndim", 0) or 0) != 2:
-        raise ValueError("Legion-style callout annotations currently support 2D source layers only.")
+        raise ValueError("Callout annotations currently support 2D source layers only.")
     names = _callout_group_names(str(getattr(anchor_layer, "name", "") or ""))
 
     existing_text = find_any_layer(viewer, names["text"])
@@ -2810,7 +2810,7 @@ class AnnotateLabelsWithCalloutsTool:
         name="annotate_labels_with_callouts",
         display_name="Annotate Labels With Callouts",
         category="annotation",
-        description="Create Legion-style numbered callouts with leader lines and label boxes from a labels layer.",
+        description="Create numbered external callout labels with leader lines and label boxes from a Labels layer.",
         execution_mode="immediate",
         supported_layer_types=("labels", "image"),
         parameter_schema=(

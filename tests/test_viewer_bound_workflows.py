@@ -561,7 +561,7 @@ def test_annotate_labels_with_callouts_builds_text_boxes_and_lines(make_napari_v
         {"labels_layer": "template_blob_labels", "source_layer": "image_a", "prefix": "particle", "start_index": 1},
     )["message"]
 
-    assert "Legion-style callout annotation(s)" in message
+    assert "numbered callout annotation" in message.lower()
     assert "image_a_callout_text" in viewer.layers
     assert "image_a_callout_boxes" in viewer.layers
     assert "image_a_callout_lines" in viewer.layers

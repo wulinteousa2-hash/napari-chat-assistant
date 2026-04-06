@@ -36,7 +36,7 @@ def test_action_library_contains_function_and_tool_actions():
     assert "Restore Last Workspace" in titles
     assert "Add Text Annotation" in titles
     assert "List Text Annotations" in titles
-    assert "Legion Callouts" in titles
+    assert "Numbered Callouts" in titles
     assert "Title Label" in titles
     assert "Rename Text Annotation" in titles
     assert "Delete Text Annotation" in titles
