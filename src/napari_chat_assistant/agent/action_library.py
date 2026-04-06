@@ -416,13 +416,13 @@ ACTION_RECORDS: list[dict[str, Any]] = [
     },
     {
         "id": "annotation_legion_callouts",
-        "title": "Legion Callouts",
+        "title": "Numbered Callouts",
         "category": "Annotation",
-        "description": "Build outside callout boxes with leader lines for each object in a labels layer.",
+        "description": "Build numbered outside callout boxes with leader lines for each object in a labels layer.",
         "tags": ["annotation", "callout", "legion", "labels"],
         "best_for": "Turning segmented objects into figure-style numbered labels that sit beside the object instead of on top of it.",
         "expected_input": "A selected or named 2D Labels layer with one or more labeled objects.",
-        "load_prompt": "Annotate the current labels layer in Legion style.",
+        "load_prompt": "Annotate the current labels layer with numbered outside callouts.",
         "runtime": {
             "plugin_runtime_required": True,
             "uses_viewer": True,
@@ -1407,7 +1407,7 @@ ACTION_RECORDS: list[dict[str, Any]] = [
     },
     {
         "id": "segmentation_sam2_auto_segment",
-        "title": "Auto Segment",
+        "title": "SAM Auto Segment",
         "category": "Segmentation",
         "description": "Run automatic SAM2 segmentation on the selected image layer.",
         "tags": ["segmentation", "sam2", "sam", "auto", "selected-layer"],
@@ -1491,7 +1491,7 @@ ACTION_RECORDS: list[dict[str, Any]] = [
     },
     {
         "id": "segmentation_sam2_points_init",
-        "title": "Initialize Point Prompts",
+        "title": "Initialize SAM2 Points",
         "category": "Segmentation",
         "group": "SAM2 Points",
         "description": "Create or reuse a SAM2-managed points layer for the selected image.",
@@ -1501,11 +1501,11 @@ ACTION_RECORDS: list[dict[str, Any]] = [
         "how_it_works": "This creates a managed points layer named after the image. New points start as positive prompts. Press T on the active SAM2 points layer to toggle the polarity for new points, or to flip selected points.",
         "workflow": [
             "Select a grayscale image layer.",
-            "Run Initialize Points.",
+            "Run Initialize SAM2 Points.",
             "Add positive and negative prompt points on the created SAM2 points layer.",
-            "Run Segment From Points for 2D or Propagate Points 3D for 3D volumes.",
+            "Run Segment From Points for 2D or Propagate Through Z for 3D volumes.",
         ],
-        "load_prompt": "Initialize a SAM2 points prompt layer for the selected image.",
+        "load_prompt": "Initialize a SAM2 points layer for the selected image.",
         "runtime": {
             "plugin_runtime_required": True,
             "uses_viewer": True,
@@ -1525,10 +1525,10 @@ ACTION_RECORDS: list[dict[str, Any]] = [
         "description": "Run 2D SAM2 segmentation from the managed points prompts.",
         "tags": ["segmentation", "sam2", "points", "2d"],
         "best_for": "Prompted 2D segmentation when a box is not specific enough and you want positive and negative guidance.",
-        "expected_input": "A selected 2D grayscale image and a SAM2-managed points layer created with Initialize Points.",
+        "expected_input": "A selected 2D grayscale image and a SAM2-managed points layer created with Initialize SAM2 Points.",
         "how_it_works": "SAM2 reads the per-point prompt labels from the managed points layer. Positive points tell it what to include. Negative points tell it what to avoid.",
         "workflow": [
-            "Run Initialize Points first.",
+            "Run Initialize SAM2 Points first.",
             "Place positive and negative prompt points on the SAM2 points layer.",
             "Run this action to generate a labels mask.",
             "If needed, add or move points and run it again.",
@@ -1557,7 +1557,7 @@ ACTION_RECORDS: list[dict[str, Any]] = [
         "expected_input": "A selected 3D grayscale image and a SAM2-managed points layer with prompts on one z slice.",
         "how_it_works": "SAM2 reads the prompt points from one seed slice, predicts there, and propagates the object through the volume. All selected prompts must lie on the same z slice.",
         "workflow": [
-            "Run Initialize Points on a 3D image.",
+            "Run Initialize SAM2 Points on a 3D image.",
             "Move to the desired seed slice and place positive and negative prompt points on that slice.",
             "Run this action to propagate the segmentation through the stack.",
             "If propagation is off, adjust the seed prompts and run again.",

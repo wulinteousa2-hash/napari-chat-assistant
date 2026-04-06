@@ -2839,7 +2839,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         points_name = sam2_managed_points_layer_name(image_layer)
         if not points_name or points_name not in viewer.layers:
             raise ValueError(
-                f"No SAM2 points layer found for [{image_layer.name}]. Run Initialize Points first."
+                f"No SAM2 points layer found for [{image_layer.name}]. Run Initialize SAM2 Points first."
             )
         points_layer = viewer.layers[points_name]
         if not isinstance(points_layer, napari.layers.Points):
