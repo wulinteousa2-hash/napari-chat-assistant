@@ -2946,11 +2946,11 @@ class AnnotateLabelsWithCalloutsTool:
         _configure_callout_shapes_layer(leaders_layer, source_layer_name=str(getattr(anchor_layer, "name", "") or ""), role="leaders")
 
         created = ", ".join(f"[{label}]" for label in text_labels)
+
         return (
-            f"Added {len(text_labels)} Legion-style callout annotation(s) from labels layer [{labels_layer.name}] "
+            f"Added {len(text_labels)} numbered callout annotation(s) from Labels layer [{labels_layer.name}] "
             f"using [{text_layer.name}], [{boxes_layer.name}], and [{leaders_layer.name}]: {created}."
         )
-
 
 class CreateTitleLabelTool:
     spec = ToolSpec(

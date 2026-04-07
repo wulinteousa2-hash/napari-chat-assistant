@@ -48,10 +48,10 @@ def test_action_library_contains_function_and_tool_actions():
     assert "Threshold Preview" in titles
     assert "Spectral Viewer" in titles
     assert "Make Analysis Montage" in titles
-    assert "Auto Segment" in titles
+    assert "SAM Auto Segment" in titles
     assert "Segment Anything 2 Setup" in titles
     assert "Segment Anything 2 Live" in titles
-    assert "Initialize Point Prompts" in titles
+    assert "Initialize SAM2 Points" in titles
     assert "Segment From Points" in titles
     assert "Propagate Through Z" in titles
     assert "SAM2 Points" in groups
