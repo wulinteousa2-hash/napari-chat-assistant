@@ -122,17 +122,16 @@ The assistant runs on local open-weight models through Ollama:
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
 
-## What's New In 1.9.0
+## What's New In 2.0.0
 
-Version `1.9.0` adds annotation as a first-class workbench workflow.
+Version `2.0.0` focuses on stronger built-in library content rather than another major interface redesign.
 
-- Added non-destructive text annotation tools and Action-tab entries for writing, listing, renaming, and deleting overlay labels.
-- Added automatic labels-to-text annotation for object layers, including prompts such as `annotate template_blob_labels with particle 1 to 4`.
-- Added publication-style callout labels for 2D segmentations, with external label boxes and leader lines so annotations can be positioned beside objects instead of directly on top of them.
-- Added boxed title labels above the image with `outside_top` placement and `left`, `center`, or `right` alignment.
-- Added a dedicated text annotation editor under `Advanced`.
-- Improved workspace restore responsiveness with staged loading, a progress popup, deferred heavy-source restore, and saved layer-order preservation.
-- Improved ROI intensity behavior for refreshed Shapes ROIs and added RGB luminance support for truecolor measurement workflows.
+- Reorganized `Templates` into clearer `Prompt Templates`, `Code Templates`, and `Learning` sections.
+- Added a much larger `Learning` library for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.
+- Moved many common examples out of `Prompt Tips` into reusable prompt templates so users can load and run them directly.
+- Improved template browsing with clearer structure, preserved tree state, and color-coded sections.
+- Fixed prompt-library stability issues, including pinned recent items surviving `Clear`, and increased recent history capacity.
+- Added `Atlas Stitch` as an advanced workflow for specialized stitching and export tasks.
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
