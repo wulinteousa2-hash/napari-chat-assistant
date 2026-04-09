@@ -11,6 +11,20 @@ Local, Ollama-powered AI and deterministic workbench for napari image-analysis w
 
 The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
+## What's New In 2.0.0
+
+Version `2.0.0` focuses on stronger built-in library content rather than another major interface redesign.
+
+- Reorganized `Templates` into clearer `Prompt Templates`, `Code Templates`, and `Learning` sections.
+- Added a much larger `Learning` library for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.
+- Moved many common examples out of `Prompt Tips` into reusable prompt templates so users can load and run them directly.
+- Improved template browsing with clearer structure, preserved tree state, and color-coded sections.
+- Added chat transcript `A-` / `A+` controls so users can adjust reading size directly in the dock.
+- Fixed prompt-library stability issues, including pinned recent items surviving `Clear`, and increased recent history capacity.
+- Added `Atlas Stitch` as an advanced workflow for specialized stitching and export tasks.
+
+For complete release history, see [CHANGELOG.md](CHANGELOG.md).
+
 ## Who It Is For
 
 This plugin is built for:
@@ -124,19 +138,6 @@ The assistant runs on local open-weight models through Ollama:
 - no image data leaves your workstation
 
 This makes it a better fit for research and facility environments where users want privacy, controllability, and local reproducibility.
-
-## What's New In 2.0.0
-
-Version `2.0.0` focuses on stronger built-in library content rather than another major interface redesign.
-
-- Reorganized `Templates` into clearer `Prompt Templates`, `Code Templates`, and `Learning` sections.
-- Added a much larger `Learning` library for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.
-- Moved many common examples out of `Prompt Tips` into reusable prompt templates so users can load and run them directly.
-- Improved template browsing with clearer structure, preserved tree state, and color-coded sections.
-- Fixed prompt-library stability issues, including pinned recent items surviving `Clear`, and increased recent history capacity.
-- Added `Atlas Stitch` as an advanced workflow for specialized stitching and export tasks.
-
-For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 

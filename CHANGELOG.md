@@ -18,7 +18,7 @@ All notable user-facing changes to `napari-chat-assistant` should be documented 
 - Continued wording cleanup across the action library, including clearer names for max intensity projection, SAM segmentation, SAM point initialization, and numbered callouts.
 - Added an advanced `Atlas Stitch` workflow to the plugin for specialized stitching/export work. This is available through the advanced surface rather than the main everyday workflow.
 - Began a low-risk internal UI refactor by extracting major chat sections into dedicated modules, making the dock code easier to maintain without changing the overall workflow model.
-- Improved the chat code-control area with a cleaner two-row layout, transcript font-size controls, and a less prominent placement for advanced reject-feedback actions under `Help`.
+- Improved the chat code-control area with a cleaner two-row layout, transcript `A-` / `A+` font-size controls, and a less prominent placement for advanced reject-feedback actions under `Help`.
 
 ## 1.9.0
 

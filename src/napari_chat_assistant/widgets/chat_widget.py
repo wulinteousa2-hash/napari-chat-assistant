@@ -840,12 +840,23 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.0.1":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added a stronger built-in library with clearer Prompt Templates, Code Templates, and Learning content.\n"
+                "- Added more learning prompts for microscopy, EM, imaging physics, quantitative imaging, statistics, academic prompting, and language support.\n"
+                "- Added chat transcript `A-` / `A+` controls so you can adjust reading size in the dock.\n"
+                "- Atlas Stitch is now available as an advanced workflow.\n"
+                "- This maintenance update also improves startup by lazy-opening heavy widgets and improves assistant reply rendering with broader Markdown support.\n"
+                "- See the changelog for full details."
+            )
         if current == "2.0.0":
             return (
                 f"**What's New In {current}**\n"
                 "- Expanded the built-in library with clearer Prompt Templates, Code Templates, and a much larger Learning section.\n"
                 "- Added graduate- and university-level learning prompts for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.\n"
                 "- Improved template browsing with color-coded sections and preserved tree state during selection and run actions.\n"
+                "- Added chat transcript `A-` / `A+` controls so users can adjust reading size directly in the dock.\n"
                 "- Fixed prompt-library stability issues, including pinned recent prompts surviving Clear, and increased recent history capacity.\n"
                 "- Added an advanced Atlas Stitch workflow and started a safer internal chat-section refactor without changing the overall dock model."
             )
