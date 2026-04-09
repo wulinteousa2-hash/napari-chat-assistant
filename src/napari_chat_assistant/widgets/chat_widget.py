@@ -848,67 +848,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
-        if current == "2.0.1":
+        if current == "2.0.2":
             return (
                 f"**What's New In {current}**\n"
-                "- Added a stronger built-in library with clearer Prompt Templates, Code Templates, and Learning content.\n"
-                "- Added more learning prompts for microscopy, EM, imaging physics, quantitative imaging, statistics, academic prompting, and language support.\n"
-                "- Added chat transcript `A-` / `A+` controls so you can adjust reading size in the dock.\n"
-                "- Atlas Stitch is now available as an advanced workflow.\n"
-                "- This maintenance update also improves startup by lazy-opening heavy widgets and improves assistant reply rendering with broader Markdown support.\n"
-                "- See the changelog for full details."
-            )
-        if current == "2.0.0":
-            return (
-                f"**What's New In {current}**\n"
-                "- Expanded the built-in library with clearer Prompt Templates, Code Templates, and a much larger Learning section.\n"
-                "- Added graduate- and university-level learning prompts for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.\n"
-                "- Improved template browsing with color-coded sections and preserved tree state during selection and run actions.\n"
-                "- Added chat transcript `A-` / `A+` controls so users can adjust reading size directly in the dock.\n"
-                "- Fixed prompt-library stability issues, including pinned recent prompts surviving Clear, and increased recent history capacity.\n"
-                "- Added an advanced Atlas Stitch workflow and started a safer internal chat-section refactor without changing the overall dock model."
-            )
-        if current == "1.9.0":
-            return (
-                f"**What's New In {current}**\n"
-                "- Added a new annotation workflow focus with deterministic text overlays, callouts, title labels, and action-tab entries for common annotation tasks.\n"
-                "- Added a dedicated text annotation editor under Advanced and improved prompt routing for annotation-style requests.\n"
-                "- Improved workspace restore responsiveness and expanded managed annotation-layer persistence.\n"
-                "- Added RGB-aware ROI intensity support by reducing truecolor layers to luminance for measurement workflows."
-            )
-        if current == "1.8.4":
-            return (
-                f"**What's New In {current}**\n"
-                "- Workspace save/load now understands spectral-derived views from `napari-nd2-spectral-ome-zarr` as source-plus-view recipes.\n"
-                "- Workspace restore can rebuild spectral-derived visible-sum, truecolor, and raw spectral views from the original source `.ome.zarr` when the spectral reader is available.\n"
-                "- Fixed workspace save failures caused by non-JSON spectral runtime metadata on derived napari layers."
-            )
-        if current == "1.8.3":
-            return (
-                f"**What's New In {current}**\n"
-                "- Improved chat follow-up routing, demo onboarding, and recent-action reuse for more natural multi-turn workflows.\n"
-                "- Kept the broader `1.8.0` workbench feature set as the main release milestone."
-            )
-        if current == "1.8.2":
-            return (
-                f"**What's New In {current}**\n"
-                "- Added an explicit `matplotlib` dependency for analysis widgets that embed plots.\n"
-                "- Kept the workspace dependency fallback so the dock can still load if OME-Zarr support is incomplete.\n"
-                "- Continued packaging fixes for cleaner installs in fresh napari environments."
-            )
-        if current == "1.8.1":
-            return (
-                f"**What's New In {current}**\n"
-                "- Fixed plugin startup failures in environments missing workspace persistence dependencies.\n"
-                "- Added an explicit `numcodecs` package dependency for OME-Zarr workspace support.\n"
-                "- Workspace save/load now fails gracefully with install guidance instead of blocking the whole dock."
-            )
-        if current == "1.8.0":
-            return (
-                f"**What's New In {current}**\n"
-                "- Expanded deterministic mask workflows with a fuller binary-image action set.\n"
-                "- Upgraded workspace save/load to use a JSON manifest plus OME-Zarr assets for generated data.\n"
-                "- Added Points workspace persistence and improved action previews with parameter hints."
+                "- This plugin version was updated.\n"
+                "- Fixed the `Templates` tab getting stuck after opening `Actions`.\n"
+                "- Removed the old `Help` -> `Prompt Tips` entry.\n"
+                "- `Shortcuts` can now collapse or expand.\n"
+                "- See the changelog for full details.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
             )
         return (
             f"**What's New In {current}**\n"
