@@ -4960,9 +4960,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
             )
             return
+        code_repair_context = build_code_repair_context(text, viewer=viewer)
         ui_help_reply = None
         if bool(ui_state.get("ui_help_enabled", False)):
-            ui_help_reply = None if build_code_repair_context(text, viewer=viewer) is not None else answer_ui_question(text)
+            ui_help_reply = None if code_repair_context is not None else answer_ui_question(text)
         if ui_help_reply:
             set_pending_action(None)
             append_chat_message("assistant", ui_help_reply)
@@ -5097,7 +5098,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("assistant", "Model settings are incomplete. Choose a model and open Connection if you need to adjust the Base URL.")
             set_status("Status: missing saved model settings", ok=False)
             return
-        local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
+        local_workflow_route = None if code_repair_context is not None else route_local_workflow_prompt(text, selected_layer_profile())
         if isinstance(local_workflow_route, dict):
             set_pending_action(None)
             route_action = str(local_workflow_route.get("action", "")).strip().lower()
@@ -5233,7 +5234,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
         @thread_worker(ignore_errors=True)
         def run_chat():
             viewer_payload = layer_context_json(viewer)
-            code_repair_context = build_code_repair_context(text, viewer=viewer)
             return chat_ollama(
                 base_url,
                 model_name,
