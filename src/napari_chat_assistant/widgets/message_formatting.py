@@ -7,6 +7,11 @@ import keyword
 import re
 import tokenize
 
+try:
+    from markdown_it import MarkdownIt
+except Exception:  # pragma: no cover - fallback for incomplete environments
+    MarkdownIt = None
+
 
 _FENCE_RE = re.compile(r"```([A-Za-z0-9_+-]*)\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -16,6 +21,7 @@ _ORDERED_LIST_RE = re.compile(r"(\d+)\.\s+(.*)")
 _PYTHON_BUILTINS = {name for name in dir(builtins) if not name.startswith("_")}
 _PYTHON_KEYWORDS = set(keyword.kwlist)
 _PYTHON_SOFT_KEYWORDS = {"match", "case"}
+_MARKDOWN_RENDERER = None
 
 
 def render_user_message_html(message: str) -> str:
@@ -26,6 +32,13 @@ def render_assistant_message_html(message: str) -> str:
     source = str(message or "").replace("\r\n", "\n").strip()
     if not source:
         return "<p></p>"
+    if MarkdownIt is not None:
+        return _render_markdown_html(source)
+    return _render_legacy_markdown_html(source)
+
+
+def _render_legacy_markdown_html(source: str) -> str:
+    """Fallback renderer kept for environments missing markdown-it-py."""
 
     segments: list[tuple[str, str, str]] = []
 
@@ -92,6 +105,87 @@ def render_assistant_message_html(message: str) -> str:
         blocks.append("<p>" + "<br>".join(_render_inline_html(line) for line in paragraph_lines) + "</p>")
 
     return "".join(blocks) or "<p></p>"
+
+
+def _render_markdown_html(source: str) -> str:
+    renderer = _get_markdown_renderer()
+    try:
+        rendered = renderer.render(source)
+    except Exception:
+        return _render_legacy_markdown_html(source)
+    rendered = _style_markdown_html(rendered)
+    return rendered or "<p></p>"
+
+
+def _get_markdown_renderer():
+    global _MARKDOWN_RENDERER
+    if _MARKDOWN_RENDERER is not None:
+        return _MARKDOWN_RENDERER
+    md = MarkdownIt("commonmark", {"html": False, "breaks": False})
+    md.enable("table")
+    md.renderer.rules["fence"] = _render_fence_token
+    md.renderer.rules["code_block"] = _render_code_block_token
+    md.renderer.rules["code_inline"] = _render_inline_code_token
+    md.renderer.rules["link_open"] = _render_link_open_token
+    _MARKDOWN_RENDERER = md
+    return md
+
+
+def _render_fence_token(renderer, tokens, idx, options, env):
+    del renderer, options, env
+    token = tokens[idx]
+    info = str(token.info or "").strip().split()[0].lower() if str(token.info or "").strip() else ""
+    return _restore_code_block(f"__CODE_BLOCK_0__", [("code", info, token.content)])
+
+
+def _render_code_block_token(renderer, tokens, idx, options, env):
+    del renderer, options, env
+    token = tokens[idx]
+    return _restore_code_block(f"__CODE_BLOCK_0__", [("code", "", token.content)])
+
+
+def _render_inline_code_token(renderer, tokens, idx, options, env):
+    del renderer, options, env
+    content = html.escape(tokens[idx].content)
+    return (
+        '<code style="background: #2d2d2d; color: #dcdcaa; padding: 2px 5px; border-radius: 4px; '
+        "border: 1px solid #3a3d41; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; "
+        f'font-size: 0.95em;">{content}</code>'
+    )
+
+
+def _render_link_open_token(renderer, tokens, idx, options, env):
+    del renderer, options, env
+    token = tokens[idx]
+    href = html.escape(token.attrGet("href") or "", quote=True)
+    return f'<a href="{href}" style="color: #4fc1ff;">'
+
+
+def _style_markdown_html(rendered: str) -> str:
+    styled = rendered
+    replacements = {
+        "<p>": '<p style="margin: 0 0 10px 0;">',
+        "<ul>": '<ul style="margin: 0 0 10px 20px;">',
+        "<ol>": '<ol style="margin: 0 0 10px 20px;">',
+        "<li>": '<li style="margin: 2px 0;">',
+        "<blockquote>": (
+            '<blockquote style="margin: 10px 0; padding: 6px 12px; border-left: 3px solid #3f5d87; '
+            'color: #c8d8f0; background: rgba(29,42,68,0.25);">'
+        ),
+        "<h1>": '<h1 style="font-size: 1.35em; margin: 12px 0 8px 0;">',
+        "<h2>": '<h2 style="font-size: 1.2em; margin: 12px 0 8px 0;">',
+        "<h3>": '<h3 style="font-size: 1.1em; margin: 10px 0 6px 0;">',
+        "<h4>": '<h4 style="font-size: 1.0em; margin: 10px 0 6px 0;">',
+        "<h5>": '<h5 style="font-size: 1.0em; margin: 10px 0 6px 0;">',
+        "<h6>": '<h6 style="font-size: 1.0em; margin: 10px 0 6px 0;">',
+        "<pre>": '<pre style="margin: 0;">',
+        "<table>": '<table style="border-collapse: collapse; margin: 10px 0;">',
+        "<th>": '<th style="padding: 6px 8px; border: 1px solid #30415f; background: #152033;">',
+        "<td>": '<td style="padding: 6px 8px; border: 1px solid #30415f;">',
+    }
+    for src, dst in replacements.items():
+        styled = styled.replace(src, dst)
+    return styled
 
 
 def _restore_code_block(token: str, segments: list[tuple[str, str, str]]) -> str:

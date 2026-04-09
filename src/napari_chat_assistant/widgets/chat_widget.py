@@ -133,7 +133,6 @@ from napari_chat_assistant.agent.telemetry_summary import (
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_help import answer_ui_question
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
-from napari_chat_assistant.atlas_stitch.widget import open_atlas_stitch_widget
 from napari_chat_assistant.library.template_catalog import (
     is_template_record,
     template_body_text,
@@ -146,9 +145,7 @@ from napari_chat_assistant.library.template_catalog import (
     template_section_colors,
 )
 from napari_chat_assistant.widgets.chat_sections import LayerContextPanel, LibraryPanel, PendingCodePanel, ShortcutsPanel
-from napari_chat_assistant.widgets.intensity_metrics_widget import open_intensity_metrics_widget
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
-from napari_chat_assistant.widgets.line_profile_widget import open_line_profile_gaussian_fit_widget
 
 
 _WORKSPACE_DEPENDENCY_MESSAGE = (
@@ -1329,6 +1326,49 @@ def chat_widget(napari_viewer=None) -> QWidget:
             empty_message="[Crash log is empty]",
             log_prefix="Opened crash log.",
             status_text="Status: crash log opened",
+        )
+
+    def _open_optional_widget(
+        *,
+        module_name: str,
+        function_name: str,
+        feature_name: str,
+    ) -> bool:
+        try:
+            module = importlib.import_module(module_name)
+            opener = getattr(module, function_name)
+        except Exception as exc:
+            logger.exception("%s failed to import.", feature_name)
+            append_chat_message(
+                "assistant",
+                f"Could not open {feature_name}.\n{exc}",
+                render_markdown=False,
+            )
+            append_log(f"{feature_name} import failed: {exc}")
+            set_status(f"Status: {feature_name} unavailable", ok=False)
+            return False
+        opener(viewer)
+        return True
+
+    def show_intensity_metrics_widget(*_args):
+        return _open_optional_widget(
+            module_name="napari_chat_assistant.widgets.intensity_metrics_widget",
+            function_name="open_intensity_metrics_widget",
+            feature_name="ROI Intensity Analysis",
+        )
+
+    def show_line_profile_widget(*_args):
+        return _open_optional_widget(
+            module_name="napari_chat_assistant.widgets.line_profile_widget",
+            function_name="open_line_profile_gaussian_fit_widget",
+            feature_name="Line Profile Analysis",
+        )
+
+    def show_atlas_stitch(*_args):
+        _open_optional_widget(
+            module_name="napari_chat_assistant.atlas_stitch.widget",
+            function_name="open_atlas_stitch_widget",
+            feature_name="Atlas Stitch",
         )
 
     def reset_telemetry_log(*_args):
@@ -3224,15 +3264,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def launch_widget_template(record: dict) -> bool:
         template_id = str(record.get("id", "")).strip()
         if template_id == "measure_roi_intensity_metrics":
-            open_intensity_metrics_widget(viewer)
-            append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
-            set_status("Status: measurement widget opened", ok=True)
-            return True
+            if show_intensity_metrics_widget():
+                append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
+                set_status("Status: measurement widget opened", ok=True)
+                return True
+            return False
         if template_id == "measure_line_profile_gaussian_fit":
-            open_line_profile_gaussian_fit_widget(viewer)
-            append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
-            set_status("Status: measurement widget opened", ok=True)
-            return True
+            if show_line_profile_widget():
+                append_log(f"Opened widget template: {record.get('title', 'Untitled Template')}")
+                set_status("Status: measurement widget opened", ok=True)
+                return True
+            return False
         if template_id == "stats_open_group_comparison_widget":
             prepared = prepare_tool_job(viewer, "open_group_comparison_widget", {})
             run_prepared_tool_request(
@@ -3339,11 +3381,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("user", load_prompt)
         if kind == "function":
             if target == "open_intensity_metrics_widget":
-                open_intensity_metrics_widget(viewer)
-                append_chat_message("assistant", f"Opened {title}.")
+                if show_intensity_metrics_widget():
+                    append_chat_message("assistant", f"Opened {title}.")
             elif target == "open_line_profile_gaussian_fit_widget":
-                open_line_profile_gaussian_fit_widget(viewer)
-                append_chat_message("assistant", f"Opened {title}.")
+                if show_line_profile_widget():
+                    append_chat_message("assistant", f"Opened {title}.")
             elif target == "save_workspace":
                 save_workspace_common(choose_path=False)
             elif target == "save_workspace_as":
@@ -5961,7 +6003,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)
-    atlas_stitch_action.triggered.connect(lambda *_args: open_atlas_stitch_widget(viewer))
+    atlas_stitch_action.triggered.connect(show_atlas_stitch)
     help_prompt_tips_action.triggered.connect(show_help_tips)
     help_whats_new_action.triggered.connect(show_whats_new)
     help_about_action.triggered.connect(show_about_assistant)

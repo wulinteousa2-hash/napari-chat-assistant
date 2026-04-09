@@ -2,6 +2,11 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.0.1
+
+- Reduced dock startup load by lazy-opening heavy advanced and analysis widgets such as Atlas Stitch, ROI Intensity Analysis, and Line Profile Analysis only when the user selects them.
+- Upgraded assistant message rendering from a small regex-based Markdown subset to a real Markdown parser path with broader support, while keeping the existing styled code blocks and a fallback renderer.
+
 ## 2.0.0
 
 - Reframed this release around richer built-in library content rather than another major dock redesign, with expanded reusable prompt, code, and learning material for plugin workflows and model testing.
