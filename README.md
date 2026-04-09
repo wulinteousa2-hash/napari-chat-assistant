@@ -83,18 +83,21 @@ Current workflows include:
 - inspect the selected layer or named layers with structured summaries
 - review live layer context and insert exact layer names into prompts or code
 - run built-in tools for enhancement, thresholding, binary mask cleanup, measurement, projection, cropping, montage, presentation, and layer visibility control
-- Added non-destructive annotation overlays, including free text, automatic particle labels, publication-style callout annotations with leader lines, and boxed title labels above the image.
+- add non-destructive annotation overlays, including free text, particle labels, callout labels with leader lines, and boxed titles above the image
 - use deterministic `Actions` for common workflows without depending on prompt phrasing
 - build and save your own `Shortcuts` layouts for repeated one-click work
 - inspect ROI context and measure or extract values from `Labels`, `Shapes`, and line-based workflows
 - use interactive analysis widgets such as `ROI Intensity Analysis`, `Line Profile Analysis`, and `Group Comparison Statistics`
 - access SAM2 setup, live preview, box prompting, points prompting, and mask refinement from the same workbench
+- browse built-in prompt templates, code templates, and learning templates for plugin workflows, teaching, and model testing
 - generate napari Python code when no built-in tool is the right fit
 - paste and run your own viewer-bound Python from the prompt box with `Run My Code`
 - repair or explain broken pasted Python with `Refine My Code`
 - save, pin, tag, rename, and reuse prompts and code from the local Library
-- browse built-in templates and synthetic data generators for repeatable testing, teaching, and workflow development
+- use built-in synthetic data generators for repeatable testing, teaching, and workflow development
+- learn from built-in content for microscopy, electron microscopy, imaging physics, quantitative imaging, statistics, academic prompting, and language support
 - save and restore workspace state with a JSON manifest plus OME-Zarr assets for generated image and labels data
+- use `Atlas Stitch` from the advanced menu for specialized stitching and export workflows
 
 Example requests:
 - `Inspect the selected layer`
