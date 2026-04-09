@@ -2,6 +2,19 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.0.0
+
+- Reframed this release around richer built-in library content rather than another major dock redesign, with expanded reusable prompt, code, and learning material for plugin workflows and model testing.
+- Reorganized `Templates` into clearer read-only sections for `Prompt Templates`, `Code Templates`, and `Learning`, replacing the older code-only template framing with a more library-like structure.
+- Added a broad new `Learning` library with graduate- and university-level prompt starters across `Microscopy`, `Electron Microscopy`, `Biophotonics`, `Image Formation`, `Quantitative Imaging`, `Statistics`, `Academic Prompting`, and `Language Support`.
+- Promoted many everyday prompt examples out of `Prompt Tips` and into reusable `Prompt Templates`, so common tasks such as inspection, threshold preview, morphology cleanup, ROI extraction, projection, and measurement are easier to load and reuse.
+- Improved template browsing by preserving tree expansion/selection state during interaction and by adding section-based color accents for stronger visual separation.
+- Fixed prompt-library stability issues so clearing the library no longer drops pinned recent custom prompts, and increased the recent prompt/code history cap from 20 to 100 entries.
+- Continued wording cleanup across the action library, including clearer names for max intensity projection, SAM segmentation, SAM point initialization, and numbered callouts.
+- Added an advanced `Atlas Stitch` workflow to the plugin for specialized stitching/export work. This is available through the advanced surface rather than the main everyday workflow.
+- Began a low-risk internal UI refactor by extracting major chat sections into dedicated modules, making the dock code easier to maintain without changing the overall workflow model.
+- Improved the chat code-control area with a cleaner two-row layout, transcript font-size controls, and a less prominent placement for advanced reject-feedback actions under `Help`.
+
 ## 1.9.0
 
 - Added a new annotation workflow focus with non-destructive text overlays, deterministic promptable annotation tools, and Action-tab entries for common annotation tasks.

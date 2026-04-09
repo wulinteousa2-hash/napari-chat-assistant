@@ -35,6 +35,8 @@ DEFAULT_PROMPTS = [
     "split these montage points back to the original source images as per-image points layers",
 ]
 
+RECENT_LIBRARY_LIMIT = 100
+
 DEFAULT_CODE_SNIPPETS = [
     {
         "title": "Synthetic 2D SNR Sweep Gray",
@@ -726,7 +728,7 @@ def save_prompt_library(data: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def upsert_recent_prompt(data: dict, prompt_text: str, limit: int = 20) -> dict:
+def upsert_recent_prompt(data: dict, prompt_text: str, limit: int = RECENT_LIBRARY_LIMIT) -> dict:
     prompt = str(prompt_text or "").strip()
     if not prompt:
         return data
@@ -775,7 +777,7 @@ def upsert_saved_prompt(data: dict, prompt_text: str, *, pin: bool | None = None
     return data
 
 
-def upsert_recent_code(data: dict, code_text: str, limit: int = 20) -> dict:
+def upsert_recent_code(data: dict, code_text: str, limit: int = RECENT_LIBRARY_LIMIT) -> dict:
     code = str(code_text or "")
     if not code.strip():
         return data
@@ -889,7 +891,10 @@ def clear_prompt_library(data: dict, *, keep_saved: bool = True, keep_pinned: bo
             continue
         if prompt not in hidden_built_in:
             hidden_built_in.append(prompt)
-    data["recent"] = []
+    if keep_pinned:
+        data["recent"] = [item for item in data.get("recent", []) if str(item.get("prompt", "")).strip() in pinned_prompts]
+    else:
+        data["recent"] = []
     data["saved"] = list(data.get("saved", [])) if keep_saved else []
     data["pinned_prompts"] = pinned_prompts
     data["hidden_built_in"] = hidden_built_in
@@ -898,7 +903,10 @@ def clear_prompt_library(data: dict, *, keep_saved: bool = True, keep_pinned: bo
 
 def clear_code_library(data: dict, *, keep_saved: bool = True, keep_pinned: bool = True) -> dict:
     pinned_codes = normalize_prompt_list(data.get("pinned_codes")) if keep_pinned else []
-    data["code_recent"] = []
+    if keep_pinned:
+        data["code_recent"] = [item for item in data.get("code_recent", []) if str(item.get("code", "")).strip() in pinned_codes]
+    else:
+        data["code_recent"] = []
     data["code_saved"] = list(data.get("code_saved", [])) if keep_saved else []
     if keep_pinned:
         data["code_saved"] = [item for item in data["code_saved"] if item.get("code") in pinned_codes or keep_saved]

@@ -67,6 +67,21 @@ def test_clear_prompt_library_keeps_saved_and_pinned_only():
     assert len(state["hidden_built_in"]) == len(lib.DEFAULT_PROMPTS) - 1
 
 
+def test_clear_prompt_library_keeps_pinned_recent_custom_prompt():
+    state = {
+        "saved": [],
+        "recent": [{"title": "Recent", "prompt": "recent prompt", "source": "recent", "updated_at": "2026-01-02T00:00:00+00:00"}],
+        "pinned_prompts": ["recent prompt"],
+        "hidden_built_in": [],
+    }
+
+    lib.clear_prompt_library(state, keep_saved=True, keep_pinned=True)
+    merged = lib.merged_prompt_records(state)
+
+    assert state["recent"] == [{"title": "Recent", "prompt": "recent prompt", "source": "recent", "updated_at": "2026-01-02T00:00:00+00:00"}]
+    assert any(item["prompt"] == "recent prompt" and item["source"] == "recent" and item["pinned"] for item in merged)
+
+
 def test_merged_prompt_records_deduplicates_by_priority_and_applies_pins():
     built_in_prompt = lib.DEFAULT_PROMPTS[0]
     state = {
@@ -122,3 +137,14 @@ def test_upsert_recent_code_preserves_code_formatting():
     lib.upsert_recent_code(state, code)
 
     assert state["code_recent"][0]["code"] == code
+
+
+def test_upsert_recent_prompt_keeps_recent_history_up_to_limit():
+    state = {"recent": []}
+
+    for index in range(lib.RECENT_LIBRARY_LIMIT + 5):
+        lib.upsert_recent_prompt(state, f"prompt {index}")
+
+    assert len(state["recent"]) == lib.RECENT_LIBRARY_LIMIT
+    assert state["recent"][0]["prompt"] == f"prompt {lib.RECENT_LIBRARY_LIMIT + 4}"
+    assert state["recent"][-1]["prompt"] == "prompt 5"

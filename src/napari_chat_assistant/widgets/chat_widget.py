@@ -124,7 +124,6 @@ from napari_chat_assistant.agent.session_memory import (
     set_active_dataset_focus,
     update_session_goal,
 )
-from napari_chat_assistant.agent.template_library import template_library_payload
 from napari_chat_assistant.agent.telemetry_summary import (
     format_telemetry_summary,
     load_telemetry_events,
@@ -134,6 +133,19 @@ from napari_chat_assistant.agent.telemetry_summary import (
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_help import answer_ui_question
 from napari_chat_assistant.agent.ui_state import load_ui_state, save_ui_state
+from napari_chat_assistant.atlas_stitch.widget import open_atlas_stitch_widget
+from napari_chat_assistant.library.template_catalog import (
+    is_template_record,
+    template_body_text,
+    template_button_labels,
+    template_hint_text,
+    template_library_payload,
+    template_load_target,
+    template_preview_text as catalog_template_preview_text,
+    template_run_target,
+    template_section_colors,
+)
+from napari_chat_assistant.widgets.chat_sections import LayerContextPanel, LibraryPanel, PendingCodePanel, ShortcutsPanel
 from napari_chat_assistant.widgets.intensity_metrics_widget import open_intensity_metrics_widget
 from napari_chat_assistant.widgets.message_formatting import render_assistant_message_html, render_user_message_html
 from napari_chat_assistant.widgets.line_profile_widget import open_line_profile_gaussian_fit_widget
@@ -259,224 +271,52 @@ def chat_widget(napari_viewer=None) -> QWidget:
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
 
-    context_group = QGroupBox("Layer Context")
-    context_layout = QVBoxLayout(context_group)
-    context_layout.setContentsMargins(6, 6, 6, 6)
-    context_tabs = QTabWidget()
-    context_layout.addWidget(context_tabs)
-
-    context_summary_tab = QWidget()
-    context_summary_layout = QVBoxLayout(context_summary_tab)
-    context_summary_layout.setContentsMargins(0, 0, 0, 0)
-    context_summary_box = QTextEdit()
-    context_summary_box.setReadOnly(True)
-    context_summary_box.setAcceptRichText(False)
-    context_summary_box.setPlaceholderText("Copyable layer context will appear here.")
-    context_summary_box.setMinimumHeight(120)
-    context_summary_box.setMaximumHeight(180)
-    context_summary_box.setStyleSheet(
-        "QTextEdit { background: #101820; color: #e6edf3; border: 1px solid #22304a; padding: 8px; }"
-    )
-    context_summary_layout.addWidget(context_summary_box)
-
-    context_layers_tab = QWidget()
-    context_layers_layout = QVBoxLayout(context_layers_tab)
-    context_layers_layout.setContentsMargins(0, 0, 0, 0)
-    context_layers_list = QListWidget()
-    context_layers_list.setSelectionMode(QAbstractItemView.NoSelection)
-    context_layers_list.setFocusPolicy(Qt.NoFocus)
-    context_layers_list.setStyleSheet("QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
-    context_layers_layout.addWidget(context_layers_list)
-
-    context_tabs.addTab(context_summary_tab, "Summary")
-    context_tabs.addTab(context_layers_tab, "Layers")
+    layer_context_panel = LayerContextPanel()
+    context_group = layer_context_panel
+    context_tabs = layer_context_panel.context_tabs
+    context_summary_box = layer_context_panel.context_summary_box
+    context_layers_list = layer_context_panel.context_layers_list
     left_layout.addWidget(context_group, 0)
 
-    prompt_library_group = QGroupBox("Library")
-    prompt_library_layout = QVBoxLayout(prompt_library_group)
-    prompt_library_hint = QLabel(
-        "Click to load. Double-click to send or run. Right-click to rename or edit tags."
-    )
-    prompt_library_hint.setWordWrap(True)
-    prompt_library_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-    prompt_library_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
-    library_nav_row = QWidget()
-    library_nav_layout = QHBoxLayout(library_nav_row)
-    library_nav_layout.setContentsMargins(0, 0, 0, 0)
-    library_nav_layout.setSpacing(6)
-    library_tabs = QTabBar()
-    library_tabs.setDrawBase(False)
-    library_tabs.addTab("Prompts")
-    library_tabs.addTab("Code")
-    library_tabs.addTab("Templates")
-    library_tabs.setExpanding(False)
-    library_tabs.setMovable(False)
-    library_tabs.setDocumentMode(True)
-    library_tabs.setElideMode(Qt.ElideRight)
-    library_tabs.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-    library_tabs.setTabToolTip(0, "Reusable natural-language prompts you can load, save, pin, and send.")
-    library_tabs.setTabToolTip(1, "Saved or recent Python snippets for Run My Code and code refinement.")
-    library_tabs.setTabToolTip(2, "Built-in starter templates organized by category for loading or immediate execution.")
-    actions_tab_btn = QPushButton("Actions")
-    actions_tab_btn.setCheckable(True)
-    actions_tab_btn.setToolTip("Deterministic built-in actions you can preview, load into Prompt, or run directly.")
-    library_nav_layout.addWidget(library_tabs, 0)
-    library_nav_layout.addStretch(1)
-    library_nav_layout.addWidget(actions_tab_btn, 0)
-    library_stack = QStackedWidget()
-    library_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-    prompt_library_list = QListWidget()
-    prompt_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-    prompt_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
-    prompt_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-    prompt_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    prompt_library_list.setWordWrap(True)
-    prompt_library_list.setStyleSheet(
-        "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; } "
-        "QListWidget::item:selected { background: #1d2a44; color: #e8f1ff; }"
-    )
-    code_library_list = QListWidget()
-    code_library_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-    code_library_list.setContextMenuPolicy(Qt.CustomContextMenu)
-    code_library_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-    code_library_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    code_library_list.setWordWrap(True)
-    code_library_list.setStyleSheet(
-        "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; } "
-        "QListWidget::item:selected { background: #1d2a44; color: #e8f1ff; }"
-    )
-    prompt_library_font = prompt_library_list.font()
-    if prompt_library_font.pointSize() > 0:
-        prompt_library_font.setPointSize(prompt_library_font.pointSize() + 1)
-        prompt_library_list.setFont(prompt_library_font)
-        code_library_list.setFont(prompt_library_font)
-    template_tab = QWidget()
-    template_tab_layout = QVBoxLayout(template_tab)
-    template_tab_layout.setContentsMargins(0, 0, 0, 0)
-    template_splitter = QSplitter(Qt.Horizontal)
-    template_tree = QTreeWidget()
-    template_tree.setHeaderHidden(True)
-    template_tree.setMinimumWidth(180)
-    template_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-    template_tree.setStyleSheet("QTreeWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
-    template_preview = QTextEdit()
-    template_preview.setReadOnly(True)
-    template_preview.setAcceptRichText(False)
-    template_preview.setPlaceholderText("Select a template to preview its description and code.")
-    template_preview.setStyleSheet(
-        "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 10px; }"
-    )
-    template_splitter.addWidget(template_tree)
-    template_splitter.addWidget(template_preview)
-    template_splitter.setStretchFactor(0, 0)
-    template_splitter.setStretchFactor(1, 1)
-    template_tab_layout.addWidget(template_splitter, 1)
-    template_btn_row = QWidget()
-    template_btn_layout = QHBoxLayout(template_btn_row)
-    template_load_btn = QPushButton("Load Template")
-    template_load_btn.setToolTip("Load the selected built-in template into the Prompt box for refinement.")
-    template_run_btn = QPushButton("Run Template")
-    template_run_btn.setToolTip("Load the selected built-in template and run it immediately with Run My Code.")
-    template_btn_layout.addWidget(template_load_btn)
-    template_btn_layout.addWidget(template_run_btn)
-    template_tab_layout.addWidget(template_btn_row)
-    action_tab = QWidget()
-    action_tab_layout = QVBoxLayout(action_tab)
-    action_tab_layout.setContentsMargins(0, 0, 0, 0)
-    action_splitter = QSplitter(Qt.Horizontal)
-    action_tree = QTreeWidget()
-    action_tree.setHeaderHidden(True)
-    action_tree.setMinimumWidth(180)
-    action_tree.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-    action_tree.setStyleSheet("QTreeWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
-    action_preview = QTextEdit()
-    action_preview.setReadOnly(True)
-    action_preview.setAcceptRichText(False)
-    action_preview.setPlaceholderText("Select an action to preview what it does and how it runs.")
-    action_preview.setStyleSheet(
-        "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 10px; }"
-    )
-    action_splitter.addWidget(action_tree)
-    action_splitter.addWidget(action_preview)
-    action_splitter.setStretchFactor(0, 0)
-    action_splitter.setStretchFactor(1, 1)
-    action_tab_layout.addWidget(action_splitter, 1)
-    action_btn_row = QWidget()
-    action_btn_layout = QHBoxLayout(action_btn_row)
-    action_load_btn = QPushButton("Load Action")
-    action_load_btn.setToolTip("Load the selected action's suggested prompt into the Prompt box.")
-    action_run_btn = QPushButton("Run Action")
-    action_run_btn.setToolTip("Run the selected deterministic action directly without using the model.")
-    action_add_shortcut_btn = QPushButton("Add to Shortcuts")
-    action_add_shortcut_btn.setToolTip("Add the selected action to the Shortcuts area for one-click reuse.")
-    action_btn_layout.addWidget(action_load_btn)
-    action_btn_layout.addWidget(action_run_btn)
-    action_btn_layout.addWidget(action_add_shortcut_btn)
-    action_tab_layout.addWidget(action_btn_row)
-    library_stack.addWidget(prompt_library_list)
-    library_stack.addWidget(code_library_list)
-    library_stack.addWidget(template_tab)
-    library_stack.addWidget(action_tab)
-    prompt_library_btn_row = QWidget()
-    prompt_library_btn_layout = QHBoxLayout(prompt_library_btn_row)
-    save_prompt_btn = QPushButton("Save")
-    pin_prompt_btn = QPushButton("Pin")
-    delete_prompt_btn = QPushButton("Delete")
-    clear_prompt_btn = QPushButton("Clear")
-    prompt_font_down_btn = QPushButton("A-")
-    prompt_font_down_btn.setToolTip("Decrease library font size.")
-    prompt_font_up_btn = QPushButton("A+")
-    prompt_font_up_btn.setToolTip("Increase library font size.")
-    prompt_library_btn_layout.addWidget(save_prompt_btn)
-    prompt_library_btn_layout.addWidget(pin_prompt_btn)
-    prompt_library_btn_layout.addWidget(delete_prompt_btn)
-    prompt_library_btn_layout.addWidget(clear_prompt_btn)
-    prompt_library_btn_layout.addWidget(prompt_font_down_btn)
-    prompt_library_btn_layout.addWidget(prompt_font_up_btn)
-    prompt_library_layout.addWidget(prompt_library_hint)
-    prompt_library_layout.addWidget(library_nav_row)
-    prompt_library_layout.addWidget(library_stack)
-    prompt_library_layout.addWidget(prompt_library_btn_row)
+    library_panel = LibraryPanel()
+    prompt_library_group = library_panel
+    prompt_library_hint = library_panel.prompt_library_hint
+    library_tabs = library_panel.library_tabs
+    actions_tab_btn = library_panel.actions_tab_btn
+    library_stack = library_panel.library_stack
+    prompt_library_list = library_panel.prompt_library_list
+    code_library_list = library_panel.code_library_list
+    template_tab = library_panel.template_tab
+    template_tree = library_panel.template_tree
+    template_preview = library_panel.template_preview
+    template_load_btn = library_panel.template_load_btn
+    template_run_btn = library_panel.template_run_btn
+    action_tab = library_panel.action_tab
+    action_tree = library_panel.action_tree
+    action_preview = library_panel.action_preview
+    action_load_btn = library_panel.action_load_btn
+    action_run_btn = library_panel.action_run_btn
+    action_add_shortcut_btn = library_panel.action_add_shortcut_btn
+    save_prompt_btn = library_panel.save_prompt_btn
+    pin_prompt_btn = library_panel.pin_prompt_btn
+    delete_prompt_btn = library_panel.delete_prompt_btn
+    clear_prompt_btn = library_panel.clear_prompt_btn
+    prompt_font_down_btn = library_panel.prompt_font_down_btn
+    prompt_font_up_btn = library_panel.prompt_font_up_btn
     left_layout.addWidget(prompt_library_group, 2)
 
-    shortcuts_group = QGroupBox("Shortcuts")
-    shortcuts_layout = QVBoxLayout(shortcuts_group)
-    shortcuts_hint = QLabel(
-        "Keep your most-used actions here for one-click work."
-    )
-    shortcuts_hint.setWordWrap(True)
-    shortcuts_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
-    shortcuts_layout.addWidget(shortcuts_hint)
-    shortcuts_grid = QGridLayout()
-    shortcuts_grid.setContentsMargins(0, 0, 0, 0)
-    shortcuts_grid.setHorizontalSpacing(8)
-    shortcuts_grid.setVerticalSpacing(8)
-    shortcuts_layout.addLayout(shortcuts_grid)
+    shortcuts_panel = ShortcutsPanel()
+    shortcuts_group = shortcuts_panel
+    shortcuts_layout = shortcuts_panel.shortcuts_layout
+    shortcuts_hint = shortcuts_panel.shortcuts_hint
+    shortcuts_grid = shortcuts_panel.shortcuts_grid
     shortcut_buttons: list[QPushButton] = []
-    shortcuts_btn_row = QWidget()
-    shortcuts_btn_layout = QHBoxLayout(shortcuts_btn_row)
-    shortcuts_add_row_btn = QPushButton("+")
-    shortcuts_add_row_btn.setToolTip("Add another row of 3 shortcut buttons.")
-    shortcuts_add_row_btn.setFixedWidth(88)
-    shortcuts_remove_row_btn = QPushButton("-")
-    shortcuts_remove_row_btn.setToolTip("Remove the last row of 3 shortcut buttons. The last row must be empty first.")
-    shortcuts_remove_row_btn.setFixedWidth(88)
-    shortcuts_save_btn = QPushButton("Save Setup")
-    shortcuts_save_btn.setToolTip("Save your current shortcuts setup so you can reuse it later.")
-    shortcuts_save_btn.setFixedWidth(88)
-    shortcuts_load_btn = QPushButton("Load Setup")
-    shortcuts_load_btn.setToolTip("Load a saved shortcuts setup.")
-    shortcuts_load_btn.setFixedWidth(88)
-    shortcuts_clear_btn = QPushButton("Clear")
-    shortcuts_clear_btn.setToolTip("Clear all shortcut button assignments.")
-    shortcuts_clear_btn.setFixedWidth(88)
-    shortcuts_btn_layout.addStretch(1)
-    shortcuts_btn_layout.addWidget(shortcuts_add_row_btn)
-    shortcuts_btn_layout.addWidget(shortcuts_remove_row_btn)
-    shortcuts_btn_layout.addWidget(shortcuts_save_btn)
-    shortcuts_btn_layout.addWidget(shortcuts_load_btn)
-    shortcuts_btn_layout.addWidget(shortcuts_clear_btn)
-    shortcuts_layout.addWidget(shortcuts_btn_row)
+    shortcuts_btn_row = shortcuts_panel.shortcuts_btn_row
+    shortcuts_add_row_btn = shortcuts_panel.shortcuts_add_row_btn
+    shortcuts_remove_row_btn = shortcuts_panel.shortcuts_remove_row_btn
+    shortcuts_save_btn = shortcuts_panel.shortcuts_save_btn
+    shortcuts_load_btn = shortcuts_panel.shortcuts_load_btn
+    shortcuts_clear_btn = shortcuts_panel.shortcuts_clear_btn
     left_layout.addWidget(shortcuts_group, 0)
 
     log_group = QGroupBox("Session")
@@ -580,62 +420,27 @@ def chat_widget(napari_viewer=None) -> QWidget:
     transcript.setStyleSheet("QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 10px; }")
     transcript_layout.addWidget(transcript, 1)
 
-    code_btn_row = QWidget()
-    code_btn_layout = QHBoxLayout(code_btn_row)
-    pending_code_label = QLabel("Pending code: none")
-    pending_code_label.setStyleSheet("QLabel { color: #c7d2fe; padding: 2px 0; }")
-    reject_memory_btn = QPushButton("👎 Reject")
-    reject_memory_btn.setToolTip("Reject the last assistant outcome from session memory.")
-    reject_memory_btn.setEnabled(False)
-    help_btn = QPushButton("Help")
-    help_btn.setToolTip("Open prompt tips and UI-help controls.")
-    help_menu = QMenu(help_btn)
-    help_prompt_tips_action = help_menu.addAction("Prompt Tips")
-    help_whats_new_action = help_menu.addAction("What's New")
-    help_about_action = help_menu.addAction("About")
-    help_report_bug_action = help_menu.addAction("Report Bug")
-    help_menu.addSeparator()
-    help_ui_toggle_action = help_menu.addAction("UI Help Enabled")
-    help_ui_toggle_action.setCheckable(True)
-    help_ui_toggle_action.setChecked(bool(ui_state.get("ui_help_enabled", False)))
-    help_btn.setMenu(help_menu)
-    advanced_btn = QPushButton("Advanced")
-    advanced_btn.setToolTip("Open advanced and optional integrations.")
-    advanced_menu = QMenu(advanced_btn)
-    sam2_setup_action = advanced_menu.addAction("SAM2 Setup")
-    sam2_live_action = advanced_menu.addAction("SAM2 Live")
-    text_annotation_action = advanced_menu.addAction("Text Annotation")
-    advanced_btn.setMenu(advanced_menu)
-    run_code_btn = QPushButton("Run Code")
-    run_my_code_btn = QPushButton("Run My Code")
-    run_code_btn.setToolTip(
-        "Run the reviewed code inside the Chat Assistant plugin runtime. "
-        "This uses plugin globals such as viewer, selected_layer, and run_in_background, "
-        "and output is shown in chat rather than QtConsole."
-    )
-    run_my_code_btn.setToolTip(
-        "Paste your own Python in the Prompt box and run it inside the Chat Assistant plugin runtime, "
-        "without opening QtConsole. This is similar to napari scripting but not identical to QtConsole. "
-        "Output is shown in chat."
-    )
-    refine_my_code_btn = QPushButton("Refine My Code")
-    refine_my_code_btn.setToolTip(
-        "Ask the assistant to adapt prompt-box code or the last failed Run My Code submission so it works "
-        "in the Chat Assistant plugin runtime. Use this when code may work in QtConsole but not here as-is."
-    )
-    copy_code_btn = QPushButton("Copy Code")
-    run_code_btn.setEnabled(False)
-    copy_code_btn.setEnabled(False)
-    refine_my_code_btn.setEnabled(False)
-    code_btn_layout.addWidget(pending_code_label, 1)
-    code_btn_layout.addWidget(run_code_btn)
-    code_btn_layout.addWidget(copy_code_btn)
-    code_btn_layout.addWidget(run_my_code_btn)
-    code_btn_layout.addWidget(refine_my_code_btn)
-    code_btn_layout.addWidget(reject_memory_btn)
-    code_btn_layout.addWidget(advanced_btn)
-    code_btn_layout.addWidget(help_btn)
-    transcript_layout.addWidget(code_btn_row)
+    pending_code_panel = PendingCodePanel(ui_help_enabled=bool(ui_state.get("ui_help_enabled", False)))
+    pending_code_label = pending_code_panel.pending_code_label
+    help_btn = pending_code_panel.help_btn
+    help_prompt_tips_action = pending_code_panel.help_prompt_tips_action
+    help_whats_new_action = pending_code_panel.help_whats_new_action
+    help_about_action = pending_code_panel.help_about_action
+    help_report_bug_action = pending_code_panel.help_report_bug_action
+    help_reject_memory_action = pending_code_panel.help_reject_memory_action
+    help_ui_toggle_action = pending_code_panel.help_ui_toggle_action
+    advanced_btn = pending_code_panel.advanced_btn
+    sam2_setup_action = pending_code_panel.sam2_setup_action
+    sam2_live_action = pending_code_panel.sam2_live_action
+    text_annotation_action = pending_code_panel.text_annotation_action
+    atlas_stitch_action = pending_code_panel.atlas_stitch_action
+    run_code_btn = pending_code_panel.run_code_btn
+    run_my_code_btn = pending_code_panel.run_my_code_btn
+    refine_my_code_btn = pending_code_panel.refine_my_code_btn
+    copy_code_btn = pending_code_panel.copy_code_btn
+    chat_font_down_btn = pending_code_panel.chat_font_down_btn
+    chat_font_up_btn = pending_code_panel.chat_font_up_btn
+    transcript_layout.addWidget(pending_code_panel)
 
     input_group = QGroupBox("Prompt")
     input_group_layout = QVBoxLayout(input_group)
@@ -1304,6 +1109,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
         prompt_library_list.setFont(font)
         code_library_list.setFont(font)
 
+    def apply_chat_font_size(size: int):
+        font = transcript.font()
+        font.setPointSize(max(9, min(20, int(size))))
+        transcript.setFont(font)
+        ui_state["chat_font_size"] = font.pointSize()
+        save_ui_state(ui_state)
+
+    def adjust_chat_font(delta: int):
+        font = transcript.font()
+        current_size = font.pointSize()
+        if current_size <= 0:
+            current_size = 10
+        apply_chat_font_size(current_size + int(delta))
+
     def format_code_block(code_text: str) -> str:
         code = str(code_text or "")
         return f"```python\n{code}\n```" if code.strip() else "```python\n# empty\n```"
@@ -1587,35 +1406,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- Ask for the result you want: preview, apply, explain, or code.\n"
             "- If more than one layer is open, name the layer.\n"
             "- Natural language is fine. The assistant will use the selected layer when it can.\n\n"
-            "**Try These**\n"
-            "- `Inspect the selected layer`\n"
-            "- `Preview threshold on the selected image`\n"
-            "- `Apply gaussian blur to image_a with sigma 1.2`\n"
-            "- `Fill holes in labels_a`\n"
-            "- `Remove small particles from labels_a with min_size 64`\n"
-            "- `Keep only the largest connected component in labels_a`\n"
-            "- `Analyze particles table for labels_a`\n"
-            "- `Create a max intensity projection from volume_a along axis 0`\n"
-            "- `Crop image_a to the bounding box of labels_a with padding 8`\n"
-            "- `Inspect the current ROI`\n"
-            "- `Extract ROI values from image_a using roi_shapes`\n\n"
+            "**Prompt Templates**\n"
+            "- Use the Library `Templates` tab and open `Prompt Templates` for built-in starter prompts.\n"
+            "- Prompt Templates now include common workflow requests such as layer inspection, threshold preview, Gaussian blur, mask cleanup, ROI extraction, cropping, measurement, and markdown-style explanation prompts.\n"
+            "- Double-click a prompt template to run it immediately, or load it first if you want to edit it.\n\n"
             "**ROI Support**\n"
             "- Labels and Shapes layers can be used as regions of interest.\n"
             "- You can inspect ROI context or extract grayscale image values inside an ROI.\n"
             "- Example: `Extract ROI values from image_a using roi_shapes`\n\n"
             "**Synthetic Data**\n"
-            "- Use the Library `Templates` tab to load built-in synthetic datasets for testing.\n"
+            "- Use the Library `Templates` tab and open `Code Templates` -> `Data Setup` to load built-in synthetic datasets for testing.\n"
             "- Examples include `Synthetic 2D SNR Sweep Gray`, `Synthetic 3D SNR Sweep Gray`, `Synthetic 2D SNR Sweep RGB`, and `Synthetic 3D SNR Sweep RGB`.\n"
             "- These datasets create named layers so you can test tools quickly and repeatably.\n\n"
-            "**Example Pipeline**\n"
-            "- `Run Synthetic 2D SNR Sweep Gray.`\n"
-            "- `Apply gaussian blur to em_2d_snr_low with sigma 1.0`\n"
-            "- `Preview threshold on em_2d_snr_low_gaussian`\n"
-            "- `Apply threshold now on em_2d_snr_low_gaussian`\n"
-            "- `Fill holes in em_2d_snr_low_gaussian_labels`\n"
-            "- `Remove small particles from em_2d_snr_low_gaussian_labels_filled with min_size 64`\n"
-            "- `Keep only the largest connected component in em_2d_snr_low_gaussian_labels_filled_clean`\n"
-            "- `Measure selected mask`\n\n"
             "**Layer Names and Placeholders**\n"
             "- When possible, use exact layer names from `Layer Context`.\n"
             "- Use `Inline` when you want to place a layer name into code or a placeholder position.\n"
@@ -1626,9 +1428,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
             "- Example: `Write Run My Code for a 3D RGB synthetic dataset using run_in_background.`\n\n"
             "**Formatting**\n"
-            "- `Reply in markdown`\n"
-            "- `Use bullets and short sections`\n"
-            "- `Explain first, then give runnable plugin code`\n\n"
+            "- Use the built-in `Reply In Markdown` prompt template when you want a structured explanation format.\n\n"
             "**Language**\n"
             "- You can prompt in your preferred language.",
         )
@@ -1679,7 +1479,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def set_last_memory_candidates(item_ids: list[str]):
         nonlocal last_memory_candidate_ids
         last_memory_candidate_ids = [item_id for item_id in item_ids if item_id]
-        reject_memory_btn.setEnabled(bool(last_memory_candidate_ids))
+        help_reject_memory_action.setEnabled(bool(last_memory_candidate_ids))
 
     def remember_assistant_outcome(summary: str, *, target_type: str, target_profile: dict | None, state: str = "provisional"):
         clean = " ".join(str(summary or "").split()).strip()
@@ -1984,6 +1784,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_log("Rejected last assistant memory candidates.")
         set_status("Status: last answer rejected from session memory", ok=None)
         set_last_memory_candidates([])
+
+    apply_chat_font_size(int(ui_state.get("chat_font_size", transcript.font().pointSize() or 10)))
 
     def current_library_kind() -> str:
         current_widget = library_stack.currentWidget()
@@ -2521,10 +2323,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
             pin_prompt_btn.setEnabled(False)
             delete_prompt_btn.setEnabled(False)
             clear_prompt_btn.setEnabled(False)
-            prompt_library_hint.setText(
-                "Click a template to preview it. Double-click to run it with Run My Code."
-            )
-            template_selected = current_template_record() is not None
+            template_record = current_template_record()
+            template_selected = template_record is not None
+            load_label, run_label = template_button_labels(template_record)
+            template_load_btn.setText(load_label)
+            template_run_btn.setText(run_label)
+            prompt_library_hint.setText(template_hint_text(template_record))
             template_load_btn.setEnabled(template_selected)
             template_run_btn.setEnabled(template_selected)
             action_load_btn.setEnabled(False)
@@ -2584,6 +2388,42 @@ def chat_widget(napari_viewer=None) -> QWidget:
             "Click to load. Double-click to send. Right-click to rename or edit tags."
         )
 
+    def _tree_item_path(item: QTreeWidgetItem | None) -> tuple[str, ...]:
+        parts: list[str] = []
+        current = item
+        while current is not None:
+            parts.append(current.text(0))
+            current = current.parent()
+        return tuple(reversed(parts))
+
+    def _capture_tree_state(tree: QTreeWidget, *, selected_record_id: str = "") -> tuple[set[tuple[str, ...]], str]:
+        expanded_paths: set[tuple[str, ...]] = set()
+
+        def visit(item: QTreeWidgetItem):
+            if item.isExpanded():
+                expanded_paths.add(_tree_item_path(item))
+            for child_index in range(item.childCount()):
+                visit(item.child(child_index))
+
+        for index in range(tree.topLevelItemCount()):
+            visit(tree.topLevelItem(index))
+
+        current_item = tree.currentItem()
+        if not selected_record_id and current_item is not None:
+            record = current_item.data(0, Qt.UserRole)
+            if isinstance(record, dict):
+                selected_record_id = str(record.get("id", "")).strip()
+        return expanded_paths, selected_record_id
+
+    def _restore_tree_expansion(tree: QTreeWidget, expanded_paths: set[tuple[str, ...]]) -> None:
+        def visit(item: QTreeWidgetItem):
+            item.setExpanded(_tree_item_path(item) in expanded_paths)
+            for child_index in range(item.childCount()):
+                visit(item.child(child_index))
+
+        for index in range(tree.topLevelItemCount()):
+            visit(tree.topLevelItem(index))
+
     def refresh_prompt_library():
         prompt_library_list.clear()
         for record in merged_prompt_records(prompt_library_state):
@@ -2601,36 +2441,47 @@ def chat_widget(napari_viewer=None) -> QWidget:
             item.setData(Qt.UserRole, record)
             item.setForeground(QColor(color))
             code_library_list.addItem(item)
+        template_expanded_paths, selected_template_id = _capture_tree_state(template_tree)
         template_tree.clear()
-        categories = [str(name).strip() for name in template_library_state.get("categories", []) if str(name).strip()]
-        category_lookup: dict[str, QTreeWidgetItem] = {}
-        for category in categories:
-            category_item = QTreeWidgetItem([category])
-            category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
-            category_item.setFirstColumnSpanned(True)
-            category_lookup[category] = category_item
-            template_tree.addTopLevelItem(category_item)
-        for record in template_library_state.get("templates", []):
-            if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+        selected_template_item: QTreeWidgetItem | None = None
+        for section in template_library_state.get("sections", []):
+            if not isinstance(section, dict):
                 continue
-            category = str(record.get("category", "Templates")).strip() or "Templates"
-            parent = category_lookup.get(category)
-            if parent is None:
-                parent = QTreeWidgetItem([category])
-                parent.setFlags(parent.flags() & ~Qt.ItemIsSelectable)
-                parent.setFirstColumnSpanned(True)
-                category_lookup[category] = parent
-                template_tree.addTopLevelItem(parent)
-            child = QTreeWidgetItem([str(record.get("title", "Untitled Template")).strip() or "Untitled Template"])
-            child.setData(0, Qt.UserRole, record)
-            parent.addChild(child)
-        for index in range(template_tree.topLevelItemCount()):
-            template_tree.topLevelItem(index).setExpanded(False)
-        template_tree.setCurrentItem(None)
-        template_preview.clear()
+            section_key = str(section.get("key", "")).strip()
+            palette = template_section_colors(section_key)
+            section_item = QTreeWidgetItem([str(section.get("label", "Templates")).strip() or "Templates"])
+            section_item.setFlags(section_item.flags() & ~Qt.ItemIsSelectable)
+            section_item.setFirstColumnSpanned(True)
+            section_item.setForeground(0, QColor(palette["section"]))
+            template_tree.addTopLevelItem(section_item)
+            for category in section.get("categories", []):
+                if not isinstance(category, dict):
+                    continue
+                category_item = QTreeWidgetItem([str(category.get("name", "Templates")).strip() or "Templates"])
+                category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
+                category_item.setFirstColumnSpanned(True)
+                category_item.setForeground(0, QColor(palette["category"]))
+                section_item.addChild(category_item)
+                for record in category.get("templates", []):
+                    if not is_template_record(record):
+                        continue
+                    child = QTreeWidgetItem([str(record.get("title", "Untitled Template")).strip() or "Untitled Template"])
+                    child.setData(0, Qt.UserRole, record)
+                    child.setForeground(0, QColor(palette["item"]))
+                    category_item.addChild(child)
+                    if str(record.get("id", "")).strip() == selected_template_id:
+                        selected_template_item = child
+        _restore_tree_expansion(template_tree, template_expanded_paths)
+        if selected_template_item is not None:
+            template_tree.setCurrentItem(selected_template_item)
+        else:
+            template_tree.setCurrentItem(None)
+            template_preview.clear()
+        action_expanded_paths, selected_action_id = _capture_tree_state(action_tree)
         action_tree.clear()
         action_categories = [str(name).strip() for name in action_library_state.get("categories", []) if str(name).strip()]
         action_lookup: dict[str, QTreeWidgetItem] = {}
+        selected_action_item: QTreeWidgetItem | None = None
         for category in action_categories:
             category_item = QTreeWidgetItem([category])
             category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
@@ -2662,10 +2513,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
             child = QTreeWidgetItem([str(record.get("title", "Untitled Action")).strip() or "Untitled Action"])
             child.setData(0, Qt.UserRole, record)
             parent.addChild(child)
-        for index in range(action_tree.topLevelItemCount()):
-            action_tree.topLevelItem(index).setExpanded(False)
-        action_tree.setCurrentItem(None)
-        action_preview.clear()
+            if str(record.get("id", "")).strip() == selected_action_id:
+                selected_action_item = child
+        _restore_tree_expansion(action_tree, action_expanded_paths)
+        if selected_action_item is not None:
+            action_tree.setCurrentItem(selected_action_item)
+        else:
+            action_tree.setCurrentItem(None)
+            action_preview.clear()
         refresh_library_controls()
 
     def current_template_record() -> dict | None:
@@ -2673,7 +2528,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if item is None:
             return None
         record = item.data(0, Qt.UserRole)
-        return record if isinstance(record, dict) and str(record.get("code", "")).strip() else None
+        return record if is_template_record(record) else None
 
     def current_action_record() -> dict | None:
         item = action_tree.currentItem()
@@ -2683,54 +2538,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         return record if isinstance(record, dict) and isinstance(record.get("execution"), dict) else None
 
     def template_preview_text(record: dict) -> str:
-        title = str(record.get("title", "")).strip() or "Untitled Template"
-        category = str(record.get("category", "")).strip() or "Templates"
-        description = str(record.get("description", "")).strip()
-        tags = [str(tag).strip() for tag in record.get("tags", []) if str(tag).strip()]
-        best_for = str(record.get("best_for", "")).strip()
-        followup = str(record.get("suggested_followup", "")).strip()
-        ui_mode = str(record.get("ui_mode", "")).strip()
-        runtime = record.get("runtime", {})
-        runtime_flags: list[str] = []
-        if isinstance(runtime, dict):
-            if runtime.get("uses_viewer"):
-                runtime_flags.append("Viewer")
-            if runtime.get("uses_selected_layer"):
-                runtime_flags.append("Selected Layer")
-            if runtime.get("uses_run_in_background"):
-                runtime_flags.append("Background")
-        lines = [f"Template: {title}", f"Category: {category}"]
-        if tags:
-            lines.append(f"Tags: {', '.join(tags)}")
-        if runtime_flags:
-            lines.append(f"Runtime: {', '.join(runtime_flags)}")
-        if description:
-            lines.extend(["", description])
-        if best_for:
-            lines.extend(["", f"Best for: {best_for}"])
-        if followup:
-            lines.extend(["", f"Suggested follow-up: {followup}"])
-        if ui_mode == "widget":
-            lines.extend(
-                [
-                    "",
-                    "UI:",
-                    "This template opens a dedicated measurement widget when you use `Run Template`.",
-                    "Use `Load Template` to inspect the launch code in the Prompt box.",
-                ]
-            )
-            return "\n".join(lines).strip()
-        lines.extend(
-            [
-                "",
-                "This template is designed to run inside the Chat Assistant plugin runtime in napari.",
-                "It may use viewer, selected_layer, and run_in_background(...).",
-                "",
-                "Code:",
-                str(record.get("code", "")).rstrip(),
-            ]
-        )
-        return "\n".join(lines).strip()
+        return catalog_template_preview_text(record)
 
     def action_preview_text(record: dict) -> str:
         title = str(record.get("title", "")).strip() or "Untitled Action"
@@ -3425,7 +3233,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             refresh_library_controls()
             return
         record = item.data(0, Qt.UserRole)
-        if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+        if not is_template_record(record):
             template_preview.clear()
             refresh_library_controls()
             return
@@ -3451,29 +3259,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: no template selected", ok=False)
             append_log("Template load skipped: no template record selected.")
             return
-        if str(record.get("ui_mode", "")).strip() == "widget":
-            if run_now:
-                if not launch_widget_template(record):
-                    set_status("Status: widget template failed to open", ok=False)
-                    append_log(f"Widget template failed to open: {record.get('title', 'Untitled Template')}")
-                return
-        code_text = str(record.get("code", ""))
-        if not code_text.strip():
+        body_text = template_body_text(record)
+        if not body_text.strip():
             set_status("Status: selected template is empty", ok=False)
             append_log("Template load skipped: selected template is empty.")
             return
-        prompt.setPlainText(code_text)
+        prompt.setPlainText(body_text)
         prompt.setFocus()
-        if str(record.get("ui_mode", "")).strip() == "widget":
-            append_log(
-                f"Loaded widget template code: {record.get('title', 'Untitled Template')} | Use Run Template to open it."
-            )
-            set_status("Status: widget template code loaded", ok=None)
-            return
-        append_log(f"Loaded template: {record.get('title', 'Untitled Template')}")
-        set_status("Status: template loaded", ok=None)
+        title = str(record.get("title", "Untitled Template")).strip() or "Untitled Template"
+        if template_load_target(record) == "prompt":
+            append_log(f"Loaded template prompt: {title}")
+            set_status("Status: template prompt loaded", ok=None)
+        else:
+            append_log(f"Loaded template code: {title}")
+            set_status("Status: template code loaded", ok=None)
         if run_now:
-            run_prompt_code()
+            if template_run_target(record) == "send_prompt":
+                send_message()
+            else:
+                run_prompt_code()
 
     def load_selected_template(*_args):
         record = current_template_record()
@@ -3701,7 +3505,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def run_template_tree_item(item: QTreeWidgetItem, _column: int):
         del _column
         record = item.data(0, Qt.UserRole)
-        if not isinstance(record, dict) or not str(record.get("code", "")).strip():
+        if not is_template_record(record):
             return
         load_template_record(record, run_now=True)
 
@@ -6135,10 +5939,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_my_code_btn.clicked.connect(run_prompt_code)
     refine_my_code_btn.clicked.connect(refine_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
-    reject_memory_btn.clicked.connect(reject_last_memory)
+    help_reject_memory_action.triggered.connect(reject_last_memory)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)
+    atlas_stitch_action.triggered.connect(lambda *_args: open_atlas_stitch_widget(viewer))
     help_prompt_tips_action.triggered.connect(show_help_tips)
     help_whats_new_action.triggered.connect(show_whats_new)
     help_about_action.triggered.connect(show_about_assistant)
@@ -6180,6 +5985,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     clear_prompt_btn.clicked.connect(clear_non_saved_prompts)
     prompt_font_down_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(-1))
     prompt_font_up_btn.clicked.connect(lambda *_args: adjust_prompt_library_font(1))
+    chat_font_down_btn.clicked.connect(lambda *_args: adjust_chat_font(-1))
+    chat_font_up_btn.clicked.connect(lambda *_args: adjust_chat_font(1))
     prompt.sendRequested.connect(send_message)
     connection_toggle_btn.toggled.connect(connection_details.setVisible)
     log_group.toggled.connect(log_tabs.setVisible)
