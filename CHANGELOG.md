@@ -2,6 +2,10 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.0.2
+
+- Fixed a Library navigation bug where opening `Actions` from `Templates` could leave the `Templates` button inactive until the user clicked a different tab first.
+
 ## 2.0.1
 
 - Reduced dock startup load by lazy-opening heavy advanced and analysis widgets such as Atlas Stitch, ROI Intensity Analysis, and Line Profile Analysis only when the user selects them.

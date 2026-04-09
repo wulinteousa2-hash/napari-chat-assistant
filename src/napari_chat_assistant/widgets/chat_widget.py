@@ -1895,6 +1895,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
             actions_tab_btn.setChecked(False)
         refresh_library_controls()
 
+    def show_library_tab_index(index: int) -> None:
+        if index == 1:
+            show_library_panel("code")
+        elif index == 2:
+            show_library_panel("template")
+        else:
+            show_library_panel("prompt")
+
     def selected_library_records() -> list[dict]:
         if current_library_kind() == "template":
             item = template_tree.currentItem()
@@ -6026,9 +6034,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     summary_stats_btn.clicked.connect(run_summary_stats)
     histogram_btn.clicked.connect(run_histogram)
     compare_btn.clicked.connect(run_layer_comparison)
-    library_tabs.currentChanged.connect(
-        lambda index: show_library_panel("prompt" if index == 0 else "code" if index == 1 else "template")
-    )
+    library_tabs.currentChanged.connect(show_library_tab_index)
+    library_tabs.tabBarClicked.connect(show_library_tab_index)
     actions_tab_btn.clicked.connect(lambda *_args: show_library_panel("action"))
     prompt_library_list.itemClicked.connect(load_library_prompt)
     prompt_library_list.itemDoubleClicked.connect(send_library_prompt)
