@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.0.3
+
+- Improved follow-up understanding so short conversational prompts such as `same as before`, `but for labels`, `use the selected one`, `without histogram`, and `just explain` are handled more like edits to the previous plan instead of isolated keyword matches.
+- Improved cross-turn intent carryover for code-vs-tool decisions, built-in tool rejection after incompatible failures, and recent workflow reuse under tighter user constraints.
+- Improved `Refine My Code` safeguards with stronger local repair and validation for placeholder layer mismatches, incorrect `selected_layer` usage, and viewer mutations inside background compute functions.
+- Added an `Optics Resolution Panel Demo` code template for diffraction, PSF, and resolution teaching workflows.
+- Renamed the old `Demo Pack: Messy Masks 2D/3D` dataset to `Mask Cleanup 2D/3D` and refined its wording.
+
 ## 2.0.2
 
 - Fixed a Library navigation bug where opening `Actions` from `Templates` could leave `Templates` inactive until the user clicked a different tab first.

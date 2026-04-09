@@ -2,12 +2,60 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import numpy as np
+import pytest
 
 from napari_chat_assistant.agent.code_validation import (
     build_code_repair_context,
     normalize_generated_code_if_needed,
     validate_generated_code,
 )
+
+
+REPAIR_REGRESSION_CASES = [
+    {
+        "name": "selected_layer_index_misuse",
+        "input_code": """
+layer = viewer.layers[selected_layer]
+print(layer.name)
+""",
+        "expected_substrings": ["layer = selected_layer"],
+        "forbidden_substrings": ["viewer.layers[selected_layer]"],
+        "expected_notes": ["selected_layer"],
+    },
+    {
+        "name": "placeholder_image_lookup_replaced_with_selected_image",
+        "input_code": """
+from napari import run_in_background
+layer = viewer.layers["img_a"]
+print(layer.shape)
+""",
+        "viewer_setup": "selected_image",
+        "expected_substrings": ['layer = viewer.layers["sample_a"]', "data = np.asarray(layer.data)", "print(data.shape)"],
+        "forbidden_substrings": ['from napari import run_in_background', 'viewer.layers["img_a"]', "print(layer.shape)"],
+        "expected_notes": ["Removed `run_in_background` import", "placeholder layer name [img_a]", "layer.shape"],
+    },
+]
+
+
+VALIDATION_REGRESSION_CASES = [
+    {
+        "name": "viewer_mutation_inside_background_compute",
+        "input_code": """
+import numpy as np
+
+layer = selected_layer
+data = np.asarray(layer.data)
+
+def compute():
+    result = data > data.mean()
+    viewer.add_labels(result.astype(np.uint8), name="bad_inside_compute")
+    return result
+
+run_in_background(compute, lambda x: print("done"))
+""",
+        "expected_errors": ["contains viewer mutations"],
+    },
+]
 
 
 def test_validate_generated_code_rejects_uint8_inplace_randint_add():
@@ -77,6 +125,32 @@ run_in_background(compute, apply_result, label="demo")
     assert "from napari.utils import run_in_background" not in normalized
     assert report.errors == []
     assert report.warnings == []
+
+
+@pytest.mark.parametrize("case", REPAIR_REGRESSION_CASES, ids=lambda case: case["name"])
+def test_repair_regression_cases(case, make_napari_viewer_proxy):
+    viewer = None
+    if case.get("viewer_setup") == "selected_image":
+        viewer = make_napari_viewer_proxy()
+        image = viewer.add_image(np.asarray([[1, 2], [3, 4]], dtype=np.float32), name="sample_a")
+        viewer.layers.selection.active = image
+
+    normalized, report = normalize_generated_code_if_needed(case["input_code"], viewer=viewer)
+
+    for snippet in case.get("expected_substrings", []):
+        assert snippet in normalized
+    for snippet in case.get("forbidden_substrings", []):
+        assert snippet not in normalized
+    for note in case.get("expected_notes", []):
+        assert any(note in entry for entry in report.notes)
+
+
+@pytest.mark.parametrize("case", VALIDATION_REGRESSION_CASES, ids=lambda case: case["name"])
+def test_validation_regression_cases(case):
+    report = validate_generated_code(case["input_code"])
+
+    for error in case.get("expected_errors", []):
+        assert any(error in entry for entry in report.errors)
 
 
 def test_validate_generated_code_rejects_missing_viewer_method():

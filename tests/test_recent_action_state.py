@@ -182,3 +182,102 @@ def test_route_recent_action_followup_hands_off_to_roi_widget_for_recent_image()
 
     assert route["tool"] == "open_intensity_metrics_table"
     assert route["arguments"]["layer_name"] == "image_a"
+
+
+def test_route_recent_action_followup_supports_same_as_before_on_selected_image():
+    state = empty_recent_action_state()
+    state = record_recent_action(
+        state,
+        {
+            "tool_name": "apply_threshold",
+            "action_kind": "threshold",
+            "turn_id": "2",
+            "input_layers": ["image_a"],
+            "parameters": {
+                "threshold_value": 0.4,
+                "foreground_mode": "bright",
+                "foreground_mode_resolved": "bright",
+                "image_min": 0.0,
+                "image_max": 1.0,
+            },
+            "message": "Applied threshold.",
+        },
+    )
+
+    route = route_recent_action_followup(
+        "same as before, but use the selected one",
+        state,
+        selected_layer_name="image_b",
+        selected_layer_type="image",
+    )
+
+    assert route["tool"] == "apply_threshold"
+    assert route["arguments"]["layer_name"] == "image_b"
+
+
+def test_route_recent_action_followup_does_not_reuse_image_threshold_for_labels():
+    state = empty_recent_action_state()
+    state = record_recent_action(
+        state,
+        {
+            "tool_name": "apply_threshold",
+            "action_kind": "threshold",
+            "turn_id": "2",
+            "input_layers": ["image_a"],
+            "parameters": {
+                "threshold_value": 0.4,
+                "foreground_mode": "bright",
+                "foreground_mode_resolved": "bright",
+                "image_min": 0.0,
+                "image_max": 1.0,
+            },
+            "message": "Applied threshold.",
+        },
+    )
+
+    route = route_recent_action_followup("same as before but for labels", state)
+
+    assert route == {}
+
+
+def test_route_recent_action_followup_respects_without_histogram_constraint():
+    state = empty_recent_action_state()
+    state = record_recent_action(
+        state,
+        {
+            "tool_name": "apply_threshold",
+            "action_kind": "threshold",
+            "turn_id": "2",
+            "input_layers": ["image_a"],
+            "message": "Applied threshold.",
+        },
+    )
+
+    route = route_recent_action_followup("same as before without histogram", state)
+
+    assert route == {}
+
+
+def test_route_recent_action_followup_respects_explain_only_constraint():
+    state = empty_recent_action_state()
+    state = record_recent_action(
+        state,
+        {
+            "tool_name": "apply_threshold",
+            "action_kind": "threshold",
+            "turn_id": "2",
+            "input_layers": ["image_a"],
+            "parameters": {
+                "threshold_value": 0.4,
+                "foreground_mode": "bright",
+                "foreground_mode_resolved": "bright",
+                "image_min": 0.0,
+                "image_max": 1.0,
+            },
+            "message": "Applied threshold.",
+        },
+    )
+
+    route = route_recent_action_followup("just explain", state)
+
+    assert route == {}

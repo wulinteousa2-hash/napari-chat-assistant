@@ -10,6 +10,7 @@ def test_assistant_system_prompt_includes_response_examples():
     assert '"tool":"delete_layers"' in prompt
     assert '"tool":"create_analysis_montage"' in prompt
     assert "layer_binding_hints" in prompt
+    assert "intent_state, last_failed_tool_state, and followup_constraint" in prompt
     assert "img_a" in prompt
     assert "em_2d_snr_low" in prompt
     assert "selected one" in prompt

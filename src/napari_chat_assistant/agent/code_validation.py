@@ -41,9 +41,7 @@ class ValidationReport:
 def normalize_generated_code_if_needed(code_text: str, *, viewer=None) -> tuple[str, ValidationReport]:
     code = str(code_text or "").strip()
     raw_errors = validate_generated_code(code, viewer=viewer)
-    if not raw_errors.has_issues():
-        return code, raw_errors
-    repaired, repair_notes = _repair_generated_code(code)
+    repaired, repair_notes = _repair_generated_code(code, viewer=viewer)
     normalized = _normalize_escaped_multiline_code(repaired)
     if normalized == code:
         return code, raw_errors
@@ -87,7 +85,7 @@ def build_code_repair_context(user_text: str, *, viewer=None) -> dict | None:
     }
 
 
-def _repair_generated_code(code: str) -> tuple[str, list[str]]:
+def _repair_generated_code(code: str, *, viewer=None) -> tuple[str, list[str]]:
     text = str(code or "")
     repair_notes: list[str] = []
     repaired = text
@@ -109,6 +107,9 @@ def _repair_generated_code(code: str) -> tuple[str, list[str]]:
         repair_notes.append(
             "Replaced `viewer.layers[selected_layer]` with `selected_layer` because `selected_layer` is already a napari layer object."
         )
+
+    repaired, layer_lookup_notes = _repair_placeholder_layer_lookup(repaired, viewer=viewer)
+    repair_notes.extend(layer_lookup_notes)
 
     repaired, data_access_notes = _repair_layer_data_access(repaired)
     repair_notes.extend(data_access_notes)
@@ -335,7 +336,8 @@ def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:
     repair_notes: list[str] = []
     repaired = text
 
-    if not re.search(r"(?m)^\s*layer\s*=\s*selected_layer\s*$", repaired):
+    layer_assignment_pattern = r'(?m)^\s*layer\s*=\s*(?:selected_layer|viewer\.layers\[[^\]]+\])\s*$'
+    if not re.search(layer_assignment_pattern, repaired):
         return repaired, repair_notes
 
     data_attr_pattern = r"\blayer\.(shape|dtype|ndim)\b"
@@ -343,7 +345,7 @@ def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:
         return repaired, repair_notes
 
     if not re.search(r"(?m)^\s*data\s*=\s*np\.asarray\(layer\.data\)\s*$", repaired):
-        layer_assign_pattern = r"(?m)^(?P<indent>\s*)layer\s*=\s*selected_layer\s*$"
+        layer_assign_pattern = r'(?m)^(?P<indent>\s*)layer\s*=\s*(?:selected_layer|viewer\.layers\[[^\]]+\])\s*$'
 
         def insert_data_assignment(match: re.Match[str]) -> str:
             indent = match.group("indent")
@@ -359,6 +361,65 @@ def _repair_layer_data_access(code: str) -> tuple[str, list[str]]:
         )
 
     return repaired, repair_notes
+
+
+def _repair_placeholder_layer_lookup(code: str, *, viewer=None) -> tuple[str, list[str]]:
+    text = str(code or "")
+    if viewer is None:
+        return text, []
+
+    pattern = re.compile(r'viewer\.layers\[(?P<quote>["\'])(?P<name>[^"\']+)(?P=quote)\]')
+    repair_notes: list[str] = []
+    replacements: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = str(match.group("name") or "").strip()
+        replacement = replacements.get(placeholder)
+        if replacement is None:
+            replacement = _suggest_layer_replacement(placeholder, viewer=viewer)
+            replacements[placeholder] = replacement or ""
+        if replacement:
+            return f'viewer.layers["{replacement}"]'
+        return match.group(0)
+
+    repaired = pattern.sub(replace, text)
+    for placeholder, replacement in replacements.items():
+        if replacement:
+            repair_notes.append(
+                f"Replaced placeholder layer name [{placeholder}] with current viewer layer [{replacement}]."
+            )
+    return repaired, repair_notes
+
+
+def _suggest_layer_replacement(placeholder: str, *, viewer=None) -> str:
+    token = str(placeholder or "").strip().lower()
+    if not token or viewer is None:
+        return ""
+
+    expected_kind = ""
+    if token.startswith(("img_", "image_")):
+        expected_kind = "image"
+    elif token.startswith(("mask_", "labels_")):
+        expected_kind = "labels"
+    elif token.startswith(("roi_", "shape_")):
+        expected_kind = "shapes"
+    elif token.startswith("points_"):
+        expected_kind = "points"
+
+    try:
+        selected_layer = getattr(getattr(viewer.layers, "selection", None), "active", None)
+    except Exception:
+        selected_layer = None
+
+    if selected_layer is not None and expected_kind and _layer_kind(selected_layer) == expected_kind:
+        return str(getattr(selected_layer, "name", "")).strip()
+
+    for layer in getattr(viewer, "layers", []) or []:
+        if not expected_kind or _layer_kind(layer) == expected_kind:
+            name = str(getattr(layer, "name", "")).strip()
+            if name:
+                return name
+    return ""
 
 
 def validate_generated_code(code_text: str, *, viewer=None) -> ValidationReport:
@@ -478,6 +539,8 @@ def _validate_ast(tree: ast.AST, *, viewer=None, report: ValidationReport) -> No
             layer_attr_error = _validate_layer_attribute_access(node)
             if layer_attr_error:
                 report.warnings.append(layer_attr_error)
+    background_errors = _validate_background_compute_mutations(tree)
+    report.errors.extend(background_errors)
 
 
 def _track_assignment_state(node: ast.stmt, uint8_arrays: set[str], unsafe_int_arrays: set[str]) -> None:
@@ -763,3 +826,72 @@ def _find_statistical_name_in_expr(node: ast.AST, stat_value_names: set[str]) ->
         if isinstance(child, ast.Name) and child.id in stat_value_names:
             return child.id
     return None
+
+
+def _validate_background_compute_mutations(tree: ast.AST) -> list[str]:
+    function_defs: dict[str, ast.FunctionDef] = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "run_in_background":
+            continue
+        if not node.args:
+            continue
+        compute_arg = node.args[0]
+        if not isinstance(compute_arg, ast.Name):
+            continue
+        compute_def = function_defs.get(compute_arg.id)
+        if compute_def is None:
+            continue
+        if _function_contains_viewer_mutation(compute_def):
+            errors.append(
+                f"Background compute function [{compute_def.name}] contains viewer mutations. "
+                "Keep compute() pure and move viewer.add_*/layer edits into the apply step."
+            )
+    return errors
+
+
+def _function_contains_viewer_mutation(func: ast.FunctionDef) -> bool:
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call) and _is_viewer_mutation_call(node):
+            return True
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(_is_layer_property_assignment_target(target) for target in targets):
+                return True
+    return False
+
+
+def _is_viewer_mutation_call(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name) and func.value.id == "viewer":
+            return func.attr.startswith("add_") or func.attr in {"open", "reset_view"}
+        if isinstance(func.value, ast.Attribute) and isinstance(func.value.value, ast.Name):
+            if func.value.value.id == "viewer" and func.value.attr == "layers" and func.attr in {"remove", "clear", "move"}:
+                return True
+    return False
+
+
+def _is_layer_property_assignment_target(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Attribute):
+        return False
+    if not isinstance(node.value, ast.Name):
+        return False
+    if node.value.id not in {"layer", "selected_layer"}:
+        return False
+    return node.attr in {
+        "data",
+        "scale",
+        "translate",
+        "rotate",
+        "visible",
+        "opacity",
+        "contrast_limits",
+        "metadata",
+        "name",
+    }

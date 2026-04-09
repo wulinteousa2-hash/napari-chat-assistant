@@ -370,7 +370,7 @@ run_in_background(compute, apply_result, label="Generate RGB cells 3D SNR sweep"
         "tags": ["demo", "rgb", "fluorescent", "3d", "snr", "labels"],
     },
     {
-        "title": "Demo Pack: Messy Masks 2D/3D",
+        "title": "Mask Cleanup 2D/3D",
         "code": """
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, generate_binary_structure

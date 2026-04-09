@@ -307,6 +307,416 @@ run_in_background(compute, apply_result, label="Generate synthetic blob image")
 """.strip(),
     },
     {
+        "id": "data_optics_resolution_panel_demo",
+        "branch": "plugin_code",
+        "template_type": "code",
+        "title": "Optics Resolution Panel Demo",
+        "category": "Data Setup",
+        "description": "Generate an education-first diffraction and PSF demo with a tiled napari panel stack across NA conditions.",
+        "tags": ["data", "education", "optics", "diffraction", "psf", "resolution", "image-formation"],
+        "best_for": "Teaching how NA changes the pupil, PSF, and resolvability of point pairs and gratings in one interactive stack.",
+        "suggested_followup": "Ask chat to adapt the specimen, wavelength, NA list, or panel layout for a lecture-specific example.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": False,
+            "uses_run_in_background": True,
+        },
+        "code": """
+import numpy as np
+
+
+SIZE = 512
+FOV_UM = 25.6
+LAMBDA_UM = 0.55
+NA_VALUES = [0.12, 0.20, 0.35, 0.55, 0.80]
+GAMMA_DISPLAY = 0.7
+
+
+def normalize01(x):
+    x = np.asarray(x, dtype=np.float32)
+    x = x - np.min(x)
+    x = x / (np.max(x) + 1e-12)
+    return x
+
+
+def gamma_map(x, gamma=0.7):
+    x = normalize01(x)
+    return np.power(x, float(gamma)).astype(np.float32)
+
+
+def make_frequency_grid(size, dx_um):
+    fx = np.fft.fftshift(np.fft.fftfreq(size, d=dx_um))
+    fy = np.fft.fftshift(np.fft.fftfreq(size, d=dx_um))
+    fyy, fxx = np.meshgrid(fy, fx, indexing="ij")
+    fr = np.sqrt(fxx**2 + fyy**2)
+    return fxx, fyy, fr
+
+
+def circular_pupil_from_na(size, dx_um, wavelength_um, na):
+    _, _, fr = make_frequency_grid(size, dx_um)
+    fc_amp = float(na) / float(wavelength_um)
+    pupil = (fr <= fc_amp).astype(np.float32)
+    return pupil, fc_amp
+
+
+def psf_from_pupil(pupil):
+    field = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(pupil)))
+    psf = np.abs(field) ** 2
+    psf = normalize01(psf)
+    return psf.astype(np.float32)
+
+
+def otf_from_psf(psf):
+    return np.fft.fft2(np.fft.ifftshift(psf))
+
+
+def convolve_with_psf(obj, psf):
+    otf = otf_from_psf(psf)
+    img = np.fft.fftshift(np.fft.ifft2(np.fft.fft2(np.fft.ifftshift(obj)) * otf)).real
+    img = np.clip(img, 0, None)
+    return normalize01(img).astype(np.float32)
+
+
+def um_to_px(distance_um, dx_um):
+    return max(1, int(round(float(distance_um) / float(dx_um))))
+
+
+def draw_disk(img, cy, cx, radius_px, value=1.0):
+    yy, xx = np.indices(img.shape)
+    rr2 = (yy - cy) ** 2 + (xx - cx) ** 2
+    img[rr2 <= radius_px**2] = value
+
+
+def draw_rect(img, y0, x0, h, w, value=1.0):
+    y1 = max(0, min(img.shape[0], y0 + h))
+    x1 = max(0, min(img.shape[1], x0 + w))
+    y0 = max(0, min(img.shape[0], y0))
+    x0 = max(0, min(img.shape[1], x0))
+    if y1 > y0 and x1 > x0:
+        img[y0:y1, x0:x1] = value
+
+
+def make_resolution_specimen(size, dx_um, wavelength_um, na_ref):
+    obj = np.zeros((size, size), dtype=np.float32)
+
+    abbe_um = wavelength_um / (2.0 * na_ref)
+    rayleigh_um = 0.61 * wavelength_um / na_ref
+
+    point_spacings_um = [0.7 * rayleigh_um, 1.0 * rayleigh_um, 1.5 * rayleigh_um]
+    line_periods_um = [0.7 * abbe_um, 1.0 * abbe_um, 1.5 * abbe_um]
+
+    left_x = size // 5
+    y_positions = [size // 5, size // 2, 4 * size // 5]
+    disk_radius_px = max(2, um_to_px(0.12 * rayleigh_um, dx_um))
+
+    for sep_um, y0 in zip(point_spacings_um, y_positions):
+        sep_px = um_to_px(sep_um, dx_um)
+        half = max(1, sep_px // 2)
+        draw_disk(obj, y0, left_x - half, disk_radius_px, value=1.0)
+        draw_disk(obj, y0, left_x + half, disk_radius_px, value=1.0)
+
+    x0 = size // 2 + 30
+    patch_w = 110
+    patch_h = 90
+    y_tops = [60, 210, 360]
+
+    for period_um, y_top in zip(line_periods_um, y_tops):
+        period_px = max(2, um_to_px(period_um, dx_um))
+        bar_px = max(1, period_px // 2)
+        for k in range(0, patch_w, period_px):
+            draw_rect(obj, y_top, x0 + k, patch_h, bar_px, value=1.0)
+
+    return obj, {
+        "abbe_ref_um": float(abbe_um),
+        "rayleigh_ref_um": float(rayleigh_um),
+        "point_spacings_um": point_spacings_um,
+        "line_periods_um": line_periods_um,
+    }
+
+
+def central_line_profile(img):
+    line = img[img.shape[0] // 2, :].astype(np.float32)
+    return normalize01(line)
+
+
+def make_line_profile_image(line, height=140):
+    w = len(line)
+    canvas = np.zeros((height, w), dtype=np.float32)
+    ys = (height - 1 - line * (height - 1)).astype(np.int32)
+    xs = np.arange(w)
+    canvas[ys, xs] = 1.0
+    for dy in (-1, 0, 1):
+        yy = np.clip(ys + dy, 0, height - 1)
+        canvas[yy, xs] = 1.0
+    return canvas.astype(np.float32)
+
+
+def radial_profile(img):
+    yy, xx = np.indices(img.shape)
+    cy = img.shape[0] // 2
+    cx = img.shape[1] // 2
+    rr = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2).astype(np.int32)
+    n = rr.max() + 1
+    prof = np.zeros(n, dtype=np.float64)
+    cnt = np.zeros(n, dtype=np.int64)
+    np.add.at(prof, rr, img)
+    np.add.at(cnt, rr, 1)
+    valid = cnt > 0
+    prof[valid] /= cnt[valid]
+    return normalize01(prof).astype(np.float32)
+
+
+def make_profile_image(profile, height=140):
+    w = len(profile)
+    canvas = np.zeros((height, w), dtype=np.float32)
+    ys = (height - 1 - profile * (height - 1)).astype(np.int32)
+    xs = np.arange(w)
+    canvas[ys, xs] = 1.0
+    for dy in (-1, 0, 1):
+        yy = np.clip(ys + dy, 0, height - 1)
+        canvas[yy, xs] = 1.0
+    return canvas.astype(np.float32)
+
+
+def crop_center(a, out_h, out_w):
+    cy = a.shape[0] // 2
+    cx = a.shape[1] // 2
+    y0 = max(0, cy - out_h // 2)
+    x0 = max(0, cx - out_w // 2)
+    cropped = a[y0:y0 + out_h, x0:x0 + out_w]
+    out = np.zeros((out_h, out_w), dtype=np.float32)
+    h = min(out_h, cropped.shape[0])
+    w = min(out_w, cropped.shape[1])
+    out[:h, :w] = cropped[:h, :w]
+    return out
+
+
+def make_panel(obj, img, pupil, psf, line_img, radial_img):
+    tile_h = 170
+    tile_w = 170
+
+    pupil_view = crop_center(pupil, tile_h, tile_w)
+    psf_view = crop_center(gamma_map(np.log10(psf + 1e-6), 1.0), tile_h, tile_w)
+    obj_view = crop_center(gamma_map(obj, GAMMA_DISPLAY), tile_h, tile_w)
+    img_view = crop_center(gamma_map(img, GAMMA_DISPLAY), tile_h, tile_w)
+
+    line_tile = np.zeros((tile_h, tile_w), dtype=np.float32)
+    radial_tile = np.zeros((tile_h, tile_w), dtype=np.float32)
+
+    lh = min(tile_h, line_img.shape[0])
+    lw = min(tile_w, line_img.shape[1])
+    line_tile[:lh, :lw] = line_img[:lh, :lw]
+
+    rh = min(tile_h, radial_img.shape[0])
+    rw = min(tile_w, radial_img.shape[1])
+    radial_tile[:rh, :rw] = radial_img[:rh, :rw]
+
+    top = np.concatenate([obj_view, img_view, psf_view], axis=1)
+    bottom = np.concatenate([pupil_view, line_tile, radial_tile], axis=1)
+    panel = np.concatenate([top, bottom], axis=0)
+
+    panel[tile_h - 1:tile_h + 1, :] = 1.0
+    panel[:, tile_w - 1:tile_w + 1] = 1.0
+    panel[:, 2 * tile_w - 1:2 * tile_w + 1] = 1.0
+
+    return normalize01(panel)
+
+
+def compute():
+    dx_um = FOV_UM / SIZE
+    na_ref = NA_VALUES[len(NA_VALUES) // 2]
+    specimen, specimen_meta = make_resolution_specimen(SIZE, dx_um, LAMBDA_UM, na_ref=na_ref)
+
+    panel_stack = []
+    image_stack = []
+    psf_stack = []
+    pupil_stack = []
+    object_stack = []
+    line_profile_stack = []
+    radial_profile_stack = []
+    summary_rows = []
+
+    for na in NA_VALUES:
+        pupil, fc_amp = circular_pupil_from_na(SIZE, dx_um, wavelength_um=LAMBDA_UM, na=na)
+        psf = psf_from_pupil(pupil)
+        img = convolve_with_psf(specimen, psf)
+
+        line = central_line_profile(img)
+        line_img = make_line_profile_image(line, height=140)
+        radial = radial_profile(psf)
+        radial_img = make_profile_image(radial, height=140)
+        panel = make_panel(specimen, img, pupil, psf, line_img, radial_img)
+
+        object_stack.append(gamma_map(specimen, GAMMA_DISPLAY))
+        image_stack.append(gamma_map(img, GAMMA_DISPLAY))
+        psf_stack.append(gamma_map(np.log10(psf + 1e-6), 1.0))
+        pupil_stack.append(pupil.astype(np.float32))
+        line_profile_stack.append(line_img.astype(np.float32))
+        radial_profile_stack.append(radial_img.astype(np.float32))
+        panel_stack.append(panel.astype(np.float32))
+
+        abbe_um = LAMBDA_UM / (2.0 * na)
+        rayleigh_um = 0.61 * LAMBDA_UM / na
+        fc_incoherent = 2.0 * na / LAMBDA_UM
+        summary_rows.append(
+            {
+                "na": float(na),
+                "abbe_um": float(abbe_um),
+                "rayleigh_um": float(rayleigh_um),
+                "fc_amp": float(fc_amp),
+                "fc_incoherent": float(fc_incoherent),
+            }
+        )
+
+    return {
+        "dx_um": dx_um,
+        "na_values": [float(v) for v in NA_VALUES],
+        "specimen_meta": specimen_meta,
+        "summary_rows": summary_rows,
+        "panel_stack": np.stack(panel_stack, axis=0).astype(np.float32),
+        "image_stack": np.stack(image_stack, axis=0).astype(np.float32),
+        "psf_stack": np.stack(psf_stack, axis=0).astype(np.float32),
+        "pupil_stack": np.stack(pupil_stack, axis=0).astype(np.float32),
+        "object_stack": np.stack(object_stack, axis=0).astype(np.float32),
+        "line_profile_stack": np.stack(line_profile_stack, axis=0).astype(np.float32),
+        "radial_profile_stack": np.stack(radial_profile_stack, axis=0).astype(np.float32),
+    }
+
+
+def add_stack(data, *, name, colormap="gray", visible=False, scale=None):
+    layer = viewer.add_image(
+        data,
+        name=name,
+        colormap=colormap,
+        visible=visible,
+        contrast_limits=(0.0, 1.0),
+        scale=scale,
+    )
+    layer.metadata = {
+        "na_values": [float(v) for v in NA_VALUES],
+        "demo_kind": "optics_resolution",
+    }
+    return layer
+
+
+def apply_result(payload):
+    scale = (1.0, float(payload["dx_um"]), float(payload["dx_um"]))
+
+    add_stack(
+        payload["panel_stack"],
+        name="template_optics_resolution_panel_stack",
+        colormap="gray",
+        visible=True,
+        scale=scale,
+    )
+    add_stack(
+        payload["image_stack"],
+        name="template_optics_resolution_image_stack",
+        colormap="gray",
+        visible=False,
+        scale=scale,
+    )
+    add_stack(
+        payload["object_stack"],
+        name="template_optics_resolution_object_stack",
+        colormap="magenta",
+        visible=False,
+        scale=scale,
+    )
+    add_stack(
+        payload["psf_stack"],
+        name="template_optics_resolution_psf_stack",
+        colormap="gray",
+        visible=False,
+        scale=scale,
+    )
+    add_stack(
+        payload["pupil_stack"],
+        name="template_optics_resolution_pupil_stack",
+        colormap="gray",
+        visible=False,
+        scale=scale,
+    )
+    add_stack(
+        payload["line_profile_stack"],
+        name="template_optics_resolution_line_profile_stack",
+        colormap="cyan",
+        visible=False,
+        scale=scale,
+    )
+    add_stack(
+        payload["radial_profile_stack"],
+        name="template_optics_resolution_radial_profile_stack",
+        colormap="green",
+        visible=False,
+        scale=scale,
+    )
+
+    try:
+        viewer.dims.set_axis_label(0, "NA condition")
+    except Exception:
+        pass
+
+    try:
+        viewer.dims.set_point(0, 0)
+    except Exception:
+        pass
+
+    try:
+        viewer.reset_view()
+    except Exception:
+        pass
+
+    meta = payload["specimen_meta"]
+    print("Diffraction-limited optical resolution demo loaded.")
+    print("")
+    print("Use the first axis slider to move across NA conditions.")
+    print(f"Image size: {SIZE} x {SIZE}")
+    print(f"Field of view: {FOV_UM:.3f} um")
+    print(f"Object-plane pixel size: {payload['dx_um']:.5f} um/pixel")
+    print(f"Wavelength: {LAMBDA_UM:.3f} um")
+    print("")
+    print("Specimen design (fixed object):")
+    print(f"Reference NA used for specimen design: {NA_VALUES[len(NA_VALUES) // 2]:.2f}")
+    print(f"Reference Abbe limit:    {meta['abbe_ref_um']:.4f} um")
+    print(f"Reference Rayleigh limit: {meta['rayleigh_ref_um']:.4f} um")
+    print("")
+    print("Point-pair spacings (relative to Rayleigh at reference NA):")
+    for v in meta["point_spacings_um"]:
+        print(f"  {v:.4f} um")
+    print("Line-grating periods (relative to Abbe at reference NA):")
+    for v in meta["line_periods_um"]:
+        print(f"  {v:.4f} um")
+    print("")
+    print("Per slider position:")
+    for i, row in enumerate(payload["summary_rows"]):
+        print(
+            f"condition {i}: NA={row['na']:.2f} | "
+            f"Abbe={row['abbe_um']:.4f} um | "
+            f"Rayleigh={row['rayleigh_um']:.4f} um | "
+            f"coherent cutoff={row['fc_amp']:.3f} cyc/um | "
+            f"incoherent cutoff={row['fc_incoherent']:.3f} cyc/um"
+        )
+    print("")
+    print("Panel layout:")
+    print("top-left    : object (point pairs + line gratings)")
+    print("top-middle  : diffraction-limited image")
+    print("top-right   : log PSF")
+    print("bottom-left : circular pupil in frequency space")
+    print("bottom-mid  : central image line profile")
+    print("bottom-right: radial PSF profile")
+    print("")
+    print("Teaching message:")
+    print("Resolution is limited because finite NA truncates spatial frequencies.")
+    print("As NA decreases, the pupil gets smaller in frequency space, the PSF broadens,")
+    print("and fine specimen structure disappears in the image.")
+
+
+run_in_background(compute, apply_result, label="Generate optics resolution panel demo")
+""".strip(),
+    },
+    {
         "id": "inspect_selected_layer_summary",
         "branch": "plugin_code",
         "template_type": "code",
@@ -1455,11 +1865,11 @@ DEMO_PACK_TEMPLATE_METADATA: dict[str, dict[str, Any]] = {
         "best_for": "Testing 3D multi-channel workflows, layer comparison, and label analysis.",
         "suggested_followup": "Ask chat to extract one channel, measure labels, or add a projection template on top.",
     },
-    "Demo Pack: Messy Masks 2D/3D": {
+    "Mask Cleanup 2D/3D": {
         "id": "data_demo_messy_masks_2d_3d",
-        "description": "Generate clean, messy, and filled-target labels for both 2D and 3D mask-cleanup workflows.",
-        "best_for": "Testing morphology, cleanup, hole filling, and label post-processing templates.",
-        "suggested_followup": "Ask chat to measure cleanup differences or build a mask repair workflow around these layers.",
+        "description": "Generate clean, degraded, and filled-target masks for 2D and 3D cleanup workflows.",
+        "best_for": "Testing morphology, hole filling, cleanup, and mask post-processing workflows.",
+        "suggested_followup": "Ask chat to compare the masks, repair the degraded ones, or measure cleanup differences.",
     },
 }
 

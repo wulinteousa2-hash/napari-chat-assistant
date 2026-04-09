@@ -58,6 +58,7 @@ from napari_chat_assistant.agent.code_validation import (
 )
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.agent.followup_semantics import parse_followup_constraint
 from napari_chat_assistant.agent.logging_utils import (
     APP_LOG_PATH,
     CRASH_LOG_PATH,
@@ -65,6 +66,15 @@ from napari_chat_assistant.agent.logging_utils import (
     append_telemetry_event,
     enable_fault_logging,
     get_plugin_logger,
+)
+from napari_chat_assistant.agent.intent_state import (
+    empty_failed_tool_state,
+    empty_intent_state,
+    extract_turn_intent,
+    merge_intent_state,
+    remember_failed_tool,
+    should_block_tool,
+    should_skip_local_workflow_route,
 )
 from napari_chat_assistant.agent.prompt_library import (
     clear_code_library,
@@ -560,6 +570,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     pending_action_state = empty_pending_action()
     session_memory_state = load_session_memory()
     recent_action_state = empty_recent_action_state()
+    intent_state = empty_intent_state()
+    last_failed_tool_state = empty_failed_tool_state()
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     template_library_state = template_library_payload()
@@ -848,6 +860,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.0.3":
+            return (
+                f"**What's New In {current}**\n"
+                "- This plugin version was updated.\n"
+                "- Follow-up conversation handling is better for short prompts like `same as before`, `but for labels`, and `just explain`.\n"
+                "- `Refine My Code` is stricter about placeholder layer mismatches and unsafe viewer mutations.\n"
+                "- Added an optics resolution teaching demo and renamed `Mask Cleanup 2D/3D`.\n"
+                "- See the changelog for full details.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.0.2":
             return (
                 f"**What's New In {current}**\n"
@@ -4864,10 +4886,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
         text = prompt.toPlainText().strip()
         if not text:
             return
-        nonlocal session_memory_state
+        nonlocal session_memory_state, intent_state, last_failed_tool_state
         turn_id = uuid.uuid4().hex
         request_started_at = time.perf_counter()
         current_profile = selected_layer_profile()
+        intent_state = merge_intent_state(
+            intent_state,
+            extract_turn_intent(text, last_failed_tool_state=last_failed_tool_state),
+        )
         session_memory_state = update_session_goal(session_memory_state, text)
         session_memory_state = set_active_dataset_focus(
             session_memory_state,
@@ -4961,6 +4987,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             )
             return
         code_repair_context = build_code_repair_context(text, viewer=viewer)
+        followup_constraint = parse_followup_constraint(text)
         ui_help_reply = None
         if bool(ui_state.get("ui_help_enabled", False)):
             ui_help_reply = None if code_repair_context is not None else answer_ui_question(text)
@@ -5098,7 +5125,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_chat_message("assistant", "Model settings are incomplete. Choose a model and open Connection if you need to adjust the Base URL.")
             set_status("Status: missing saved model settings", ok=False)
             return
-        local_workflow_route = None if code_repair_context is not None else route_local_workflow_prompt(text, selected_layer_profile())
+        local_workflow_route = None
+        if code_repair_context is None and not should_skip_local_workflow_route(intent_state):
+            local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
         if isinstance(local_workflow_route, dict):
             set_pending_action(None)
             route_action = str(local_workflow_route.get("action", "")).strip().lower()
@@ -5124,54 +5153,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 )
                 return
             tool_name = str(local_workflow_route.get("tool", "")).strip()
-            arguments = local_workflow_route.get("arguments", {})
-            tool_message = str(local_workflow_route.get("message", "")).strip()
-            prepared = prepare_tool_job(viewer, tool_name, arguments if isinstance(arguments, dict) else {})
-            if prepared.get("mode") == "immediate":
-                result_message = str(prepared.get("message", "")).strip() or f"Could not run [{tool_name}]."
-                append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
-                append_log(f"Handled request via local workflow route: {tool_name}")
-                set_status(f"Status: {tool_name} completed", ok=True)
-                remember_recent_action(
-                    tool_name=tool_name,
-                    turn_id_value=turn_id,
-                    message=f"{tool_message}\n{result_message}" if tool_message else result_message,
-                )
-                record_telemetry(
-                    "turn_completed",
-                    {
-                        "turn_id": turn_id,
-                        "model": "local_workflow_router",
-                        "base_url": "",
-                        "prompt_hash": prompt_hash(text),
-                        "prompt_category": "local_workflow_route",
-                        "response_action": "tool",
-                        "tool_name": tool_name,
-                        "tool_success": True,
-                        "pending_code_generated": False,
-                        **selected_layer_snapshot(),
-                    },
-                )
+            if should_block_tool(intent_state, tool_name):
+                local_workflow_route = None
             else:
-                job = prepared["job"]
-                start_wait_indicator(phase=f"processing {tool_name}")
-                set_status(f"Status: running tool {tool_name}", ok=None)
-
-                @thread_worker(ignore_errors=True)
-                def run_local_workflow_tool():
-                    return run_tool_job(job)
-
-                tool_worker = run_local_workflow_tool()
-                active_workers.append(tool_worker)
-
-                def local_tool_finish():
-                    stop_wait_indicator()
-                    if tool_worker in active_workers:
-                        active_workers.remove(tool_worker)
-
-                def local_tool_returned(tool_result):
-                    refresh_context()
-                    result_message = apply_tool_job_result(viewer, tool_result)
+                arguments = local_workflow_route.get("arguments", {})
+                tool_message = str(local_workflow_route.get("message", "")).strip()
+                prepared = prepare_tool_job(viewer, tool_name, arguments if isinstance(arguments, dict) else {})
+                if prepared.get("mode") == "immediate":
+                    result_message = str(prepared.get("message", "")).strip() or f"Could not run [{tool_name}]."
                     append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
                     append_log(f"Handled request via local workflow route: {tool_name}")
                     set_status(f"Status: {tool_name} completed", ok=True)
@@ -5179,8 +5168,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         tool_name=tool_name,
                         turn_id_value=turn_id,
                         message=f"{tool_message}\n{result_message}" if tool_message else result_message,
-                        tool_result=tool_result,
                     )
+                    last_failed_tool_state = remember_failed_tool(tool_name, result_message)
                     record_telemetry(
                         "turn_completed",
                         {
@@ -5196,20 +5185,68 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             **selected_layer_snapshot(),
                         },
                     )
-                    local_tool_finish()
+                else:
+                    job = prepared["job"]
+                    start_wait_indicator(phase=f"processing {tool_name}")
+                    set_status(f"Status: running tool {tool_name}", ok=None)
 
-                def local_tool_error(*args):
-                    error_text = format_worker_error(*args)
-                    logger.exception("Local workflow route failed: %s | %s", tool_name, error_text)
-                    append_chat_message("assistant", f"{tool_name} failed:\n{error_text}")
-                    append_log(f"Local workflow route failed: {tool_name} | {error_text}")
-                    set_status(f"Status: {tool_name} failed", ok=False)
-                    local_tool_finish()
+                    @thread_worker(ignore_errors=True)
+                    def run_local_workflow_tool():
+                        return run_tool_job(job)
 
-                tool_worker.returned.connect(local_tool_returned)
-                tool_worker.errored.connect(local_tool_error)
-                tool_worker.start()
-            return
+                    tool_worker = run_local_workflow_tool()
+                    active_workers.append(tool_worker)
+
+                    def local_tool_finish():
+                        stop_wait_indicator()
+                        if tool_worker in active_workers:
+                            active_workers.remove(tool_worker)
+
+                    def local_tool_returned(tool_result):
+                        nonlocal last_failed_tool_state
+                        refresh_context()
+                        result_message = apply_tool_job_result(viewer, tool_result)
+                        append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
+                        append_log(f"Handled request via local workflow route: {tool_name}")
+                        set_status(f"Status: {tool_name} completed", ok=True)
+                        remember_recent_action(
+                            tool_name=tool_name,
+                            turn_id_value=turn_id,
+                            message=f"{tool_message}\n{result_message}" if tool_message else result_message,
+                            tool_result=tool_result,
+                        )
+                        last_failed_tool_state = remember_failed_tool(tool_name, result_message)
+                        record_telemetry(
+                            "turn_completed",
+                            {
+                                "turn_id": turn_id,
+                                "model": "local_workflow_router",
+                                "base_url": "",
+                                "prompt_hash": prompt_hash(text),
+                                "prompt_category": "local_workflow_route",
+                                "response_action": "tool",
+                                "tool_name": tool_name,
+                                "tool_success": True,
+                                "pending_code_generated": False,
+                                **selected_layer_snapshot(),
+                            },
+                        )
+                        local_tool_finish()
+
+                    def local_tool_error(*args):
+                        nonlocal last_failed_tool_state
+                        error_text = format_worker_error(*args)
+                        logger.exception("Local workflow route failed: %s | %s", tool_name, error_text)
+                        append_chat_message("assistant", f"{tool_name} failed:\n{error_text}")
+                        append_log(f"Local workflow route failed: {tool_name} | {error_text}")
+                        set_status(f"Status: {tool_name} failed", ok=False)
+                        last_failed_tool_state = remember_failed_tool(tool_name, error_text)
+                        local_tool_finish()
+
+                    tool_worker.returned.connect(local_tool_returned)
+                    tool_worker.errored.connect(local_tool_error)
+                    tool_worker.start()
+                return
         saved_settings["base_url"] = base_url
         saved_settings["model"] = model_name
         turn_prompt_hash = prompt_hash(text)
@@ -5241,6 +5278,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 user_payload={
                     "viewer_context": viewer_payload,
                     "session_memory": build_session_memory_payload(session_memory_state, viewer_payload.get("selected_layer_profile")),
+                    "intent_state": intent_state,
+                    "last_failed_tool_state": last_failed_tool_state,
+                    "followup_constraint": followup_constraint,
                     "code_repair_context": code_repair_context,
                     "user_message": text,
                 },
@@ -5257,6 +5297,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 active_workers.remove(worker)
 
         def on_returned(reply):
+            nonlocal last_failed_tool_state
             try:
                 parsed = normalize_model_response(reply)
             except Exception as exc:
@@ -5272,6 +5313,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if action == "tool":
                 set_pending_action(None)
                 tool_name = str(parsed.get("tool", "")).strip()
+                if should_block_tool(intent_state, tool_name):
+                    replace_last_assistant(
+                        f"Blocked built-in tool [{tool_name}] because it conflicts with your current request constraints. "
+                        "Please ask for custom code or restate the request if you want the built-in tool anyway."
+                    )
+                    set_status("Status: blocked incompatible built-in tool", ok=False)
+                    append_log(f"Blocked tool by intent-state guard: {tool_name}")
+                    finish()
+                    return
                 arguments = parsed.get("arguments", {})
                 tool_message = str(parsed.get("message", "")).strip()
                 prepared = prepare_tool_job(viewer, tool_name, arguments if isinstance(arguments, dict) else {})
@@ -5291,6 +5341,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         return
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    last_failed_tool_state = remember_failed_tool(tool_name, result_message)
                     latency_ms = int((time.perf_counter() - request_started_at) * 1000)
                     last_turn_metrics.update(
                         {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
@@ -5345,10 +5396,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     finish()
 
                 def tool_returned(tool_result):
-                    nonlocal session_memory_state
+                    nonlocal session_memory_state, last_failed_tool_state
                     result_message = apply_tool_job_result(viewer, tool_result)
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
+                    last_failed_tool_state = remember_failed_tool(tool_name, result_message)
                     latency_ms = int((time.perf_counter() - request_started_at) * 1000)
                     last_turn_metrics.update(
                         {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
@@ -5386,9 +5438,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     tool_finish()
 
                 def tool_error(*args):
+                    nonlocal last_failed_tool_state
                     error_text = format_worker_error(*args)
                     logger.exception("Tool execution failed: %s | %s", tool_name, error_text)
                     replace_last_assistant(f"Tool execution failed: {error_text}")
+                    last_failed_tool_state = remember_failed_tool(tool_name, error_text)
                     latency_ms = int((time.perf_counter() - request_started_at) * 1000)
                     last_turn_metrics.update(
                         {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Callable
 
+from napari_chat_assistant.agent.followup_semantics import parse_followup_constraint
+
 
 MAX_RECENT_ACTIONS = 5
 
@@ -213,6 +215,15 @@ def route_recent_action_followup(
     source = " ".join(str(text or "").strip().lower().split())
     if not source:
         return {}
+    followup = parse_followup_constraint(text)
+    if str(followup.get("requested_mode", "")).strip() in {"reply", "code"}:
+        return {}
+    if "widget" in {str(item).strip() for item in followup.get("avoid_tools", []) if str(item).strip()}:
+        if _looks_like_roi_handoff_followup(source):
+            return {}
+    if "histogram" in {str(item).strip() for item in followup.get("avoid_tools", []) if str(item).strip()}:
+        if _looks_like_histogram_handoff_followup(source):
+            return {}
 
     selected_name = str(selected_layer_name or "").strip()
     selected_type = str(selected_layer_type or "").strip().lower()
@@ -223,10 +234,16 @@ def route_recent_action_followup(
         if action:
             return refine_threshold_action(action, direction)
 
-    if _looks_like_same_settings_followup(source):
+    if _looks_like_same_settings_followup(source) or bool(followup.get("reuse_previous")):
         action = latest_recent_action(data, lambda item: item.get("action_kind") == "threshold")
         if action:
-            route = _rerun_same_threshold_settings(action, source, selected_layer_name=selected_name, selected_layer_type=selected_type)
+            route = _rerun_same_threshold_settings(
+                action,
+                source,
+                selected_layer_name=selected_name,
+                selected_layer_type=selected_type,
+                semantic_followup=followup,
+            )
             if route:
                 return route
 
@@ -337,6 +354,7 @@ def _rerun_same_threshold_settings(
     *,
     selected_layer_name: str = "",
     selected_layer_type: str = "",
+    semantic_followup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = normalize_recent_action(action)
     if item.get("action_kind") != "threshold":
@@ -351,13 +369,19 @@ def _rerun_same_threshold_settings(
     if mode not in {"bright", "dim"}:
         return {}
 
+    followup = dict(semantic_followup or {})
+    requested_target = str(followup.get("change_target", "")).strip().lower()
+    if requested_target and requested_target != "image":
+        return {}
+
     recent_input_layers = list(item.get("input_layers", []) or [])
     recent_image_name = recent_input_layers[0] if recent_input_layers else ""
     target_image_name = _resolve_recent_image_target(
         item,
         selected_layer_name=selected_layer_name,
         selected_layer_type=selected_layer_type,
-        prefer_selected=_prefers_selected_image(source),
+        prefer_selected=_prefers_selected_image(source)
+        or str(followup.get("target_layer_reference", "")).strip().lower() == "selected_layer",
     )
     if not target_image_name:
         return {}
