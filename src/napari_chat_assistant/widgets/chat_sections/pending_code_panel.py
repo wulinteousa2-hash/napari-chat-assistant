@@ -20,9 +20,8 @@ class PendingCodePanel(QWidget):
         self.pending_code_label.setStyleSheet("QLabel { color: #c7d2fe; padding: 2px 0; }")
 
         self.help_btn = QPushButton("Help")
-        self.help_btn.setToolTip("Open prompt tips and UI-help controls.")
+        self.help_btn.setToolTip("Open help, version notes, bug reporting, and UI-help controls.")
         self.help_menu = QMenu(self.help_btn)
-        self.help_prompt_tips_action = self.help_menu.addAction("Prompt Tips")
         self.help_whats_new_action = self.help_menu.addAction("What's New")
         self.help_about_action = self.help_menu.addAction("About")
         self.help_report_bug_action = self.help_menu.addAction("Report Bug")

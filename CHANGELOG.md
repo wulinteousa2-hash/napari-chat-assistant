@@ -4,7 +4,9 @@ All notable user-facing changes to `napari-chat-assistant` should be documented 
 
 ## 2.0.2
 
-- Fixed a Library navigation bug where opening `Actions` from `Templates` could leave the `Templates` button inactive until the user clicked a different tab first.
+- Fixed a Library navigation bug where opening `Actions` from `Templates` could leave `Templates` inactive until the user clicked a different tab first.
+- Removed the old `Help` -> `Prompt Tips` entry.
+- `Shortcuts` can now collapse or expand so users can hide it when they want to focus on chat.
 
 ## 2.0.1
 

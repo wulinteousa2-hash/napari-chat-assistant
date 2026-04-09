@@ -304,6 +304,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     shortcuts_panel = ShortcutsPanel()
     shortcuts_group = shortcuts_panel
+    shortcuts_content = shortcuts_panel.shortcuts_content
     shortcuts_layout = shortcuts_panel.shortcuts_layout
     shortcuts_hint = shortcuts_panel.shortcuts_hint
     shortcuts_grid = shortcuts_panel.shortcuts_grid
@@ -314,6 +315,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
     shortcuts_save_btn = shortcuts_panel.shortcuts_save_btn
     shortcuts_load_btn = shortcuts_panel.shortcuts_load_btn
     shortcuts_clear_btn = shortcuts_panel.shortcuts_clear_btn
+    shortcuts_group.setCheckable(True)
+    shortcuts_group.setChecked(bool(ui_state.get("shortcuts_group_open", True)))
+    shortcuts_content.setVisible(shortcuts_group.isChecked())
     left_layout.addWidget(shortcuts_group, 0)
 
     log_group = QGroupBox("Session")
@@ -420,7 +424,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     pending_code_panel = PendingCodePanel(ui_help_enabled=bool(ui_state.get("ui_help_enabled", False)))
     pending_code_label = pending_code_panel.pending_code_label
     help_btn = pending_code_panel.help_btn
-    help_prompt_tips_action = pending_code_panel.help_prompt_tips_action
     help_whats_new_action = pending_code_panel.help_whats_new_action
     help_about_action = pending_code_panel.help_about_action
     help_report_bug_action = pending_code_panel.help_report_bug_action
@@ -687,6 +690,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def save_shortcuts() -> None:
         ui_state["shortcuts_action_ids"] = [str(action_id).strip() for action_id in shortcut_action_ids if str(action_id).strip()]
         ui_state["shortcuts_slot_count"] = max(6, int(shortcut_slot_count))
+        save_ui_state(ui_state)
+
+    def toggle_shortcuts_group(checked: bool) -> None:
+        shortcuts_content.setVisible(bool(checked))
+        ui_state["shortcuts_group_open"] = bool(checked)
         save_ui_state(ui_state)
 
     def save_shortcuts_layout(*, choose_path: bool) -> None:
@@ -1467,41 +1475,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
         else:
             append_log("Telemetry disabled.")
             set_status("Status: telemetry disabled", ok=None)
-
-    def show_help_tips(*_args):
-        append_chat_message(
-            "assistant",
-            "**Prompt Tips**\n"
-            "- Ask for the result you want: preview, apply, explain, or code.\n"
-            "- If more than one layer is open, name the layer.\n"
-            "- Natural language is fine. The assistant will use the selected layer when it can.\n\n"
-            "**Prompt Templates**\n"
-            "- Use the Library `Templates` tab and open `Prompt Templates` for built-in starter prompts.\n"
-            "- Prompt Templates now include common workflow requests such as layer inspection, threshold preview, Gaussian blur, mask cleanup, ROI extraction, cropping, measurement, and markdown-style explanation prompts.\n"
-            "- Double-click a prompt template to run it immediately, or load it first if you want to edit it.\n\n"
-            "**ROI Support**\n"
-            "- Labels and Shapes layers can be used as regions of interest.\n"
-            "- You can inspect ROI context or extract grayscale image values inside an ROI.\n"
-            "- Example: `Extract ROI values from image_a using roi_shapes`\n\n"
-            "**Synthetic Data**\n"
-            "- Use the Library `Templates` tab and open `Code Templates` -> `Data Setup` to load built-in synthetic datasets for testing.\n"
-            "- Examples include `Synthetic 2D SNR Sweep Gray`, `Synthetic 3D SNR Sweep Gray`, `Synthetic 2D SNR Sweep RGB`, and `Synthetic 3D SNR Sweep RGB`.\n"
-            "- These datasets create named layers so you can test tools quickly and repeatably.\n\n"
-            "**Layer Names and Placeholders**\n"
-            "- When possible, use exact layer names from `Layer Context`.\n"
-            "- Use `Inline` when you want to place a layer name into code or a placeholder position.\n"
-            "- `Refine My Code` can often replace placeholder names like `image_a`, `labels_a`, or `roi_shapes` with the best matching current viewer layers.\n\n"
-            "**Run My Code Tip**\n"
-            "- Paste Python into the Prompt box and click `Run My Code` to execute it directly inside the plugin runtime.\n"
-            "- For heavy compute, use `run_in_background(compute_fn, apply_fn, error_fn=None, label=\"...\")`.\n"
-            "- Keep `compute_fn` for NumPy/SciPy work and use `apply_fn` for `viewer.add_*` updates.\n"
-            "- Example: `Write Run My Code for a 3D RGB synthetic dataset using run_in_background.`\n\n"
-            "**Formatting**\n"
-            "- Use the built-in `Reply In Markdown` prompt template when you want a structured explanation format.\n\n"
-            "**Language**\n"
-            "- You can prompt in your preferred language.",
-        )
-        append_log("Opened prompt-writing help.")
 
     def show_whats_new(*_args):
         append_chat_message("assistant", whats_new_message(__version__))
@@ -6023,7 +5996,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)
     atlas_stitch_action.triggered.connect(show_atlas_stitch)
-    help_prompt_tips_action.triggered.connect(show_help_tips)
     help_whats_new_action.triggered.connect(show_whats_new)
     help_about_action.triggered.connect(show_about_assistant)
     help_report_bug_action.triggered.connect(show_report_bug)
@@ -6067,6 +6039,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     chat_font_up_btn.clicked.connect(lambda *_args: adjust_chat_font(1))
     prompt.sendRequested.connect(send_message)
     connection_toggle_btn.toggled.connect(connection_details.setVisible)
+    shortcuts_group.toggled.connect(toggle_shortcuts_group)
     log_group.toggled.connect(log_tabs.setVisible)
     help_ui_toggle_action.toggled.connect(toggle_ui_help)
     wait_timer.timeout.connect(tick_wait_indicator)

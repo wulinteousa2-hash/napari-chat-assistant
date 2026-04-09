@@ -16,6 +16,10 @@ class ShortcutsPanel(QGroupBox):
         super().__init__("Shortcuts", parent)
 
         self.shortcuts_layout = QVBoxLayout(self)
+        self.shortcuts_content = QWidget()
+        self.shortcuts_content_layout = QVBoxLayout(self.shortcuts_content)
+        self.shortcuts_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.shortcuts_content_layout.setSpacing(6)
 
         self.shortcuts_hint = QLabel(
             "Keep your most-used actions here for one-click work."
@@ -24,13 +28,13 @@ class ShortcutsPanel(QGroupBox):
         self.shortcuts_hint.setStyleSheet(
             "QLabel { color: #cbd5e1; padding: 0 0 4px 0; }"
         )
-        self.shortcuts_layout.addWidget(self.shortcuts_hint)
+        self.shortcuts_content_layout.addWidget(self.shortcuts_hint)
 
         self.shortcuts_grid = QGridLayout()
         self.shortcuts_grid.setContentsMargins(0, 0, 0, 0)
         self.shortcuts_grid.setHorizontalSpacing(8)
         self.shortcuts_grid.setVerticalSpacing(8)
-        self.shortcuts_layout.addLayout(self.shortcuts_grid)
+        self.shortcuts_content_layout.addLayout(self.shortcuts_grid)
 
         self.shortcuts_btn_row = QWidget()
         shortcuts_btn_layout = QHBoxLayout(self.shortcuts_btn_row)
@@ -63,4 +67,5 @@ class ShortcutsPanel(QGroupBox):
         shortcuts_btn_layout.addWidget(self.shortcuts_save_btn)
         shortcuts_btn_layout.addWidget(self.shortcuts_load_btn)
         shortcuts_btn_layout.addWidget(self.shortcuts_clear_btn)
-        self.shortcuts_layout.addWidget(self.shortcuts_btn_row)
+        self.shortcuts_content_layout.addWidget(self.shortcuts_btn_row)
+        self.shortcuts_layout.addWidget(self.shortcuts_content)
