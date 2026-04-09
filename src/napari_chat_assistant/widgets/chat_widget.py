@@ -843,10 +843,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.0.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- Expanded the built-in library with clearer Prompt Templates, Code Templates, and a much larger Learning section.\n"
+                "- Added graduate- and university-level learning prompts for microscopy, EM, biophotonics, image formation, quantitative imaging, statistics, academic prompting, and language support.\n"
+                "- Improved template browsing with color-coded sections and preserved tree state during selection and run actions.\n"
+                "- Fixed prompt-library stability issues, including pinned recent prompts surviving Clear, and increased recent history capacity.\n"
+                "- Added an advanced Atlas Stitch workflow and started a safer internal chat-section refactor without changing the overall dock model."
+            )
+        if current == "1.9.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added a new annotation workflow focus with deterministic text overlays, callouts, title labels, and action-tab entries for common annotation tasks.\n"
+                "- Added a dedicated text annotation editor under Advanced and improved prompt routing for annotation-style requests.\n"
+                "- Improved workspace restore responsiveness and expanded managed annotation-layer persistence.\n"
+                "- Added RGB-aware ROI intensity support by reducing truecolor layers to luminance for measurement workflows."
+            )
         if current == "1.8.4":
             return (
                 f"**What's New In {current}**\n"
                 "- Workspace save/load now understands spectral-derived views from `napari-nd2-spectral-ome-zarr` as source-plus-view recipes.\n"
+                "- Workspace restore can rebuild spectral-derived visible-sum, truecolor, and raw spectral views from the original source `.ome.zarr` when the spectral reader is available.\n"
                 "- Fixed workspace save failures caused by non-JSON spectral runtime metadata on derived napari layers."
             )
         if current == "1.8.3":
