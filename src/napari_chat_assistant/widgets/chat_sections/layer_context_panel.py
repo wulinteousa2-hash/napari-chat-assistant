@@ -3,6 +3,7 @@ from __future__ import annotations
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QGroupBox,
     QListWidget,
     QSizePolicy,
@@ -40,11 +41,16 @@ class LayerContextPanel(QGroupBox):
         context_layers_tab = QWidget()
         context_layers_layout = QVBoxLayout(context_layers_tab)
         context_layers_layout.setContentsMargins(0, 0, 0, 0)
+        self.context_selected_only_checkbox = QCheckBox("Show selected layer(s) only")
+        self.context_selected_only_checkbox.setToolTip("Hide all non-selected layers. Turn off to restore the previous visibility state.")
+        context_layers_layout.addWidget(self.context_selected_only_checkbox)
         self.context_layers_list = QListWidget()
-        self.context_layers_list.setSelectionMode(QAbstractItemView.NoSelection)
-        self.context_layers_list.setFocusPolicy(Qt.NoFocus)
+        self.context_layers_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.context_layers_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        self.context_layers_list.setStyleSheet("QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }")
+        self.context_layers_list.setStyleSheet(
+            "QListWidget { background: #101820; color: #d6deeb; border: 1px solid #22304a; }"
+            "QListWidget::item:selected { background: #1d3b5f; color: #ffffff; }"
+        )
         context_layers_layout.addWidget(self.context_layers_list)
 
         self.context_tabs.addTab(context_summary_tab, "Summary")

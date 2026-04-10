@@ -2,6 +2,13 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.1.1
+
+- Added an `Info` button in `Layer Context` -> `Layers` so users can copy fuller layer details without making the row itself crowded.
+- Added `Show selected layer(s) only` in `Layer Context` -> `Layers` to hide non-selected layers from view and restore the previous visibility state when turned off.
+- Updated the first-run welcome message with current onboarding steps for local model loading, synthetic test data, Layer Context, Quick Controls, Templates, Actions, Shortcuts, and code refinement.
+- Updated local UI help text for the expanded Layer Context behavior.
+
 ## 2.1.0
 
 - Added a new `Quick Controls` surface across Actions, tools, and templates for common viewer operations that should not require menu navigation or generated code.

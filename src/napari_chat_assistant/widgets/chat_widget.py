@@ -113,6 +113,7 @@ from napari_chat_assistant.agent.pending_action import (
     normalize_pending_action,
     resolve_pending_action,
 )
+from napari_chat_assistant.agent.profiler import profile_layer
 from napari_chat_assistant.agent.prompt_routing import route_local_workflow_prompt
 from napari_chat_assistant.agent.recent_action_state import (
     empty_recent_action_state,
@@ -289,6 +290,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     context_tabs = layer_context_panel.context_tabs
     context_summary_box = layer_context_panel.context_summary_box
     context_layers_list = layer_context_panel.context_layers_list
+    context_selected_only_checkbox = layer_context_panel.context_selected_only_checkbox
     left_layout.addWidget(context_group, 0)
 
     library_panel = LibraryPanel()
@@ -579,6 +581,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     intent_state = empty_intent_state()
     last_failed_tool_state = empty_failed_tool_state()
     last_tool_sequence_undo_snapshot: dict = {}
+    context_visibility_snapshot: dict[str, bool] | None = None
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     template_library_state = template_library_payload()
@@ -960,7 +963,108 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return False
         return True
 
+    def context_layer_by_name(layer_name: str):
+        if viewer is None:
+            return None
+        try:
+            return viewer.layers[str(layer_name)]
+        except Exception:
+            return None
+
+    def selected_context_layer_names() -> list[str]:
+        if viewer is None:
+            return []
+        try:
+            selected_layers = list(viewer.layers.selection)
+        except Exception:
+            selected_layers = list(getattr(viewer.layers.selection, "_selected", []) or [])
+        active = viewer.layers.selection.active
+        if active is not None and active not in selected_layers:
+            selected_layers.append(active)
+        selected_names = {str(layer.name) for layer in selected_layers if layer is not None}
+        return [str(layer.name) for layer in viewer.layers if str(layer.name) in selected_names]
+
+    def context_layer_text(layer) -> str:
+        profile = profile_layer(layer)
+        shape_text = tuple(profile["shape"]) if profile.get("shape") is not None else "n/a"
+        dtype_text = profile.get("dtype") or "n/a"
+        selected = viewer is not None and viewer.layers.selection.active is layer
+        return "\n".join(
+            [
+                f"Layer [{layer.name}]",
+                f"- type: {layer.__class__.__name__}",
+                f"- selected: {bool(selected)}",
+                f"- visible: {bool(getattr(layer, 'visible', False))}",
+                f"- shape: {shape_text}",
+                f"- dtype: {dtype_text}",
+                f"- semantic_type: {profile.get('semantic_type', 'unknown')}",
+            ]
+        )
+
+    def copy_context_layer_summary(layer_name: str):
+        layer = context_layer_by_name(layer_name)
+        if layer is None:
+            return
+        QApplication.clipboard().setText(context_layer_text(layer))
+        append_log(f"Copied layer summary: {layer_name}")
+        set_status("Status: layer summary copied", ok=True)
+
+    def select_context_layer_name(layer_name: str):
+        layer = context_layer_by_name(layer_name)
+        if layer is None or viewer is None:
+            return
+        viewer.layers.selection.active = layer
+        append_log(f"Selected layer from context: {layer_name}")
+        set_status("Status: layer selected", ok=True)
+        if context_selected_only_checkbox.isChecked():
+            apply_context_selected_only_visibility(capture=False, refresh=False)
+        refresh_context()
+
+    def apply_context_selected_only_visibility(*, capture: bool, refresh: bool = True):
+        nonlocal context_visibility_snapshot
+        if viewer is None:
+            return
+        selected_names = set(selected_context_layer_names())
+        if not selected_names:
+            set_status("Status: no layer selected to isolate", ok=False)
+            append_log("Show selected only skipped: no selected layer.")
+            return
+        if capture or context_visibility_snapshot is None:
+            context_visibility_snapshot = {str(layer.name): bool(getattr(layer, "visible", False)) for layer in viewer.layers}
+        for layer in viewer.layers:
+            layer.visible = str(layer.name) in selected_names
+        append_log(f"Showing selected layer(s) only: {', '.join(selected_names)}")
+        set_status("Status: showing selected layer(s) only", ok=True)
+        if refresh:
+            refresh_context()
+
+    def restore_context_visibility_snapshot():
+        nonlocal context_visibility_snapshot
+        if viewer is None or context_visibility_snapshot is None:
+            return
+        for layer in viewer.layers:
+            name = str(layer.name)
+            if name in context_visibility_snapshot:
+                layer.visible = bool(context_visibility_snapshot[name])
+        context_visibility_snapshot = None
+        append_log("Restored layer visibility from Layer Actions.")
+        set_status("Status: layer visibility restored", ok=True)
+        refresh_context()
+
+    def toggle_context_selected_only(enabled: bool):
+        if enabled:
+            apply_context_selected_only_visibility(capture=True)
+        else:
+            restore_context_visibility_snapshot()
+
+    def select_context_layer_item(item: QListWidgetItem):
+        data = item.data(Qt.UserRole) or {}
+        if isinstance(data, dict):
+            select_context_layer_name(str(data.get("layer_name", "")))
+
     def refresh_context(*_args):
+        if widget_is_alive(context_selected_only_checkbox) and context_selected_only_checkbox.isChecked():
+            apply_context_selected_only_visibility(capture=False, refresh=False)
         summary_text = layer_summary(viewer)
         if widget_is_alive(context_summary_box):
             context_summary_box.setPlainText(summary_text)
@@ -974,6 +1078,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     if selected is layer:
                         line = f"{line} [selected]"
                     item = QListWidgetItem()
+                    item.setData(Qt.UserRole, {"layer_name": insert_text})
                     context_layers_list.addItem(item)
                     row_widget = QWidget()
                     row_layout = QHBoxLayout(row_widget)
@@ -988,18 +1093,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     insert_btn.setMaximumWidth(56)
                     inline_btn = QPushButton("Inline")
                     inline_btn.setMaximumWidth(56)
+                    info_btn = QPushButton("Info")
+                    info_btn.setMaximumWidth(56)
                     insert_btn.setToolTip("Insert this exact layer name into the Prompt box.")
                     inline_btn.setToolTip("Insert this exact layer name at the current cursor position.")
                     copy_btn.setToolTip("Copy this exact layer name to the clipboard.")
+                    info_btn.setToolTip("Copy a fuller summary for this layer.")
                     copy_btn.clicked.connect(lambda _checked=False, text=insert_text: QApplication.clipboard().setText(text))
                     insert_btn.clicked.connect(lambda _checked=False, text=insert_text: append_text_to_prompt(text))
                     inline_btn.clicked.connect(lambda _checked=False, text=insert_text: insert_text_at_prompt_cursor(text))
+                    info_btn.clicked.connect(lambda _checked=False, text=insert_text: copy_context_layer_summary(text))
                     row_layout.addWidget(row_label, 1)
                     row_layout.addWidget(inline_btn, 0)
                     row_layout.addWidget(insert_btn, 0)
                     row_layout.addWidget(copy_btn, 0)
+                    row_layout.addWidget(info_btn, 0)
                     item.setSizeHint(row_widget.sizeHint())
                     context_layers_list.setItemWidget(item, row_widget)
+                    if selected is layer:
+                        context_layers_list.setCurrentItem(item)
         refresh_analysis_controls()
 
     def append_text_to_prompt(text: str):
@@ -6102,6 +6214,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     prompt_library_list.customContextMenuRequested.connect(show_library_context_menu)
     code_library_list.itemClicked.connect(load_library_code)
     code_library_list.itemDoubleClicked.connect(run_library_code)
+    context_layers_list.itemClicked.connect(select_context_layer_item)
+    context_selected_only_checkbox.toggled.connect(toggle_context_selected_only)
     prompt.textChanged.connect(refresh_code_action_buttons)
     code_library_list.customContextMenuRequested.connect(show_library_context_menu)
     template_tree.currentItemChanged.connect(show_template_preview)
@@ -6153,14 +6267,26 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message(
             "assistant",
             "**Welcome**\n"
-            "👋 Welcome to Local Chat Assistant.\n"
-            "🤖 Connect a local model for chat, tool use, and generated napari code inside the viewer.\n"
-            "⌨️ Use the Prompt box for normal requests, or paste your own Python and click `Run My Code` to execute it in the plugin runtime without opening QtConsole.\n"
-            "▶️ Use `Run Code` for assistant-generated code after review, and `Refine My Code` to adapt pasted code to this plugin runtime.\n"
-            "🧭 Viewer state is read live when you send requests, and the summary strip shows what is currently open.\n"
-            "📚 Library tabs keep prompts, code, templates, actions, and shortcuts close to the workflow.\n"
-            "📝 Action Log tracks local actions. Telemetry is optional and stays off unless you enable it.\n\n"
-            "Ask about your selected layer, thresholding, CLAHE, measurements, histograms, comparisons, or code.\n\n"
+            "Local Chat Assistant connects napari to a local Ollama model, deterministic image-analysis tools, reusable templates, and generated viewer-bound Python.\n\n"
+            "**Start here**\n"
+            "- Select a model, then click `Load` to warm it before the first request.\n"
+            "- Open an image or use `Templates` -> `Data` to create a synthetic test image.\n"
+            "- Use `Layer Context` -> `Layers` to select a layer, insert or copy exact layer names, copy layer info, or show only the selected layer.\n"
+            "- Use `Templates` and `Actions` for repeatable workflows; add frequent actions to `Shortcuts`.\n"
+            "- Paste your own Python into the Prompt box and click `Run My Code`, or use `Refine My Code` when code needs repair for the current viewer.\n\n"
+            "**Try these prompts**\n"
+            "```text\n"
+            "What can you do with my current layers?\n"
+            "```\n\n"
+            "```text\n"
+            "1. Fit visible layers to view.\n"
+            "2. Show viewer axes.\n"
+            "3. Show scale bar.\n"
+            "4. Show selected layer bounding box.\n"
+            "5. Show selected layer name overlay.\n"
+            "```\n\n"
+            "Say `undo last workflow` to restore viewer controls after a quick-control workflow.\n\n"
+            "Telemetry is optional and stays off unless you enable it from `Session` -> `Telemetry`.\n\n"
             "Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md\n"
             "Bug reports: https://github.com/wulinteousa2-hash/napari-chat-assistant/issues",
         )

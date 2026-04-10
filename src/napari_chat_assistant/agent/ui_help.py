@@ -161,8 +161,8 @@ UI_HELP_ITEMS = [
     {
         "label": "Layer Context",
         "aliases": ("layer context", "viewer summary", "context panel"),
-        "purpose": "Shows a copyable summary of the current layers and selection, plus per-layer Insert and Copy actions for prompt building.",
-        "when": "Use it when you want to confirm which layers are open, copy exact layer summaries, or insert layer lines into the Prompt box.",
+        "purpose": "Shows a copyable summary of the current layers and selection, plus per-layer copy, insert, info, and visibility actions for prompt building.",
+        "when": "Use it when you want to confirm which layers are open, copy exact layer summaries, insert layer lines into the Prompt box, or isolate selected layers from inside the assistant.",
         "tip": "Use the Summary tab for full-session text and the Layers tab for row-by-row Insert or Copy actions.",
     },
     {
@@ -401,7 +401,7 @@ def build_ui_help_prompt_block() -> str:
         "- Copy Code: copies pending assistant-generated code.",
         "- Reject: rejects the last assistant outcome from session memory.",
         "- Pending Code: indicates whether assistant code is waiting for review.",
-        "- Layer Context: copyable layer/session summary with per-layer Insert and Copy actions.",
+        "- Layer Context: copyable layer/session summary with per-layer Info, visibility, Insert, and Copy actions.",
         "- Advanced: optional integrations such as experimental SAM2 controls.",
         "- Quick Compare Grid: shows open image layers side by side in napari grid view for quick comparison without moving the layers.",
         "- Grid Spacing: controls the gap between image tiles in grid view.",
