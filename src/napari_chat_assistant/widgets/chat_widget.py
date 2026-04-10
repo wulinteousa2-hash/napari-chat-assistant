@@ -1047,7 +1047,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if name in context_visibility_snapshot:
                 layer.visible = bool(context_visibility_snapshot[name])
         context_visibility_snapshot = None
-        append_log("Restored layer visibility from Layer Actions.")
+        append_log("Restored layer visibility from Layer Context.")
         set_status("Status: layer visibility restored", ok=True)
         refresh_context()
 
@@ -1061,6 +1061,25 @@ def chat_widget(napari_viewer=None) -> QWidget:
         data = item.data(Qt.UserRole) or {}
         if isinstance(data, dict):
             select_context_layer_name(str(data.get("layer_name", "")))
+
+    def maybe_note_selected_only_visibility(tool_name: str, result_message: str) -> str:
+        tracked_tools = {
+            "show_all_layers",
+            "show_only_layers",
+            "show_only_layer_type",
+            "show_all_except_layers",
+            "show_layers_by_type",
+            "hide_layers_by_type",
+        }
+        if not widget_is_alive(context_selected_only_checkbox) or not context_selected_only_checkbox.isChecked():
+            return result_message
+        if str(tool_name or "").strip() not in tracked_tools:
+            return result_message
+        note = (
+            "Note: `Show selected layer(s) only` is still on in `Layer Context` -> `Layers`, "
+            "so layer visibility remains constrained there. Turn it off first if you want prompt or action visibility changes to affect all layers."
+        )
+        return f"{result_message}\n\n{note}" if str(result_message or "").strip() else note
 
     def refresh_context(*_args):
         if widget_is_alive(context_selected_only_checkbox) and context_selected_only_checkbox.isChecked():
@@ -5404,6 +5423,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         nonlocal last_failed_tool_state
                         refresh_context()
                         result_message = apply_tool_job_result(viewer, tool_result)
+                        result_message = maybe_note_selected_only_visibility(tool_name, result_message)
                         append_chat_message("assistant", f"{tool_message}\n{result_message}" if tool_message else result_message)
                         append_log(f"Handled request via local workflow route: {tool_name}")
                         set_status(f"Status: {tool_name} completed", ok=True)
@@ -5530,6 +5550,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             result_message = apply_tool_job_result(viewer, tool_result)
                         else:
                             result_message = str(prepared.get("message", ""))
+                        result_message = maybe_note_selected_only_visibility(tool_name, result_message)
                     except Exception as exc:
                         logger.exception("Immediate tool failed: %s", tool_name)
                         replace_last_assistant(f"{tool_name} failed:\n{exc}")
@@ -5596,6 +5617,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 def tool_returned(tool_result):
                     nonlocal session_memory_state, last_failed_tool_state
                     result_message = apply_tool_job_result(viewer, tool_result)
+                    result_message = maybe_note_selected_only_visibility(tool_name, result_message)
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
                     last_failed_tool_state = remember_failed_tool(tool_name, result_message)
