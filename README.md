@@ -24,11 +24,11 @@ Hide all layers except the selected layer.
 The release also adds safe multi-step viewer workflows, so a prompt can run several viewer-control steps in order. With a layer selected, users can copy and try:
 
 ```text
-1. Fit the current visible layers in view.
-2. Turn the viewer axes on.
-3. Turn the scale bar on.
-4. Turn the selected layer bounding box on.
-5. Turn the selected layer name overlay on.
+1. Fit visible layers to view.
+2. Show viewer axes.
+3. Show scale bar.
+4. Show selected layer bounding box.
+5. Show selected layer name overlay.
 ```
 
 Users can also say `undo last workflow` to restore the viewer-control state from before the previous quick-control workflow.
