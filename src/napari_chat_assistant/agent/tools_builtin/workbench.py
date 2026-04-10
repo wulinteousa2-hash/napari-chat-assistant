@@ -1160,6 +1160,17 @@ def _resolve_layers_by_type(viewer, layer_type: str) -> list[object]:
     return [layer for layer in viewer.layers if _layer_matches_type(layer, normalized)]
 
 
+def _normalize_bool_argument(value: object, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on", "show", "visible", "enable", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "hide", "hidden", "disable", "disabled"}:
+        return False
+    return bool(default)
+
+
 def _apply_mask_operation(data, *, op_name: str, radius: int = 1, min_size: int = 64) -> np.ndarray:
     op = str(op_name or "").strip().lower()
     binary = np.asarray(data) > 0
@@ -1393,6 +1404,502 @@ def _slice_point_features(points_layer: Points, indices: list[int]):
             return None
 
 
+class FitViewTool:
+    spec = ToolSpec(
+        name="fit_view",
+        display_name="Fit View",
+        category="quick_controls",
+        description="Reset the camera so the current visible layers fit in view.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_reset_view", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        viewer = getattr(ctx.viewer, "__wrapped__", ctx.viewer)
+        if hasattr(viewer, "reset_view"):
+            viewer.reset_view()
+            return "Fit the current viewer to the visible layers."
+        return "Viewer fit-to-view is unavailable in this runtime."
+
+
+class ZoomInViewTool:
+    spec = ToolSpec(
+        name="zoom_in_view",
+        display_name="Zoom In",
+        category="quick_controls",
+        description="Zoom the napari camera in by a deterministic factor.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("factor", "float", description="Zoom multiplier.", default=1.5, minimum=1.01),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "camera_zoom", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        factor = normalize_float((arguments or {}).get("factor", 1.5), default=1.5, minimum=1.01, maximum=20.0)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "factor": factor},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        current_zoom = float(getattr(ctx.viewer.camera, "zoom", 1.0) or 1.0)
+        factor = normalize_float(result.payload.get("factor", 1.5), default=1.5, minimum=1.01, maximum=20.0)
+        ctx.viewer.camera.zoom = current_zoom * factor
+        return f"Zoomed in to {float(ctx.viewer.camera.zoom):.3f}x."
+
+
+class ZoomOutViewTool:
+    spec = ToolSpec(
+        name="zoom_out_view",
+        display_name="Zoom Out",
+        category="quick_controls",
+        description="Zoom the napari camera out by a deterministic factor.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("factor", "float", description="Zoom divisor.", default=1.5, minimum=1.01),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "camera_zoom", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        factor = normalize_float((arguments or {}).get("factor", 1.5), default=1.5, minimum=1.01, maximum=20.0)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "factor": factor},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        current_zoom = float(getattr(ctx.viewer.camera, "zoom", 1.0) or 1.0)
+        factor = normalize_float(result.payload.get("factor", 1.5), default=1.5, minimum=1.01, maximum=20.0)
+        ctx.viewer.camera.zoom = max(current_zoom / factor, 1e-6)
+        return f"Zoomed out to {float(ctx.viewer.camera.zoom):.3f}x."
+
+
+class Toggle2D3DCameraTool:
+    spec = ToolSpec(
+        name="toggle_2d_3d_camera",
+        display_name="Toggle 2D/3D",
+        category="quick_controls",
+        description="Switch the viewer between 2D and 3D camera modes.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_ndisplay_toggle", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        current = int(getattr(ctx.viewer.dims, "ndisplay", 2) or 2)
+        target = 3 if current == 2 else 2
+        ctx.viewer.dims.ndisplay = target
+        return f"Switched the viewer to {target}D camera mode."
+
+
+class SetLayerTooltipsVisibleTool:
+    spec = ToolSpec(
+        name="set_layer_tooltips_visible",
+        display_name="Set Layer Tooltips",
+        category="quick_controls",
+        description="Show or hide layer tooltips in the viewer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("visible", "bool", description="Whether tooltips should be visible.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_tooltip_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        visible = _normalize_bool_argument((arguments or {}).get("visible", True), default=True)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "visible": visible},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        visible = _normalize_bool_argument(result.payload.get("visible", True), default=True)
+        tooltip = getattr(ctx.viewer, "tooltip", None)
+        if tooltip is None or not hasattr(tooltip, "visible"):
+            return "Layer tooltip visibility is unavailable in this runtime."
+        tooltip.visible = visible
+        return f"Layer tooltips are now {'visible' if visible else 'hidden'}."
+
+
+class SetAxesVisibleTool:
+    spec = ToolSpec(
+        name="set_axes_visible",
+        display_name="Set Axes Visible",
+        category="quick_controls",
+        description="Show or hide the viewer axes overlay.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("visible", "bool", description="Whether axes should be visible.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_axes_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        visible = _normalize_bool_argument((arguments or {}).get("visible", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "visible": visible})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        visible = _normalize_bool_argument(result.payload.get("visible", True), default=True)
+        ctx.viewer.axes.visible = visible
+        return f"Viewer axes are now {'visible' if visible else 'hidden'}."
+
+
+class SetAxesColoredTool:
+    spec = ToolSpec(
+        name="set_axes_colored",
+        display_name="Set Axes Colored",
+        category="quick_controls",
+        description="Turn colored axes on or off.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether colored axes should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_axes_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.axes.colored = enabled
+        return f"Colored axes are now {'enabled' if enabled else 'disabled'}."
+
+
+class SetAxesLabelsTool:
+    spec = ToolSpec(
+        name="set_axes_labels",
+        display_name="Set Axes Labels",
+        category="quick_controls",
+        description="Show or hide axes labels.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether axes labels should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_axes_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.axes.labels = enabled
+        return f"Axes labels are now {'enabled' if enabled else 'disabled'}."
+
+
+class SetAxesDashedTool:
+    spec = ToolSpec(
+        name="set_axes_dashed",
+        display_name="Set Axes Dashed",
+        category="quick_controls",
+        description="Turn dashed axes lines on or off.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether dashed axes should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_axes_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.axes.dashed = enabled
+        return f"Dashed axes are now {'enabled' if enabled else 'disabled'}."
+
+
+class SetAxesArrowsTool:
+    spec = ToolSpec(
+        name="set_axes_arrows",
+        display_name="Set Axes Arrows",
+        category="quick_controls",
+        description="Show or hide arrowheads on the viewer axes.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether axes arrows should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_axes_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.axes.arrows = enabled
+        return f"Axes arrows are now {'enabled' if enabled else 'disabled'}."
+
+
+class SetScaleBarVisibleTool:
+    spec = ToolSpec(
+        name="set_scale_bar_visible",
+        display_name="Set Scale Bar Visible",
+        category="quick_controls",
+        description="Show or hide the viewer scale bar.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("visible", "bool", description="Whether the scale bar should be visible.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_scale_bar_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        visible = _normalize_bool_argument((arguments or {}).get("visible", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "visible": visible})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        visible = _normalize_bool_argument(result.payload.get("visible", True), default=True)
+        ctx.viewer.scale_bar.visible = visible
+        return f"Scale bar is now {'visible' if visible else 'hidden'}."
+
+
+class SetScaleBarBoxTool:
+    spec = ToolSpec(
+        name="set_scale_bar_box",
+        display_name="Set Scale Bar Box",
+        category="quick_controls",
+        description="Show or hide the box behind the scale bar.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether the scale bar box should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_scale_bar_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.scale_bar.box = enabled
+        return f"Scale bar box is now {'enabled' if enabled else 'disabled'}."
+
+
+class SetScaleBarColoredTool:
+    spec = ToolSpec(
+        name="set_scale_bar_colored",
+        display_name="Set Scale Bar Colored",
+        category="quick_controls",
+        description="Turn colored scale bar rendering on or off.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether the scale bar should use color styling.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_scale_bar_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.scale_bar.colored = enabled
+        return f"Colored scale bar is now {'enabled' if enabled else 'disabled'}."
+
+
+class SetScaleBarTicksTool:
+    spec = ToolSpec(
+        name="set_scale_bar_ticks",
+        display_name="Set Scale Bar Ticks",
+        category="quick_controls",
+        description="Show or hide ticks on the scale bar.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("enabled", "bool", description="Whether scale bar ticks should be enabled.", default=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "viewer_scale_bar_overlay", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        enabled = _normalize_bool_argument((arguments or {}).get("enabled", True), default=True)
+        return PreparedJob(tool_name=self.spec.name, kind=self.spec.name, mode="immediate", payload={"kind": self.spec.name, "enabled": enabled})
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        enabled = _normalize_bool_argument(result.payload.get("enabled", True), default=True)
+        ctx.viewer.scale_bar.ticks = enabled
+        return f"Scale bar ticks are now {'enabled' if enabled else 'disabled'}."
+
+
+class SetSelectedLayerBoundingBoxVisibleTool:
+    spec = ToolSpec(
+        name="set_selected_layer_bounding_box_visible",
+        display_name="Set Layer Bounding Box",
+        category="quick_controls",
+        description="Show or hide the bounding box overlay for the selected or named layer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_name", "string", description="Optional layer name. Falls back to the selected layer."),
+            ParamSpec("visible", "bool", description="Whether the bounding box should be visible.", default=True),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "layer_overlay_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layer_name = str(args.get("layer_name") or "").strip()
+        layer = find_any_layer(ctx.viewer, layer_name) if layer_name else None
+        if layer is None:
+            layer = ctx.viewer.layers.selection.active if ctx.viewer is not None else None
+        if layer is None:
+            return "No valid layer is selected for bounding box control."
+        if not hasattr(layer, "bounding_box") or not hasattr(layer.bounding_box, "visible"):
+            return f"Layer [{getattr(layer, 'name', 'unknown')}] does not support bounding box visibility."
+        visible = _normalize_bool_argument(args.get("visible", True), default=True)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_name": layer.name, "visible": visible},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layer_name = str(result.payload.get("layer_name") or "").strip()
+        layer = find_any_layer(ctx.viewer, layer_name) if layer_name else None
+        if layer is None:
+            return "No usable layer was available for bounding box control."
+        visible = _normalize_bool_argument(result.payload.get("visible", True), default=True)
+        layer.bounding_box.visible = visible
+        return f"Bounding box on [{layer.name}] is now {'visible' if visible else 'hidden'}."
+
+
+class SetSelectedLayerNameOverlayVisibleTool:
+    spec = ToolSpec(
+        name="set_selected_layer_name_overlay_visible",
+        display_name="Set Layer Name Overlay",
+        category="quick_controls",
+        description="Show or hide the name overlay for the selected or named layer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(
+            ParamSpec("layer_name", "string", description="Optional layer name. Falls back to the selected layer."),
+            ParamSpec("visible", "bool", description="Whether the layer name overlay should be visible.", default=True),
+        ),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "layer_overlay_visibility", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        layer_name = str(args.get("layer_name") or "").strip()
+        layer = find_any_layer(ctx.viewer, layer_name) if layer_name else None
+        if layer is None:
+            layer = ctx.viewer.layers.selection.active if ctx.viewer is not None else None
+        if layer is None:
+            return "No valid layer is selected for layer-name overlay control."
+        overlay = getattr(layer, "name_overlay", None)
+        if overlay is None or not hasattr(overlay, "visible"):
+            return f"Layer [{getattr(layer, 'name', 'unknown')}] does not support a name overlay."
+        visible = _normalize_bool_argument(args.get("visible", True), default=True)
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_name": layer.name, "visible": visible},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        layer_name = str(result.payload.get("layer_name") or "").strip()
+        layer = find_any_layer(ctx.viewer, layer_name) if layer_name else None
+        if layer is None:
+            return "No usable layer was available for layer-name overlay control."
+        visible = _normalize_bool_argument(result.payload.get("visible", True), default=True)
+        layer.name_overlay.visible = visible
+        return f"Layer name overlay on [{layer.name}] is now {'visible' if visible else 'hidden'}."
+
+
 class ShowImageLayersInGridTool:
     spec = ToolSpec(
         name="show_image_layers_in_grid",
@@ -1590,6 +2097,90 @@ class HideLayersTool:
         return f"Hid {len(layers)} layer(s): {hidden}."
 
 
+class ShowLayersByTypeTool:
+    spec = ToolSpec(
+        name="show_layers_by_type",
+        display_name="Show Layers By Type",
+        category="quick_controls",
+        description="Show all layers of a given type without changing other layer visibility.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("layer_type", "string", description="image, labels, shapes, or points.", required=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "layer_visibility_by_type", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        requested_type = _normalize_layer_type((arguments or {}).get("layer_type"))
+        if not requested_type:
+            return "Provide a layer_type such as image, labels, shapes, or points."
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No matching [{requested_type}] layers were found to show."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_type": requested_type},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        requested_type = _normalize_layer_type(result.payload.get("layer_type"))
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No usable [{requested_type}] layers were available to show."
+        for layer in layers:
+            layer.visible = True
+        shown = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Showed {len(layers)} [{requested_type}] layer(s): {shown}."
+
+
+class HideLayersByTypeTool:
+    spec = ToolSpec(
+        name="hide_layers_by_type",
+        display_name="Hide Layers By Type",
+        category="quick_controls",
+        description="Hide all layers of a given type without changing other layer visibility.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("layer_type", "string", description="image, labels, shapes, or points.", required=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "layer_visibility_by_type", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        requested_type = _normalize_layer_type((arguments or {}).get("layer_type"))
+        if not requested_type:
+            return "Provide a layer_type such as image, labels, shapes, or points."
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No matching [{requested_type}] layers were found to hide."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_type": requested_type},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        requested_type = _normalize_layer_type(result.payload.get("layer_type"))
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No usable [{requested_type}] layers were available to hide."
+        for layer in layers:
+            layer.visible = False
+        hidden = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Hid {len(layers)} [{requested_type}] layer(s): {hidden}."
+
+
 class HideAllLayersTool:
     spec = ToolSpec(
         name="hide_all_layers",
@@ -1777,6 +2368,49 @@ class ShowOnlyLayersTool:
             layer.visible = layer.name in selected
         shown = ", ".join(f"[{layer.name}]" for layer in layers)
         return f"Showing only {len(layers)} layer(s): {shown}."
+
+
+class ShowOnlyLayerTypeTool:
+    spec = ToolSpec(
+        name="show_only_layer_type",
+        display_name="Show Only Layer Type",
+        category="quick_controls",
+        description="Show only layers of a given type and hide every other layer.",
+        execution_mode="immediate",
+        supported_layer_types=("image", "labels", "shapes", "points"),
+        parameter_schema=(ParamSpec("layer_type", "string", description="image, labels, shapes, or points.", required=True),),
+        output_type="message",
+        ui_metadata={"panel_group": "Quick Controls"},
+        provenance_metadata={"algorithm": "layer_visibility_by_type", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        requested_type = _normalize_layer_type((arguments or {}).get("layer_type"))
+        if not requested_type:
+            return "Provide a layer_type such as image, labels, shapes, or points."
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No matching [{requested_type}] layers were found to show exclusively."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="immediate",
+            payload={"kind": self.spec.name, "layer_type": requested_type},
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        return ToolResult(tool_name=self.spec.name, kind=job.kind, payload=dict(job.payload))
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        requested_type = _normalize_layer_type(result.payload.get("layer_type"))
+        layers = _resolve_layers_by_type(ctx.viewer, requested_type)
+        if not layers:
+            return f"No usable [{requested_type}] layers were available to show exclusively."
+        selected = {layer.name for layer in layers}
+        for layer in ctx.viewer.layers:
+            layer.visible = layer.name in selected
+        shown = ", ".join(f"[{layer.name}]" for layer in layers)
+        return f"Showing only {len(layers)} [{requested_type}] layer(s): {shown}."
 
 
 class ShowAllExceptLayersTool:
@@ -5184,6 +5818,22 @@ class SAMAutoSegmentTool:
 
 def workbench_scaffold_tools():
     return [
+        FitViewTool(),
+        ZoomInViewTool(),
+        ZoomOutViewTool(),
+        Toggle2D3DCameraTool(),
+        SetLayerTooltipsVisibleTool(),
+        SetAxesVisibleTool(),
+        SetAxesColoredTool(),
+        SetAxesLabelsTool(),
+        SetAxesDashedTool(),
+        SetAxesArrowsTool(),
+        SetScaleBarVisibleTool(),
+        SetScaleBarBoxTool(),
+        SetScaleBarColoredTool(),
+        SetScaleBarTicksTool(),
+        SetSelectedLayerBoundingBoxVisibleTool(),
+        SetSelectedLayerNameOverlayVisibleTool(),
         GaussianDenoiseTool(),
         RemoveSmallObjectsTool(),
         FillMaskHolesTool(),
@@ -5197,11 +5847,14 @@ def workbench_scaffold_tools():
         ShowImageLayersInGridTool(),
         HideImageGridViewTool(),
         ShowLayersTool(),
+        ShowLayersByTypeTool(),
         HideLayersTool(),
+        HideLayersByTypeTool(),
         HideAllLayersTool(),
         DeleteAllLayersTool(),
         DeleteLayersTool(),
         ShowOnlyLayersTool(),
+        ShowOnlyLayerTypeTool(),
         ShowAllExceptLayersTool(),
         ShowAllLayersTool(),
         SetLayerScaleTool(),

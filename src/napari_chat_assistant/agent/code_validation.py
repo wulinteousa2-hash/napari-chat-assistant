@@ -19,6 +19,21 @@ DISALLOWED_IMPORT_TEXT = (
 )
 
 
+IMPORT_SYMBOL_REPAIR_RULES = (
+    {
+        "module": "scipy.ndimage",
+        "name": "gaussian_noise",
+        "replacement_name": "gaussian_filter",
+        "call_rewrites": (),
+        "note": (
+            "Replaced `from scipy.ndimage import gaussian_noise` with "
+            "`from scipy.ndimage import gaussian_filter` because `scipy.ndimage` provides Gaussian filtering, "
+            "not a `gaussian_noise` symbol."
+        ),
+    },
+)
+
+
 @dataclass(slots=True)
 class ValidationReport:
     errors: list[str] = field(default_factory=list)
@@ -108,6 +123,9 @@ def _repair_generated_code(code: str, *, viewer=None) -> tuple[str, list[str]]:
             "Replaced `viewer.layers[selected_layer]` with `selected_layer` because `selected_layer` is already a napari layer object."
         )
 
+    repaired, import_notes = _repair_invalid_imports(repaired)
+    repair_notes.extend(import_notes)
+
     repaired, layer_lookup_notes = _repair_placeholder_layer_lookup(repaired, viewer=viewer)
     repair_notes.extend(layer_lookup_notes)
 
@@ -115,6 +133,73 @@ def _repair_generated_code(code: str, *, viewer=None) -> tuple[str, list[str]]:
     repair_notes.extend(data_access_notes)
 
     return repaired, repair_notes
+
+
+def _repair_invalid_imports(code: str) -> tuple[str, list[str]]:
+    text = str(code or "")
+    if not text.strip():
+        return text, []
+
+    try:
+        tree = ast.parse(text, mode="exec")
+    except SyntaxError:
+        return text, []
+
+    repaired = text
+    repair_notes: list[str] = []
+
+    for rule in IMPORT_SYMBOL_REPAIR_RULES:
+        module_name = str(rule["module"])
+        symbol_name = str(rule["name"])
+        replacement_name = str(rule["replacement_name"])
+        if _classify_import_symbol(module_name, symbol_name) != "missing_symbol":
+            continue
+
+        pattern = re.compile(
+            rf'(?m)^(?P<indent>\s*)from\s+{re.escape(module_name)}\s+import\s+(?P<imports>.+?)\s*$'
+        )
+
+        def replace_import_line(match: re.Match[str]) -> str:
+            imports_text = str(match.group("imports") or "").strip()
+            parts = [part.strip() for part in imports_text.split(",") if part.strip()]
+            updated_parts: list[str] = []
+            changed = False
+            for part in parts:
+                if part == symbol_name:
+                    updated_parts.append(replacement_name)
+                    changed = True
+                    continue
+                alias_match = re.fullmatch(rf"{re.escape(symbol_name)}\s+as\s+([A-Za-z_][A-Za-z0-9_]*)", part)
+                if alias_match:
+                    updated_parts.append(f"{replacement_name} as {alias_match.group(1)}")
+                    changed = True
+                    continue
+                updated_parts.append(part)
+            if not changed:
+                return match.group(0)
+            return f"{match.group('indent')}from {module_name} import {', '.join(updated_parts)}"
+
+        updated = pattern.sub(replace_import_line, repaired)
+        if updated == repaired:
+            continue
+        repaired = updated
+        for source_pattern, replacement_pattern in rule.get("call_rewrites", ()):
+            repaired = re.sub(source_pattern, replacement_pattern, repaired)
+        repair_notes.append(str(rule["note"]))
+
+    return repaired, repair_notes
+
+
+def _classify_import_symbol(module_name: str, symbol_name: str) -> str:
+    module_clean = str(module_name or "").strip()
+    symbol_clean = str(symbol_name or "").strip()
+    if not module_clean or not symbol_clean:
+        return "unknown"
+    try:
+        module = importlib.import_module(module_clean)
+    except Exception:
+        return "missing_module"
+    return "ok" if hasattr(module, symbol_clean) else "missing_symbol"
 
 
 def _extract_code_candidate(text: str) -> str:

@@ -182,7 +182,7 @@ UI_HELP_ITEMS = [
     {
         "label": "Help",
         "aliases": ("help menu", "help button"),
-        "purpose": "Opens prompt tips, UI-help controls, version notes, about text, and bug-report guidance.",
+        "purpose": "Opens UI-help controls, version notes, about text, and bug-report guidance.",
         "when": "Use it when you want help using the plugin, want to see what changed, or need bug-report links.",
         "tip": "UI Help is off by default for expert workflows and can be enabled from the Help menu when you want local UI explanations.",
     },

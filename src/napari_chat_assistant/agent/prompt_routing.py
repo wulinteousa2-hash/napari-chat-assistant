@@ -413,6 +413,178 @@ def _synthetic_demo_choice_message() -> str:
     return "Sure. I can generate a synthetic 2D grayscale image, 3D grayscale volume, 2D RGB image, or 3D RGB volume. Which one would you like?"
 
 
+def _looks_like_image_review_setup_request(source: str) -> bool:
+    if not _has_any(source, ("prepare", "set up", "setup", "configure", "make this viewer ready")):
+        return False
+    if not _has_any(source, ("image review", "review images", "image inspection", "viewer for image", "images for review")):
+        return False
+    return _has_any(source, ("hide labels", "hide points", "show only image", "image layers", "grid view", "tile"))
+
+
+def _image_review_setup_steps(source: str) -> list[dict]:
+    steps: list[dict] = []
+    if _has_any(source, ("hide labels", "hide label", "without labels")):
+        steps.append({"tool": "hide_layers_by_type", "arguments": {"layer_type": "labels"}, "on_error": "skip"})
+    if _has_any(source, ("hide points", "hide point", "hide labels and points", "hide labels and point", "without points")):
+        steps.append({"tool": "hide_layers_by_type", "arguments": {"layer_type": "points"}, "on_error": "skip"})
+    if _has_any(source, ("show only image", "only image layers", "keep only image", "show image layers")):
+        steps.append({"tool": "show_only_layer_type", "arguments": {"layer_type": "image"}, "on_error": "stop"})
+    if _has_any(source, ("axes labels on", "turn axes labels on", "show axes labels", "axis labels on")):
+        steps.append({"tool": "set_axes_labels", "arguments": {"enabled": True}, "on_error": "skip"})
+    if _has_any(source, ("hide scale bar", "hide the scale bar", "scale bar off", "turn the scale bar off")):
+        steps.append({"tool": "set_scale_bar_visible", "arguments": {"visible": False}, "on_error": "skip"})
+    elif _has_any(source, ("show scale bar", "scale bar on", "turn the scale bar on")):
+        steps.append({"tool": "set_scale_bar_visible", "arguments": {"visible": True}, "on_error": "skip"})
+    if _has_any(source, ("grid view", "tile", "tiled", "side by side", "side-by-side")):
+        steps.append({"tool": "show_image_layers_in_grid", "arguments": {"spacing": 2}, "on_error": "skip"})
+    if _has_any(source, ("fit view", "fit the view", "fit viewer", "fit visible", "center")):
+        steps.append({"tool": "fit_view", "arguments": {}, "on_error": "skip"})
+    if not steps:
+        steps = [
+            {"tool": "hide_layers_by_type", "arguments": {"layer_type": "labels"}, "on_error": "skip"},
+            {"tool": "hide_layers_by_type", "arguments": {"layer_type": "points"}, "on_error": "skip"},
+            {"tool": "show_only_layer_type", "arguments": {"layer_type": "image"}, "on_error": "stop"},
+            {"tool": "set_axes_labels", "arguments": {"enabled": True}, "on_error": "skip"},
+            {"tool": "set_scale_bar_visible", "arguments": {"visible": False}, "on_error": "skip"},
+            {"tool": "show_image_layers_in_grid", "arguments": {"spacing": 2}, "on_error": "skip"},
+            {"tool": "fit_view", "arguments": {}, "on_error": "skip"},
+        ]
+    return steps
+
+
+def _quick_control_bool_from_clause(clause: str, *, default: bool = True) -> bool:
+    if _has_any(clause, (" off", " hide", " hidden", " disable", " disabled", " without ")):
+        return False
+    if _has_any(clause, (" on", " show", " visible", " enable", " enabled", " turn ")):
+        return True
+    return default
+
+
+def _quick_control_workflow_clauses(source: str) -> list[str]:
+    text = str(source or "").strip()
+    if not text:
+        return []
+
+    numbered = list(re.finditer(r"(?:^|\s)(?:\d+[\.\)]|step\s+\d+[\.\):\-]?)\s*", text))
+    if numbered:
+        clauses: list[str] = []
+        for index, match in enumerate(numbered):
+            start = match.end()
+            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(text)
+            clause = text[start:end].strip(" ,.;:-")
+            if clause:
+                clauses.append(clause)
+        return clauses
+
+    separators = r"\s*(?:,|;|\bthen\b|\band then\b)\s+"
+    return [clause.strip(" ,.;:-") for clause in re.split(separators, text) if clause.strip(" ,.;:-")]
+
+
+def _quick_control_step_from_clause(clause: str) -> dict | None:
+    source = _normalize_text(clause)
+    if not source:
+        return None
+
+    if _has_any(source, ("show only image layers", "only image layers", "keep only image layers", "show only images")):
+        return {"tool": "show_only_layer_type", "arguments": {"layer_type": "image"}, "on_error": "stop"}
+    if _has_any(source, ("show only labels layers", "only labels layers", "keep only labels layers")):
+        return {"tool": "show_only_layer_type", "arguments": {"layer_type": "labels"}, "on_error": "stop"}
+    if _has_any(source, ("show only points layers", "only points layers", "keep only points layers")):
+        return {"tool": "show_only_layer_type", "arguments": {"layer_type": "points"}, "on_error": "stop"}
+    if _has_any(source, ("show only shapes layers", "only shapes layers", "keep only shapes layers")):
+        return {"tool": "show_only_layer_type", "arguments": {"layer_type": "shapes"}, "on_error": "stop"}
+
+    if _has_any(source, ("hide labels layers", "hide label layers", "hide labels", "without labels")):
+        return {"tool": "hide_layers_by_type", "arguments": {"layer_type": "labels"}, "on_error": "skip"}
+    if _has_any(source, ("show labels layers", "show label layers", "show labels")):
+        return {"tool": "show_layers_by_type", "arguments": {"layer_type": "labels"}, "on_error": "skip"}
+    if _has_any(source, ("hide points layers", "hide point layers", "hide points", "without points")):
+        return {"tool": "hide_layers_by_type", "arguments": {"layer_type": "points"}, "on_error": "skip"}
+    if _has_any(source, ("show points layers", "show point layers", "show points")):
+        return {"tool": "show_layers_by_type", "arguments": {"layer_type": "points"}, "on_error": "skip"}
+
+    if _has_any(
+        source,
+        (
+            "fit view",
+            "fit the view",
+            "fit viewer",
+            "fit visible",
+            "fit current visible",
+            "fit the current visible",
+            "fit layers in view",
+            "fit the layers in view",
+            "center view",
+        ),
+    ):
+        return {"tool": "fit_view", "arguments": {}, "on_error": "skip"}
+    if _has_any(source, ("zoom in", "camera in")):
+        return {"tool": "zoom_in_view", "arguments": {}, "on_error": "skip"}
+    if _has_any(source, ("zoom out", "camera out")):
+        return {"tool": "zoom_out_view", "arguments": {}, "on_error": "skip"}
+    if _has_any(source, ("toggle 2d", "toggle 3d", "switch 2d", "switch 3d", "2d and 3d", "2d/3d")):
+        return {"tool": "toggle_2d_3d_camera", "arguments": {}, "on_error": "skip"}
+
+    if _has_any(source, ("grid view", "tile images", "tile the images", "tiled view", "side by side", "side-by-side")):
+        if _quick_control_bool_from_clause(source, default=True):
+            return {"tool": "show_image_layers_in_grid", "arguments": {"spacing": 2}, "on_error": "skip"}
+        return {"tool": "hide_image_grid_view", "arguments": {}, "on_error": "skip"}
+
+    if "tooltip" in source:
+        return {"tool": "set_layer_tooltips_visible", "arguments": {"visible": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+
+    if "axes labels" in source or "axis labels" in source:
+        return {"tool": "set_axes_labels", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "axes arrows" in source or "axis arrows" in source:
+        return {"tool": "set_axes_arrows", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "colored axes" in source or "colour axes" in source or "axes colored" in source or "axes colour" in source:
+        return {"tool": "set_axes_colored", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "dashed axes" in source or "axes dashed" in source:
+        return {"tool": "set_axes_dashed", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "axes" in source or "axis" in source:
+        return {"tool": "set_axes_visible", "arguments": {"visible": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+
+    if "scale bar box" in source:
+        return {"tool": "set_scale_bar_box", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "scale bar ticks" in source:
+        return {"tool": "set_scale_bar_ticks", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "colored scale bar" in source or "colour scale bar" in source or "scale bar colored" in source or "scale bar colour" in source:
+        return {"tool": "set_scale_bar_colored", "arguments": {"enabled": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "scale bar" in source:
+        return {"tool": "set_scale_bar_visible", "arguments": {"visible": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+
+    if "bounding box" in source:
+        return {"tool": "set_selected_layer_bounding_box_visible", "arguments": {"visible": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+    if "name overlay" in source or "layer name" in source:
+        return {"tool": "set_selected_layer_name_overlay_visible", "arguments": {"visible": _quick_control_bool_from_clause(source)}, "on_error": "skip"}
+
+    return None
+
+
+def _quick_control_sequence_steps(source: str) -> list[dict]:
+    steps: list[dict] = []
+    for clause in _quick_control_workflow_clauses(source):
+        step = _quick_control_step_from_clause(clause)
+        if step is not None:
+            steps.append(step)
+    return steps
+
+
+def _looks_like_restore_last_workflow_request(source: str) -> bool:
+    return _has_any(
+        source,
+        (
+            "undo last workflow",
+            "undo the last workflow",
+            "undo quick workflow",
+            "restore before workflow",
+            "restore viewer before workflow",
+            "reset quick controls",
+            "restore quick controls",
+        ),
+    )
+
+
 def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None = None) -> dict | None:
     source = _normalize_text(text)
     if not source:
@@ -434,6 +606,27 @@ def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None =
         return {
             "action": "reply",
             "message": _getting_started_message(has_selected_layer),
+        }
+
+    if _looks_like_restore_last_workflow_request(source):
+        return {
+            "action": "restore_tool_sequence",
+            "message": "Restoring viewer controls from before the last quick-control workflow.",
+        }
+
+    if _looks_like_image_review_setup_request(source):
+        return {
+            "action": "tool_sequence",
+            "steps": _image_review_setup_steps(source),
+            "message": "Preparing the viewer for image review with a safe quick-control workflow.",
+        }
+
+    quick_control_steps = _quick_control_sequence_steps(source)
+    if len(quick_control_steps) >= 2:
+        return {
+            "action": "tool_sequence",
+            "steps": quick_control_steps,
+            "message": "Running a safe quick-control workflow in the order you requested.",
         }
 
     if _looks_like_synthetic_demo_request(source):

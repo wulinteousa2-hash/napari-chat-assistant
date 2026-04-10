@@ -25,6 +25,14 @@ _PATH_KEYS = (
 )
 
 
+def parse_atlas_source(source_path: str, tile_root_override: str | None = None) -> AtlasProject:
+    source_file = Path(source_path).expanduser().resolve()
+    suffix = source_file.suffix.lower()
+    if suffix == ".ve-mif":
+        return parse_atlas_vemif(str(source_file), tile_root_override=tile_root_override)
+    return parse_atlas_xml(str(source_file), tile_root_override=tile_root_override)
+
+
 def parse_atlas_xml(xml_path: str, tile_root_override: str | None = None) -> AtlasProject:
     xml_file = Path(xml_path).expanduser().resolve()
     tree = ET.parse(xml_file)
@@ -106,6 +114,104 @@ def parse_atlas_xml(xml_path: str, tile_root_override: str | None = None) -> Atl
         warnings.append(
             f"Ignored {ignored_element_count} non-tile XML element(s) during parsing."
         )
+    missing_tiles = [tile.file_name or tile.tile_id for tile in tiles if not tile.exists]
+    return AtlasProject(metadata=metadata, tiles=tiles, missing_tiles=missing_tiles, warnings=warnings)
+
+
+def parse_atlas_vemif(mif_path: str, tile_root_override: str | None = None) -> AtlasProject:
+    mif_file = Path(mif_path).expanduser().resolve()
+    tree = ET.parse(mif_file)
+    root = tree.getroot()
+    override = str(tile_root_override or "").strip()
+
+    metadata_values = _collect_metadata(root)
+    pixel_size_value, pixel_size_unit = _pixel_size_fields(root)
+    atlas_name = _pick_first_text(metadata_values, ("name",)) or mif_file.stem
+    tile_width = _pick_first_int(metadata_values, ("tilewidth",))
+    tile_height = _pick_first_int(metadata_values, ("tileheight",))
+    num_tiles_x = _pick_first_int(metadata_values, ("numtilesx",))
+    num_tiles_y = _pick_first_int(metadata_values, ("numtilesy",))
+    fov_um = _pick_first_float(metadata_values, ("fov",))
+    overlap_x_um = _pick_first_float(metadata_values, ("tileoverlapxum",)) or 0.0
+    overlap_y_um = _pick_first_float(metadata_values, ("tileoverlapyum",)) or 0.0
+    pixel_size_um = _pixel_size_um(pixel_size_value, pixel_size_unit, fov_um, tile_width)
+    step_x_px = _step_pixels(fov_um, overlap_x_um, tile_width, pixel_size_um)
+    step_y_px = _step_pixels(fov_um, overlap_y_um, tile_height, pixel_size_um)
+
+    updates_path = mif_file.with_suffix(".ve-updates")
+    update_positions_px = _load_update_positions_px(updates_path, pixel_size_um)
+
+    tiles: list[TileRecord] = []
+    nominal_tiles: list[tuple[TileRecord, float | None, float | None]] = []
+    for index, element in enumerate(root.findall("./Tiles/Tile")):
+        raw_values = _element_value_map(element)
+        row = _pick_first_int(raw_values, ("row",))
+        col = _pick_first_int(raw_values, ("col", "column"))
+        source_path = _pick_first_text(raw_values, ("filename",))
+        if row is None or col is None or not source_path:
+            continue
+        tile_name = Path(source_path.replace("\\", "/")).stem
+        resolved_path = _resolve_tile_path(source_path, xml_dir=mif_file.parent, tile_root_override=override)
+        start_x = float(max(0, col - 1) * step_x_px) if step_x_px is not None else None
+        start_y = float(max(0, row - 1) * step_y_px) if step_y_px is not None else None
+        tile = TileRecord(
+            tile_id=tile_name or f"tile_{index:04d}",
+            file_name=Path(source_path).name,
+            source_path=source_path,
+            resolved_path=str(resolved_path) if resolved_path is not None else "",
+            row=row,
+            col=col,
+            start_x=start_x,
+            start_y=start_y,
+            position_x=_pick_first_float(raw_values, ("stagex", "targetstagex")),
+            position_y=_pick_first_float(raw_values, ("stagey", "targetstagey")),
+            width=tile_width,
+            height=tile_height,
+            exists=resolved_path is not None and resolved_path.exists(),
+            transform=TileTransform(
+                nominal_x=float(start_x or 0.0),
+                nominal_y=float(start_y or 0.0),
+                nominal_z=_pick_first_float(raw_values, ("stagez", "targetstagez")) or 0.0,
+            ),
+            metadata={
+                **raw_values,
+                "file_name": Path(source_path).name,
+                "source_path": source_path,
+            },
+        )
+        nominal_tiles.append((tile, start_x, start_y))
+
+    normalized_tiles = _normalize_tile_origins(nominal_tiles)
+    _apply_refined_positions(normalized_tiles, update_positions_px)
+    tiles.extend(normalized_tiles)
+
+    width_px = _canvas_extent(tiles, "x")
+    height_px = _canvas_extent(tiles, "y")
+    metadata_values["source_kind"] = "ve_mif"
+    metadata_values["source_path"] = str(mif_file)
+    metadata_values["pixel_size_unit"] = pixel_size_unit or metadata_values.get("pixel_size_unit") or "um"
+    metadata_values["atlas_stitch_update_file"] = str(updates_path) if updates_path.exists() else ""
+    metadata_values["atlas_stitch_updates_applied"] = bool(update_positions_px)
+    metadata_values["atlas_stitch_nominal_step_x_px"] = step_x_px
+    metadata_values["atlas_stitch_nominal_step_y_px"] = step_y_px
+    metadata = AtlasMetadata(
+        atlas_name=atlas_name,
+        xml_path=str(mif_file),
+        source_directory=str(mif_file.parent),
+        tile_root_override=override,
+        source_software=_pick_first_text(metadata_values, ("application", "software", "vendor")),
+        tile_count=len(tiles),
+        image_width=width_px,
+        image_height=height_px,
+        channel_count=1,
+        voxel_size_x=pixel_size_value,
+        voxel_size_y=pixel_size_value,
+        voxel_size_z=None,
+        extra_metadata=metadata_values,
+    )
+    warnings: list[str] = []
+    if updates_path.exists() and not update_positions_px:
+        warnings.append("VE updates file was found but did not provide usable tile transforms.")
     missing_tiles = [tile.file_name or tile.tile_id for tile in tiles if not tile.exists]
     return AtlasProject(metadata=metadata, tiles=tiles, missing_tiles=missing_tiles, warnings=warnings)
 
@@ -256,6 +362,142 @@ def _override_relative_parts(path_text: str) -> list[Path]:
             seen.add(key)
             unique.append(candidate)
     return unique
+
+
+def _load_update_positions_px(updates_path: Path, pixel_size_um: float | None) -> dict[str, tuple[float | None, float | None]]:
+    if not updates_path.exists():
+        return {}
+    try:
+        tree = ET.parse(updates_path)
+    except Exception:
+        return {}
+    positions: dict[str, tuple[float | None, float | None]] = {}
+    root = tree.getroot()
+    for element in root.findall("./Tile"):
+        name = (element.findtext("Name") or "").strip()
+        parent = element.find("./ParentTransform")
+        if not name or parent is None:
+            continue
+        x_um = _safe_float(parent.findtext("M41"))
+        y_um = _safe_float(parent.findtext("M42"))
+        positions[name] = (
+            _physical_um_to_px(x_um, pixel_size_um),
+            _physical_um_to_px(y_um, pixel_size_um),
+        )
+    return positions
+
+
+def _normalize_tile_origins(raw_tiles: list[tuple[TileRecord, float | None, float | None]]) -> list[TileRecord]:
+    xs = [float(start_x) for _, start_x, _ in raw_tiles if start_x is not None]
+    ys = [float(start_y) for _, _, start_y in raw_tiles if start_y is not None]
+    min_x = min(xs) if xs else 0.0
+    min_y = min(ys) if ys else 0.0
+    tiles: list[TileRecord] = []
+    for tile, start_x, start_y in raw_tiles:
+        if start_x is not None:
+            tile.start_x = float(start_x) - min_x
+            tile.transform.nominal_x = tile.start_x
+        if start_y is not None:
+            tile.start_y = float(start_y) - min_y
+            tile.transform.nominal_y = tile.start_y
+        tiles.append(tile)
+    return tiles
+
+
+def _apply_refined_positions(
+    tiles: list[TileRecord],
+    update_positions_px: dict[str, tuple[float | None, float | None]],
+) -> None:
+    refined_entries: list[tuple[TileRecord, float, float]] = []
+    xs: list[float] = []
+    ys: list[float] = []
+    for tile in tiles:
+        refined_x, refined_y = update_positions_px.get(tile.tile_id, (None, None))
+        if refined_x is None or refined_y is None:
+            continue
+        refined_x = float(refined_x)
+        refined_y = float(refined_y)
+        xs.append(refined_x)
+        ys.append(refined_y)
+        refined_entries.append((tile, refined_x, refined_y))
+    if not refined_entries:
+        return
+    min_x = min(xs)
+    min_y = min(ys)
+    for tile, refined_x, refined_y in refined_entries:
+        tile.transform.refined_x = refined_x - min_x
+        tile.transform.refined_y = refined_y - min_y
+
+
+def _canvas_extent(tiles: list[TileRecord], axis: str) -> int | None:
+    starts: list[float] = []
+    ends: list[float] = []
+    for tile in tiles:
+        start = tile.start_x if axis == "x" else tile.start_y
+        size = tile.width if axis == "x" else tile.height
+        if start is None or size is None:
+            continue
+        starts.append(float(start))
+        ends.append(float(start) + float(size))
+    if not starts or not ends:
+        return None
+    return int(round(max(ends) - min(starts)))
+
+
+def _pixel_size_um(pixel_size_value: float | None, pixel_size_unit: str, fov_um: float | None, tile_width: int | None) -> float | None:
+    unit_scale = _unit_to_um_scale(pixel_size_unit)
+    if pixel_size_value is not None and unit_scale is not None:
+        return float(pixel_size_value) * unit_scale
+    if fov_um is not None and tile_width:
+        return float(fov_um) / float(tile_width)
+    return None
+
+
+def _step_pixels(fov_um: float | None, overlap_um: float | None, tile_extent_px: int | None, pixel_size_um: float | None) -> float | None:
+    if fov_um is not None and pixel_size_um:
+        return (float(fov_um) - float(overlap_um or 0.0)) / float(pixel_size_um)
+    if tile_extent_px is None:
+        return None
+    return float(tile_extent_px)
+
+
+def _physical_um_to_px(value_um: float | None, pixel_size_um: float | None) -> float | None:
+    if value_um is None:
+        return None
+    if pixel_size_um is None or abs(pixel_size_um) < 1e-12:
+        return float(value_um)
+    return float(value_um) / float(pixel_size_um)
+
+
+def _unit_to_um_scale(unit: str) -> float | None:
+    normalized = _normalize_unit(unit)
+    if normalized == "um":
+        return 1.0
+    if normalized == "nm":
+        return 0.001
+    if normalized == "mm":
+        return 1000.0
+    return None
+
+
+def _normalize_unit(unit: str) -> str:
+    text = str(unit or "").strip().lower().replace("µ", "u")
+    if text in {"um", "micrometer", "micrometers", "micron", "microns"}:
+        return "um"
+    if text in {"nm", "nanometer", "nanometers"}:
+        return "nm"
+    if text in {"mm", "millimeter", "millimeters"}:
+        return "mm"
+    return text
+
+
+def _safe_float(value: str | None) -> float | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_key(value: str) -> str:

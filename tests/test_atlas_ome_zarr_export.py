@@ -61,6 +61,7 @@ def test_nominal_atlas_export_writes_stitched_omezarr_with_metadata(tmp_path):
         "pixel_size_unit": "",
         "bit_per_sample": "",
         "sample_per_pixel": "",
+        "fusion_method": "overwrite",
         "export_version": 1,
     }
     multiscales = root.attrs["multiscales"]

@@ -114,6 +114,7 @@ def _render_markdown_html(source: str) -> str:
     except Exception:
         return _render_legacy_markdown_html(source)
     rendered = _style_markdown_html(rendered)
+    rendered = rendered.strip()
     return rendered or "<p></p>"
 
 
@@ -121,7 +122,7 @@ def _get_markdown_renderer():
     global _MARKDOWN_RENDERER
     if _MARKDOWN_RENDERER is not None:
         return _MARKDOWN_RENDERER
-    md = MarkdownIt("commonmark", {"html": False, "breaks": False})
+    md = MarkdownIt("commonmark", {"html": False, "breaks": True})
     md.enable("table")
     md.renderer.rules["fence"] = _render_fence_token
     md.renderer.rules["code_block"] = _render_code_block_token
@@ -162,9 +163,8 @@ def _render_link_open_token(renderer, tokens, idx, options, env):
 
 
 def _style_markdown_html(rendered: str) -> str:
-    styled = rendered
+    styled = rendered.replace("<br />\n", "<br>")
     replacements = {
-        "<p>": '<p style="margin: 0 0 10px 0;">',
         "<ul>": '<ul style="margin: 0 0 10px 20px;">',
         "<ol>": '<ol style="margin: 0 0 10px 20px;">',
         "<li>": '<li style="margin: 2px 0;">',

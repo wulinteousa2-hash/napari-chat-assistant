@@ -92,14 +92,33 @@ ASSISTANT_TOOL_NAMES = {
     "project_max_intensity",
     "extract_axon_interiors",
     "crop_to_layer_bbox",
+    "fit_view",
+    "zoom_in_view",
+    "zoom_out_view",
+    "toggle_2d_3d_camera",
+    "set_layer_tooltips_visible",
+    "set_axes_visible",
+    "set_axes_colored",
+    "set_axes_labels",
+    "set_axes_dashed",
+    "set_axes_arrows",
+    "set_scale_bar_visible",
+    "set_scale_bar_box",
+    "set_scale_bar_colored",
+    "set_scale_bar_ticks",
+    "set_selected_layer_bounding_box_visible",
+    "set_selected_layer_name_overlay_visible",
     "show_image_layers_in_grid",
     "hide_image_grid_view",
     "show_layers",
+    "show_layers_by_type",
     "hide_layers",
+    "hide_layers_by_type",
     "hide_all_layers",
     "delete_all_layers",
     "delete_layers",
     "show_only_layers",
+    "show_only_layer_type",
     "show_all_except_layers",
     "show_all_layers",
     "set_layer_scale",
@@ -269,14 +288,33 @@ def assistant_system_prompt() -> str:
         '- project_max_intensity: {"layer_name": optional string, "axis": optional int}\n'
         '- extract_axon_interiors: {"image_layer": optional string, "sigma": optional float, "dark_quantile": optional float, "closing_radius": optional int, "min_area": optional int, "max_area": optional int, "clear_border": optional bool, "min_solidity": optional float, "max_eccentricity": optional float}\n'
         '- crop_to_layer_bbox: {"source_layer": string, "reference_layer": string, "padding": optional int or list}\n'
+        '- fit_view: {}\n'
+        '- zoom_in_view: {"factor": optional float}\n'
+        '- zoom_out_view: {"factor": optional float}\n'
+        '- toggle_2d_3d_camera: {}\n'
+        '- set_layer_tooltips_visible: {"visible": bool}\n'
+        '- set_axes_visible: {"visible": bool}\n'
+        '- set_axes_colored: {"enabled": bool}\n'
+        '- set_axes_labels: {"enabled": bool}\n'
+        '- set_axes_dashed: {"enabled": bool}\n'
+        '- set_axes_arrows: {"enabled": bool}\n'
+        '- set_scale_bar_visible: {"visible": bool}\n'
+        '- set_scale_bar_box: {"enabled": bool}\n'
+        '- set_scale_bar_colored: {"enabled": bool}\n'
+        '- set_scale_bar_ticks: {"enabled": bool}\n'
+        '- set_selected_layer_bounding_box_visible: {"layer_name": optional string, "visible": bool}\n'
+        '- set_selected_layer_name_overlay_visible: {"layer_name": optional string, "visible": bool}\n'
         '- show_image_layers_in_grid: {"layer_names": optional list, "spacing": optional float}\n'
         '- hide_image_grid_view: {}\n'
         '- show_layers: {"layer_names": list}\n'
+        '- show_layers_by_type: {"layer_type": "image|labels|shapes|points"}\n'
         '- hide_layers: {"layer_names": list}\n'
+        '- hide_layers_by_type: {"layer_type": "image|labels|shapes|points"}\n'
         '- hide_all_layers: {}\n'
         '- delete_all_layers: {}\n'
         '- delete_layers: {"layer_names": optional list, "layer_type": optional "image|labels|shapes|points"}\n'
         '- show_only_layers: {"layer_names": list}\n'
+        '- show_only_layer_type: {"layer_type": "image|labels|shapes|points"}\n'
         '- show_all_except_layers: {"layer_names": list}\n'
         '- show_all_layers: {}\n'
         '- set_layer_scale: {"layer_name": optional string, "scale": float or list}\n'
@@ -381,14 +419,27 @@ def assistant_system_prompt() -> str:
         "- If the user asks for a max intensity projection, MIP, or projection of a 3D grayscale image, use project_max_intensity.\n"
         "- If the user asks to extract axon interiors, enclosed interiors from dark myelin rings, or candidate axon interiors from a 2D grayscale EM image, use extract_axon_interiors.\n"
         "- If the user asks to crop one layer to the foreground bounding box of another layer or crop to a mask bounding box, use crop_to_layer_bbox.\n"
+        "- If the user asks to fit the camera to the data, fit to view, reset the view, or center the current visible layers, use fit_view.\n"
+        "- If the user asks to zoom in, magnify the viewer, or get closer without changing the data, use zoom_in_view.\n"
+        "- If the user asks to zoom out, back the camera away, or see more of the scene without changing the data, use zoom_out_view.\n"
+        "- If the user asks to switch between 2D and 3D viewing modes, use toggle_2d_3d_camera.\n"
+        "- If the user asks to turn layer tooltips on or off, use set_layer_tooltips_visible.\n"
+        "- If the user asks to show or hide axes, use set_axes_visible.\n"
+        "- If the user asks for colored axes, axis labels, dashed axes, or axis arrows, use set_axes_colored, set_axes_labels, set_axes_dashed, or set_axes_arrows.\n"
+        "- If the user asks to show or hide the scale bar, or control the scale bar box, color, or ticks, use the set_scale_bar_visible, set_scale_bar_box, set_scale_bar_colored, or set_scale_bar_ticks tools.\n"
+        "- If the user asks to show or hide the bounding box of the selected or named layer, use set_selected_layer_bounding_box_visible.\n"
+        "- If the user asks to show or hide the selected layer name overlay, use set_selected_layer_name_overlay_visible.\n"
         "- If the user asks to compare all open images side by side, show layers in a grid, tile the open images, split open images so they do not overlap, or turn on side-by-side image comparison, use show_image_layers_in_grid.\n"
         "- show_image_layers_in_grid uses napari's viewer grid mode for quick comparison. It does not physically move the layer data.\n"
         "- If the user asks to turn grid view off, return to normal overlap view, or disable tiled image comparison, use hide_image_grid_view.\n"
         "- If the user asks to show, reveal, turn on, or make specific layers visible without hiding others, use show_layers.\n"
+        "- If the user asks to show all image layers, show labels layers, reveal only one layer type without naming each layer, or turn on layers by type, use show_layers_by_type.\n"
         "- If the user asks to hide, turn off, or make specific layers invisible, use hide_layers.\n"
+        "- If the user asks to hide image layers, hide labels layers, hide ROI shape layers, hide points layers, or turn off layers by type, use hide_layers_by_type.\n"
         "- If the user asks to delete, remove, discard, or permanently get rid of layers, use delete_layers instead of hide_layers.\n"
         "- If the user asks to delete all Shapes layers, all ROI shapes layers, or all layers containing shapes, use delete_layers with layer_type=shapes.\n"
         "- If the user asks to show only one or more layers, isolate a layer, or keep only specified layers visible, use show_only_layers.\n"
+        "- If the user asks to show only image layers, keep only labels visible, isolate a single layer type, or hide everything except one layer type, use show_only_layer_type.\n"
         "- If the user asks to show everything again, restore all layers, or turn all layers back on, use show_all_layers.\n"
         "- If the user asks to arrange layers for presentation, place images next to masks, make a montage, build a presentation layout, show layers side by side in one viewer, stack layers in a row or column, or align display copies for visual comparison, use arrange_layers_for_presentation.\n"
         "- arrange_layers_for_presentation physically repositions the original layers or presentation copies in the same viewer. It is different from napari grid view.\n"

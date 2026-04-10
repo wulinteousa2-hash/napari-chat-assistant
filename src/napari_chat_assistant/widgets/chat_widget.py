@@ -57,7 +57,13 @@ from napari_chat_assistant.agent.code_validation import (
     validate_generated_code,
 )
 from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
-from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.agent.dispatcher import (
+    apply_tool_job_result,
+    prepare_tool_job,
+    restore_viewer_control_snapshot,
+    run_tool_job,
+    run_tool_sequence,
+)
 from napari_chat_assistant.agent.followup_semantics import parse_followup_constraint
 from napari_chat_assistant.agent.logging_utils import (
     APP_LOG_PATH,
@@ -572,6 +578,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     recent_action_state = empty_recent_action_state()
     intent_state = empty_intent_state()
     last_failed_tool_state = empty_failed_tool_state()
+    last_tool_sequence_undo_snapshot: dict = {}
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
     template_library_state = template_library_payload()
@@ -860,6 +867,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.1.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- `Quick Controls` are now available from both `Templates` and `Actions`, so common viewer setup can be triggered from prompts or one-click actions.\n"
+                "- Try: `Hide all layers except the selected layer.`\n"
+                "- Safe multi-step viewer workflows can now run several viewer-control steps in order from one numbered prompt.\n"
+                "- Try:\n"
+                "```text\n"
+                "1. Fit the current visible layers in view.\n"
+                "2. Turn the viewer axes on.\n"
+                "3. Turn the scale bar on.\n"
+                "4. Turn the selected layer bounding box on.\n"
+                "5. Turn the selected layer name overlay on.\n"
+                "```\n"
+                "- Say `undo last workflow` to restore the viewer-control state from before the previous quick-control workflow.\n"
+                "- Atlas Stitch source/export options and local code refinement repair were also improved.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.0.3":
             return (
                 f"**What's New In {current}**\n"
@@ -5146,6 +5171,67 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         "prompt_category": "local_workflow_route",
                         "response_action": "reply",
                         "tool_name": "",
+                        "tool_success": True,
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
+            if route_action == "tool_sequence":
+                nonlocal last_tool_sequence_undo_snapshot
+                sequence_message = str(local_workflow_route.get("message", "")).strip()
+                steps = local_workflow_route.get("steps", [])
+                sequence_result = run_tool_sequence(viewer, steps if isinstance(steps, list) else [])
+                undo_snapshot = sequence_result.get("undo_snapshot")
+                if isinstance(undo_snapshot, dict) and sequence_result.get("completed", 0):
+                    last_tool_sequence_undo_snapshot = undo_snapshot
+                result_message = str(sequence_result.get("message", "")).strip() or "Workflow sequence did not return a result."
+                if sequence_result.get("completed", 0):
+                    result_message = f"{result_message}\nYou can say `undo last workflow` to restore the previous viewer controls."
+                append_chat_message(
+                    "assistant",
+                    f"{sequence_message}\n{result_message}" if sequence_message else result_message,
+                )
+                append_log("Handled request via local workflow route: tool_sequence")
+                set_status("Status: workflow sequence completed", ok=bool(sequence_result.get("completed", 0)))
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "tool_sequence",
+                        "tool_name": "run_tool_sequence",
+                        "tool_success": True,
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
+            if route_action == "restore_tool_sequence":
+                if not last_tool_sequence_undo_snapshot:
+                    append_chat_message("assistant", "No quick-control workflow undo state is available yet.")
+                    append_log("Restore quick-control workflow skipped: no undo snapshot.")
+                    set_status("Status: no workflow undo state", ok=False)
+                    return
+                restore_message = restore_viewer_control_snapshot(viewer, last_tool_sequence_undo_snapshot)
+                last_tool_sequence_undo_snapshot = {}
+                route_message = str(local_workflow_route.get("message", "")).strip()
+                append_chat_message("assistant", f"{route_message}\n{restore_message}" if route_message else restore_message)
+                append_log("Handled request via local workflow route: restore_tool_sequence")
+                set_status("Status: workflow controls restored", ok=True)
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "restore_tool_sequence",
+                        "tool_name": "restore_viewer_control_snapshot",
                         "tool_success": True,
                         "pending_code_generated": False,
                         **selected_layer_snapshot(),

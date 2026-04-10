@@ -8,6 +8,7 @@ def test_action_library_payload_has_categories_and_actions():
 
     assert "Widgets" in payload["categories"]
     assert "Workspace" in payload["categories"]
+    assert "Quick Controls" in payload["categories"]
     assert "Annotation" in payload["categories"]
     assert "Enhance" in payload["categories"]
     assert "Montage" in payload["categories"]
@@ -42,6 +43,18 @@ def test_action_library_contains_function_and_tool_actions():
     assert "Delete Text Annotation" in titles
     assert "Hide All" in titles
     assert "Isolate Selected" in titles
+    assert "Fit View" in titles
+    assert "Tooltips On" in titles
+    assert "Axes On" in titles
+    assert "Axes Colored On" in titles
+    assert "Axes Dashed On" in titles
+    assert "Axes Arrows On" in titles
+    assert "Scale Bar On" in titles
+    assert "Scale Bar Box On" in titles
+    assert "Scale Bar Colored On" in titles
+    assert "Scale Bar Ticks On" in titles
+    assert "Bounding Box On" in titles
+    assert "Layer Name On" in titles
     assert "Set Uniform Scale 0.1" in titles
     assert "Reset Uniform Scale" in titles
     assert "Gaussian Blur" in titles

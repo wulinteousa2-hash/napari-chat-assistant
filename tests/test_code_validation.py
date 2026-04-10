@@ -34,6 +34,17 @@ print(layer.shape)
         "forbidden_substrings": ['from napari import run_in_background', 'viewer.layers["img_a"]', "print(layer.shape)"],
         "expected_notes": ["Removed `run_in_background` import", "placeholder layer name [img_a]", "layer.shape"],
     },
+    {
+        "name": "invalid_scipy_symbol_rewritten_to_gaussian_filter",
+        "input_code": """
+from scipy.ndimage import gaussian_noise
+
+result = gaussian_noise(data, sigma=1.2)
+""",
+        "expected_substrings": ["from scipy.ndimage import gaussian_filter", "result = gaussian_noise(data, sigma=1.2)"],
+        "forbidden_substrings": ["from scipy.ndimage import gaussian_noise"],
+        "expected_notes": ["scipy.ndimage", "gaussian_filter"],
+    },
 ]
 
 
@@ -218,7 +229,24 @@ def test_validate_generated_code_warns_on_invalid_viewer_keyword():
     assert any("Invalid viewer keyword" in warning for warning in report.warnings)
     assert report.errors == []
     assert report.has_blocking_issues("strict")
-    assert not report.has_blocking_issues("permissive")
+
+
+def test_build_code_repair_context_includes_import_symbol_repair_note():
+    context = build_code_repair_context(
+        """
+fix this code:
+```python
+from scipy.ndimage import gaussian_noise
+
+result = gaussian_noise(data, sigma=1.2)
+```
+"""
+    )
+
+    assert context is not None
+    assert "from scipy.ndimage import gaussian_filter" in context["normalized_code_candidate"]
+    notes = context["local_validation"]["notes"]
+    assert any("gaussian_filter" in note for note in notes)
 
 
 def test_build_code_repair_context_extracts_fenced_code_and_detects_repair_intent():

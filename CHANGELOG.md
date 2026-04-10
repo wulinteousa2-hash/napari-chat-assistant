@@ -2,6 +2,21 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.1.0
+
+- Added a new `Quick Controls` surface across Actions, tools, and templates for common viewer operations that should not require menu navigation or generated code.
+- Added deterministic viewer controls for fitting the view, zooming in and out, switching between 2D and 3D camera modes, toggling layer tooltips, and controlling axes, axes labels, colored axes, dashed axes, axis arrows, scale bar visibility, scale bar box, scale bar color, and scale bar ticks.
+- Added selected-layer overlay controls for showing or hiding the active layer bounding box and layer-name overlay directly from prompts, Actions, and templates.
+- Expanded layer visibility controls with type-based operations such as showing, hiding, or isolating all `Image`, `Labels`, `Points`, or `Shapes` layers.
+- Added prompt-routed quick-control workflows so multi-step instructions and numbered lists can run safe viewer-control tools in order, including an image-review setup workflow that hides annotation layers, keeps image layers visible, adjusts overlays, tiles images in grid view, and fits the camera.
+- Added undo support for the last quick-control workflow by capturing and restoring viewer-control state, including layer visibility, grid state, overlays, camera zoom/center, and 2D/3D display mode.
+- Expanded the template library with reusable Quick Controls prompts for view fitting, zooming, 2D/3D toggling, axes and scale-bar controls, selected-layer overlays, layer visibility, image-review setup, workflow undo, ROI/point layer cleanup, and selected-layer scale reset.
+- Added `What can you do with my current layers?` as a getting-started prompt for orienting users from the current viewer state.
+- Improved the specialized Atlas Stitch workflow for users who need it, with XML or VE-MIF source loading, optional VE update transforms, configurable tile overlap, and selectable OME-Zarr tile fusion methods.
+- Improved Atlas Stitch preview/export robustness with refreshed tile availability checks, safer preview downsample recommendations for large atlases, and overlap/fusion metadata in summaries and exports.
+- Improved code refinement by locally repairing the common invalid import `from scipy.ndimage import gaussian_noise` to `from scipy.ndimage import gaussian_filter` and surfacing the repair note in validation context.
+- Added regression coverage for Quick Controls actions, prompt routing, safe workflow execution, workflow undo, template-library entries, specialized Atlas Stitch export/source behavior, and invalid-import repair.
+
 ## 2.0.3
 
 - Improved follow-up understanding so short conversational prompts such as `same as before`, `but for labels`, `use the selected one`, `without histogram`, and `just explain` are handled more like edits to the previous plan instead of isolated keyword matches.

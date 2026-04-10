@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 from napari_chat_assistant.agent.context import layer_summary
-from napari_chat_assistant.agent.dispatcher import apply_tool_job_result, prepare_tool_job, run_tool_job
+from napari_chat_assistant.agent.dispatcher import (
+    apply_tool_job_result,
+    prepare_tool_job,
+    restore_viewer_control_snapshot,
+    run_tool_job,
+    run_tool_sequence,
+)
 from napari_chat_assistant.widgets.intensity_metrics_widget import IntensityMetricsWidget
 
 
@@ -1028,6 +1034,39 @@ def test_hide_layers_hides_named_layers(make_napari_viewer_proxy):
     assert "Hid 1 layer(s): [mask_a]." == message
 
 
+def test_show_layers_by_type_makes_matching_layers_visible(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    image_b = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="image_b")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    image_a.visible = False
+    image_b.visible = False
+    mask_a.visible = False
+
+    prepared = prepare_tool_job(viewer, "show_layers_by_type", {"layer_type": "image"})
+    message = prepared["message"]
+
+    assert image_a.visible is True
+    assert image_b.visible is True
+    assert mask_a.visible is False
+    assert "Showed 2 [image] layer(s): [image_a], [image_b]." == message
+
+
+def test_hide_layers_by_type_hides_matching_layers(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    image_a.visible = True
+    mask_a.visible = True
+
+    prepared = prepare_tool_job(viewer, "hide_layers_by_type", {"layer_type": "labels"})
+    message = prepared["message"]
+
+    assert image_a.visible is True
+    assert mask_a.visible is False
+    assert "Hid 1 [labels] layer(s): [mask_a]." == message
+
+
 def test_show_only_layers_hides_everything_else(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
@@ -1043,6 +1082,108 @@ def test_show_only_layers_hides_everything_else(make_napari_viewer_proxy):
     assert "Showing only 1 layer(s): [image_b]." == message
 
 
+def test_show_only_layer_type_hides_everything_else(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    mask_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="mask_a")
+    points_a = viewer.add_points(np.array([[1, 1]], dtype=float), name="points_a")
+
+    prepared = prepare_tool_job(viewer, "show_only_layer_type", {"layer_type": "labels"})
+    message = prepared["message"]
+
+    assert image_a.visible is False
+    assert mask_a.visible is True
+    assert points_a.visible is False
+    assert "Showing only 1 [labels] layer(s): [mask_a]." == message
+
+
+def test_run_tool_sequence_executes_safe_immediate_tools_in_order(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    image_b = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="image_b")
+    labels_a = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="labels_a")
+    points_a = viewer.add_points(np.array([[1, 1]], dtype=float), name="points_a")
+
+    result = run_tool_sequence(
+        viewer,
+        [
+            {"tool": "hide_layers_by_type", "arguments": {"layer_type": "labels"}},
+            {"tool": "hide_layers_by_type", "arguments": {"layer_type": "points"}},
+            {"tool": "show_only_layer_type", "arguments": {"layer_type": "image"}, "on_error": "stop"},
+            {"tool": "set_axes_labels", "arguments": {"enabled": True}},
+            {"tool": "set_scale_bar_visible", "arguments": {"visible": False}},
+            {"tool": "show_image_layers_in_grid", "arguments": {"spacing": 2}},
+        ],
+    )
+
+    assert result["completed"] == 6
+    assert result["skipped"] == 0
+    assert image_a.visible is True
+    assert image_b.visible is True
+    assert labels_a.visible is False
+    assert points_a.visible is False
+    assert viewer.axes.labels is True
+    assert viewer.scale_bar.visible is False
+    assert viewer.grid.enabled is True
+    assert "Completed 6 of 6 workflow step(s)." in result["message"]
+
+
+def test_run_tool_sequence_skips_unsafe_tools(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+
+    result = run_tool_sequence(
+        viewer,
+        [
+            {"tool": "delete_all_layers", "arguments": {}, "on_error": "skip"},
+            {"tool": "set_axes_labels", "arguments": {"enabled": True}},
+        ],
+    )
+
+    assert result["completed"] == 1
+    assert result["skipped"] == 1
+    assert len(viewer.layers) == 1
+    assert viewer.axes.labels is True
+    assert "Skipped unsafe or unsupported workflow step [delete_all_layers]" in result["message"]
+
+
+def test_run_tool_sequence_undo_snapshot_restores_viewer_controls(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    image = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+    labels = viewer.add_labels(np.ones((4, 4), dtype=np.uint8), name="labels_a")
+    image.bounding_box.visible = False
+    image.name_overlay.visible = False
+    labels.visible = True
+    viewer.axes.labels = False
+    viewer.scale_bar.visible = True
+
+    result = run_tool_sequence(
+        viewer,
+        [
+            {"tool": "show_only_layer_type", "arguments": {"layer_type": "image"}},
+            {"tool": "set_axes_labels", "arguments": {"enabled": True}},
+            {"tool": "set_scale_bar_visible", "arguments": {"visible": False}},
+            {"tool": "set_selected_layer_bounding_box_visible", "arguments": {"layer_name": "image_a", "visible": True}},
+            {"tool": "set_selected_layer_name_overlay_visible", "arguments": {"layer_name": "image_a", "visible": True}},
+        ],
+    )
+
+    assert labels.visible is False
+    assert viewer.axes.labels is True
+    assert viewer.scale_bar.visible is False
+    assert image.bounding_box.visible is True
+    assert image.name_overlay.visible is True
+
+    restore_message = restore_viewer_control_snapshot(viewer, result["undo_snapshot"])
+
+    assert labels.visible is True
+    assert viewer.axes.labels is False
+    assert viewer.scale_bar.visible is True
+    assert image.bounding_box.visible is False
+    assert image.name_overlay.visible is False
+    assert restore_message == "Restored viewer controls for 2 layer(s)."
+
+
 def test_show_all_layers_restores_all_visibility(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     image_a = viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
@@ -1056,6 +1197,108 @@ def test_show_all_layers_restores_all_visibility(make_napari_viewer_proxy):
     assert image_a.visible is True
     assert image_b.visible is True
     assert "Showed all 2 layer(s)." == message
+
+
+def test_fit_view_calls_reset_view(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.zeros((4, 4), dtype=np.float32), name="image_a")
+
+    prepared = prepare_tool_job(viewer, "fit_view", {})
+
+    assert prepared["mode"] == "immediate"
+    assert prepared["message"] == "Fit the current viewer to the visible layers."
+
+
+def test_zoom_tools_adjust_camera_zoom(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    if not hasattr(viewer, "camera"):
+        class _Camera:
+            zoom = 1.0
+        viewer.camera = _Camera()
+    viewer.camera.zoom = 2.0
+
+    in_message = prepare_tool_job(viewer, "zoom_in_view", {"factor": 2.0})["message"]
+    out_message = prepare_tool_job(viewer, "zoom_out_view", {"factor": 4.0})["message"]
+
+    assert viewer.camera.zoom == 1.0
+    assert in_message == "Zoomed in to 4.000x."
+    assert out_message == "Zoomed out to 1.000x."
+
+
+def test_toggle_2d_3d_camera_switches_ndisplay(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    if not hasattr(viewer, "dims"):
+        class _Dims:
+            ndisplay = 2
+        viewer.dims = _Dims()
+    viewer.dims.ndisplay = 2
+
+    first = prepare_tool_job(viewer, "toggle_2d_3d_camera", {})
+    second = prepare_tool_job(viewer, "toggle_2d_3d_camera", {})
+
+    assert first["message"] == "Switched the viewer to 3D camera mode."
+    assert second["message"] == "Switched the viewer to 2D camera mode."
+    assert viewer.dims.ndisplay == 2
+
+
+def test_axes_scale_bar_and_tooltip_controls_update_viewer_overlays(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    if not hasattr(viewer, "axes"):
+        class _Axes:
+            visible = False
+            colored = False
+            labels = False
+            dashed = False
+            arrows = False
+        viewer.axes = _Axes()
+    if not hasattr(viewer, "scale_bar"):
+        class _ScaleBar:
+            visible = False
+            box = False
+            colored = False
+            ticks = False
+        viewer.scale_bar = _ScaleBar()
+    if not hasattr(viewer, "tooltip"):
+        class _Tooltip:
+            visible = False
+        viewer.tooltip = _Tooltip()
+
+    prepare_tool_job(viewer, "set_axes_visible", {"visible": True})
+    prepare_tool_job(viewer, "set_axes_colored", {"enabled": True})
+    prepare_tool_job(viewer, "set_axes_labels", {"enabled": True})
+    prepare_tool_job(viewer, "set_axes_dashed", {"enabled": True})
+    prepare_tool_job(viewer, "set_axes_arrows", {"enabled": True})
+    prepare_tool_job(viewer, "set_scale_bar_visible", {"visible": True})
+    prepare_tool_job(viewer, "set_scale_bar_box", {"enabled": True})
+    prepare_tool_job(viewer, "set_scale_bar_colored", {"enabled": True})
+    prepare_tool_job(viewer, "set_scale_bar_ticks", {"enabled": True})
+    tooltip_message = prepare_tool_job(viewer, "set_layer_tooltips_visible", {"visible": True})["message"]
+
+    assert viewer.axes.visible is True
+    assert viewer.axes.colored is True
+    assert viewer.axes.labels is True
+    assert viewer.axes.dashed is True
+    assert viewer.axes.arrows is True
+    assert viewer.scale_bar.visible is True
+    assert viewer.scale_bar.box is True
+    assert viewer.scale_bar.colored is True
+    assert viewer.scale_bar.ticks is True
+    assert viewer.tooltip.visible is True
+    assert tooltip_message == "Layer tooltips are now visible."
+
+
+def test_selected_layer_overlay_controls_update_bounding_box_and_name_overlay(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    layer = viewer.add_image(np.zeros((6, 6), dtype=np.float32), name="image_a")
+    viewer.layers.selection.active = layer
+
+    bbox_message = prepare_tool_job(viewer, "set_selected_layer_bounding_box_visible", {"visible": True})["message"]
+    name_message = prepare_tool_job(viewer, "set_selected_layer_name_overlay_visible", {"visible": True})["message"]
+
+    assert layer.bounding_box.visible is True
+    assert layer.name_overlay.visible is True
+    assert bbox_message == "Bounding box on [image_a] is now visible."
+    assert name_message == "Layer name overlay on [image_a] is now visible."
 
 
 def test_inspect_roi_context_reports_labels_roi(make_napari_viewer_proxy):

@@ -95,6 +95,90 @@ def test_route_local_workflow_prompt_routes_direct_synthetic_variant_request():
     assert route["arguments"]["variant"] == "2d_gray"
 
 
+def test_route_local_workflow_prompt_routes_image_review_setup_to_tool_sequence():
+    route = route_local_workflow_prompt(
+        "Prepare this viewer for image review: hide labels and points layers, show only image layers, "
+        "turn axes labels on, hide the scale bar, tile the images in grid view, and fit the view.",
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool_sequence"
+    tools = [step["tool"] for step in route["steps"]]
+    assert tools == [
+        "hide_layers_by_type",
+        "hide_layers_by_type",
+        "show_only_layer_type",
+        "set_axes_labels",
+        "set_scale_bar_visible",
+        "show_image_layers_in_grid",
+        "fit_view",
+    ]
+    assert route["steps"][2]["on_error"] == "stop"
+
+
+def test_route_local_workflow_prompt_routes_numbered_quick_controls_to_sequence():
+    route = route_local_workflow_prompt(
+        """
+        1. Show only image layers.
+        2. Turn axes on.
+        3. Turn axes labels on.
+        4. Turn scale bar on.
+        5. Turn selected layer bounding box on.
+        6. Fit the view.
+        """,
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool_sequence"
+    assert [step["tool"] for step in route["steps"]] == [
+        "show_only_layer_type",
+        "set_axes_visible",
+        "set_axes_labels",
+        "set_scale_bar_visible",
+        "set_selected_layer_bounding_box_visible",
+        "fit_view",
+    ]
+    assert route["steps"][0]["arguments"] == {"layer_type": "image"}
+    assert route["steps"][3]["arguments"] == {"visible": True}
+    assert route["steps"][4]["arguments"] == {"visible": True}
+
+
+def test_route_local_workflow_prompt_routes_compact_numbered_quick_controls_to_sequence():
+    route = route_local_workflow_prompt(
+        """
+        1.Fit the current visible layers in view.
+        2.Turn the viewer axes on.
+        3.Turn the scale bar on.
+        4.Turn the selected layer bounding box on.
+        5.Turn the selected layer name overlay on.
+        """,
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool_sequence"
+    assert [step["tool"] for step in route["steps"]] == [
+        "fit_view",
+        "set_axes_visible",
+        "set_scale_bar_visible",
+        "set_selected_layer_bounding_box_visible",
+        "set_selected_layer_name_overlay_visible",
+    ]
+
+
+def test_route_local_workflow_prompt_routes_undo_last_workflow():
+    route = route_local_workflow_prompt(
+        "undo last workflow",
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "restore_tool_sequence"
+    assert "Restoring viewer controls" in route["message"]
+
+
 def test_route_local_workflow_prompt_replies_when_synthetic_variant_is_unspecified():
     route = route_local_workflow_prompt(
         "can you generate a synthetic image?",

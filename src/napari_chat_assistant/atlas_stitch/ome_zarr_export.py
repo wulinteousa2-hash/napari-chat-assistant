@@ -14,6 +14,11 @@ from .seam_repair import preferred_tile_path
 
 ATLAS_EXPORT_VERSION = 1
 MAX_SAFE_PYRAMID_LEVELS = 9
+FUSION_OVERWRITE = "overwrite"
+FUSION_LINEAR_BLEND = "linear_blend"
+FUSION_AVERAGE = "average"
+FUSION_MAX = "max_intensity"
+FUSION_MIN = "min_intensity"
 
 
 def export_nominal_layout_to_omezarr(
@@ -22,6 +27,7 @@ def export_nominal_layout_to_omezarr(
     *,
     chunk_size: int = 256,
     build_pyramid: bool = True,
+    fusion_method: str = FUSION_OVERWRITE,
     atlas_project_path: str | None = None,
     progress_callback: Callable[[str, int | None, int | None], None] | None = None,
 ) -> Path:
@@ -54,8 +60,12 @@ def export_nominal_layout_to_omezarr(
         raise ValueError("Computed stitched atlas size is invalid.")
 
     dtype = np.result_type(*[spec["dtype"] for spec in tile_specs])
+    fusion_method = _normalize_fusion_method(fusion_method)
     _notify_progress(progress_callback, "Assembling atlas", None, None)
-    mosaic = np.zeros((mosaic_height, mosaic_width), dtype=dtype)
+    mosaic_dtype = np.float32 if fusion_method in {FUSION_LINEAR_BLEND, FUSION_AVERAGE} else dtype
+    mosaic = np.zeros((mosaic_height, mosaic_width), dtype=mosaic_dtype)
+    weight_sum = np.zeros((mosaic_height, mosaic_width), dtype=np.float32) if fusion_method in {FUSION_LINEAR_BLEND, FUSION_AVERAGE} else None
+    initialized = np.zeros((mosaic_height, mosaic_width), dtype=bool) if fusion_method == FUSION_MIN else None
     for index, spec in enumerate(tile_specs, start=1):
         _notify_progress(progress_callback, "Reading tiles", index, len(tile_specs))
         tile_data = _load_tile_pixels(spec["path"], dtype=dtype)
@@ -65,7 +75,29 @@ def export_nominal_layout_to_omezarr(
         x1 = min(mosaic_width, x0 + tile_data.shape[1])
         if y1 <= y0 or x1 <= x0:
             continue
-        mosaic[y0:y1, x0:x1] = tile_data[: y1 - y0, : x1 - x0]
+        patch = tile_data[: y1 - y0, : x1 - x0]
+        _fuse_patch(
+            mosaic,
+            patch,
+            y0=y0,
+            y1=y1,
+            x0=x0,
+            x1=x1,
+            fusion_method=fusion_method,
+            weight_sum=weight_sum,
+            initialized=initialized,
+        )
+
+    if weight_sum is not None:
+        valid = weight_sum > 0
+        if np.any(valid):
+            mosaic = mosaic.astype(np.float32, copy=False)
+            mosaic[valid] = mosaic[valid] / weight_sum[valid]
+            if np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                mosaic = np.clip(np.rint(mosaic), info.min, info.max).astype(dtype)
+            else:
+                mosaic = mosaic.astype(dtype, copy=False)
 
     pyramid = _build_pyramid(mosaic, enabled=build_pyramid, progress_callback=progress_callback)
     root = zarr.open_group(str(destination), mode="w")
@@ -86,6 +118,7 @@ def export_nominal_layout_to_omezarr(
             project,
             tile_count=len(valid_tiles),
             atlas_project_path=atlas_project_path,
+            fusion_method=fusion_method,
         )
     }
     _notify_progress(progress_callback, "Export complete", 1, 1)
@@ -93,7 +126,8 @@ def export_nominal_layout_to_omezarr(
 
 
 def _tile_is_exportable(tile: TileRecord) -> bool:
-    return bool(preferred_tile_path(tile) and tile.exists and tile.start_x is not None and tile.start_y is not None)
+    path = preferred_tile_path(tile)
+    return bool(path and Path(path).expanduser().exists() and tile.start_x is not None and tile.start_y is not None)
 
 
 def _tile_spec(tile: TileRecord) -> dict[str, Any]:
@@ -126,6 +160,58 @@ def _load_tile_pixels(path: Path, dtype: np.dtype | None = None) -> np.ndarray:
     if dtype is not None and array.dtype != dtype:
         return array.astype(dtype, copy=False)
     return array
+
+
+def _fuse_patch(
+    mosaic: np.ndarray,
+    patch: np.ndarray,
+    *,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+    fusion_method: str,
+    weight_sum: np.ndarray | None,
+    initialized: np.ndarray | None,
+) -> None:
+    target = mosaic[y0:y1, x0:x1]
+    if fusion_method == FUSION_OVERWRITE:
+        target[...] = patch
+        return
+    if fusion_method == FUSION_MAX:
+        target[...] = np.maximum(target, patch)
+        return
+    if fusion_method == FUSION_MIN:
+        assert initialized is not None
+        init_view = initialized[y0:y1, x0:x1]
+        target[...] = np.where(init_view, np.minimum(target, patch), patch)
+        init_view[...] = True
+        return
+    assert weight_sum is not None
+    weights = np.ones(patch.shape, dtype=np.float32)
+    if fusion_method == FUSION_LINEAR_BLEND:
+        weights = _feather_weights(patch.shape)
+    target[...] = target.astype(np.float32, copy=False) + patch.astype(np.float32, copy=False) * weights
+    weight_sum[y0:y1, x0:x1] += weights
+
+
+def _feather_weights(shape: tuple[int, int]) -> np.ndarray:
+    height, width = shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    y_dist = np.minimum(yy + 1.0, height - yy)
+    x_dist = np.minimum(xx + 1.0, width - xx)
+    weights = np.minimum(y_dist, x_dist)
+    max_value = float(np.max(weights)) if weights.size else 1.0
+    if max_value <= 0:
+        return np.ones(shape, dtype=np.float32)
+    return np.clip(weights / max_value, 1e-3, 1.0).astype(np.float32)
+
+
+def _normalize_fusion_method(method: str) -> str:
+    value = str(method or "").strip().lower()
+    if value in {FUSION_OVERWRITE, FUSION_LINEAR_BLEND, FUSION_AVERAGE, FUSION_MAX, FUSION_MIN}:
+        return value
+    return FUSION_OVERWRITE
 
 
 def _build_pyramid(
@@ -193,7 +279,13 @@ def _notify_progress(
         progress_callback(stage, current, total)
 
 
-def _atlas_export_metadata(project: AtlasProject, *, tile_count: int, atlas_project_path: str | None) -> dict[str, Any]:
+def _atlas_export_metadata(
+    project: AtlasProject,
+    *,
+    tile_count: int,
+    atlas_project_path: str | None,
+    fusion_method: str,
+) -> dict[str, Any]:
     extra = project.metadata.extra_metadata
     return {
         "kind": "nominal_atlas_export",
@@ -231,6 +323,7 @@ def _atlas_export_metadata(project: AtlasProject, *, tile_count: int, atlas_proj
             "samples_per_pixel",
             "samplesperpixel",
         ),
+        "fusion_method": fusion_method,
         "export_version": ATLAS_EXPORT_VERSION,
     }
 

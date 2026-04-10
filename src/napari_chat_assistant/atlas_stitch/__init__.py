@@ -6,7 +6,7 @@ from .refinement_overlap import build_neighbor_constraints, estimate_translation
 from .refinement_solver import NeighborConstraint, solve_refined_tile_positions
 from .seam_repair import RepairDonorSpec, TileRepairRequest, TileRepairResult, reconstruct_tile_from_donors
 from .widget import AtlasStitchWidget
-from .xml_parser import parse_atlas_xml
+from .xml_parser import parse_atlas_source, parse_atlas_vemif, parse_atlas_xml
 
 
 __all__ = [
@@ -25,6 +25,8 @@ __all__ = [
     "export_nominal_layout_to_omezarr",
     "extract_overlap_strip",
     "load_atlas_project",
+    "parse_atlas_source",
+    "parse_atlas_vemif",
     "parse_atlas_xml",
     "reconstruct_tile_from_donors",
     "save_atlas_project",

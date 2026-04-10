@@ -12,6 +12,17 @@ def test_template_library_uses_sections_and_learning_branch():
     assert "Code Templates" in section_labels
     assert "Learning" in section_labels
     titles = {str(record.get("title", "")).strip() for record in payload["templates"]}
+    assert "Fit View" in titles
+    assert "Axes Toggle" in titles
+    assert "Scale Bar Toggle" in titles
+    assert "Bounding Box Toggle" in titles
+    assert "Layer Name Toggle" in titles
+    assert "Show Only Image Layers" in titles
+    assert "Prepare Image Review Workflow" in titles
+    assert "Undo Last Workflow" in titles
+    assert "Labels Layers Visibility" in titles
+    assert "Delete ROI Layers" in titles
+    assert "Reset Selected Scale" in titles
     assert "Compare Two ROI Groups" in titles
     assert "Compare Two Image Groups" in titles
     assert "Apply Gaussian Blur" in titles
@@ -36,6 +47,10 @@ def test_template_library_uses_sections_and_learning_branch():
     assert "Language Support" in learning_categories
     assert "Quantitative Imaging" in learning_categories
     assert "Statistics" in learning_categories
+
+    prompt_section = next(section for section in payload["sections"] if section["label"] == "Prompt Templates")
+    prompt_categories = [str(category.get("name", "")).strip() for category in prompt_section["categories"]]
+    assert "Quick Controls" in prompt_categories
 
 
 def test_template_library_moves_widget_launchers_out_of_templates():

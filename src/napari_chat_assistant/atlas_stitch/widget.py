@@ -31,7 +31,14 @@ from skimage.transform import resize
 from tifffile import imread
 
 from .models import AtlasExportInfo, AtlasProject, TileRecord
-from .ome_zarr_export import export_nominal_layout_to_omezarr
+from .ome_zarr_export import (
+    FUSION_AVERAGE,
+    FUSION_LINEAR_BLEND,
+    FUSION_MAX,
+    FUSION_MIN,
+    FUSION_OVERWRITE,
+    export_nominal_layout_to_omezarr,
+)
 from .project_state import load_atlas_project, save_atlas_project
 from .refinement_overlap import DEFAULT_ALIGNMENT_METHOD, ROBUST_ALIGNMENT_METHOD, build_neighbor_constraints
 from .refinement_solver import solve_refined_tile_positions
@@ -50,7 +57,7 @@ from .seam_repair import (
     reconstruct_tile_from_donors,
     save_repair_outputs,
 )
-from .xml_parser import parse_atlas_xml
+from .xml_parser import parse_atlas_source
 
 
 class PreviewWorker(QObject):
@@ -70,7 +77,9 @@ class PreviewWorker(QObject):
             valid = [
                 tile
                 for tile in self.tiles
-                if tile.exists and preferred_tile_path(tile) and _preview_position(tile, self.placement_mode) is not None
+                if preferred_tile_path(tile)
+                and Path(preferred_tile_path(tile)).expanduser().exists()
+                and _preview_position(tile, self.placement_mode) is not None
             ]
             total = len(valid)
             if not valid:
@@ -186,7 +195,7 @@ class PreviewWorker(QObject):
 
 class ExportWorker(QObject):
     progress = Signal(str, int, int)
-    completed = Signal(str, int, bool, str)
+    completed = Signal(str, int, bool, str, str)
     error = Signal(str)
     finished = Signal()
 
@@ -196,6 +205,7 @@ class ExportWorker(QObject):
         output_path: str,
         chunk_size: int,
         build_pyramid: bool,
+        fusion_method: str,
         atlas_project_path: str = "",
     ):
         super().__init__()
@@ -203,6 +213,7 @@ class ExportWorker(QObject):
         self.output_path = output_path
         self.chunk_size = chunk_size
         self.build_pyramid = build_pyramid
+        self.fusion_method = fusion_method
         self.atlas_project_path = atlas_project_path
 
     def run(self) -> None:
@@ -212,13 +223,14 @@ class ExportWorker(QObject):
                 self.output_path,
                 chunk_size=self.chunk_size,
                 build_pyramid=self.build_pyramid,
+                fusion_method=self.fusion_method,
                 atlas_project_path=self.atlas_project_path or None,
                 progress_callback=self._handle_export_progress,
             )
         except Exception as exc:
             self.error.emit(str(exc))
         else:
-            self.completed.emit(str(exported), self.chunk_size, self.build_pyramid, self.atlas_project_path)
+            self.completed.emit(str(exported), self.chunk_size, self.build_pyramid, self.atlas_project_path, self.fusion_method)
         finally:
             self.finished.emit()
 
@@ -241,7 +253,8 @@ class AlignmentWorker(QObject):
         try:
             method_label = _alignment_method_label(self.method)
             self.progress.emit(f"Alignment ({method_label}): building neighbor constraints", -1, -1)
-            constraints = build_neighbor_constraints(self.project, method=self.method)
+            overlap_fraction = _project_overlap_fraction(self.project)
+            constraints = build_neighbor_constraints(self.project, method=self.method, overlap_fraction=overlap_fraction)
             self.progress.emit(f"Alignment ({method_label}): solving refined tile positions", -1, -1)
             solved_project = solve_refined_tile_positions(self.project, constraints)
         except Exception as exc:
@@ -357,9 +370,9 @@ class AtlasStitchWidget(QWidget):
         input_group = QGroupBox("Input")
         input_layout = QVBoxLayout(input_group)
         xml_row = QHBoxLayout()
-        xml_row.addWidget(QLabel("Atlas XML"))
+        xml_row.addWidget(QLabel("Atlas Source"))
         self.xml_path_edit = QLineEdit()
-        self.xml_path_edit.setPlaceholderText("Select atlas XML")
+        self.xml_path_edit.setPlaceholderText("Select atlas XML or VE-MIF")
         self.xml_browse_button = QPushButton("Browse...")
         xml_row.addWidget(self.xml_path_edit, 1)
         xml_row.addWidget(self.xml_browse_button)
@@ -375,7 +388,7 @@ class AtlasStitchWidget(QWidget):
         input_layout.addLayout(tile_root_row)
 
         alignment_row = QHBoxLayout()
-        alignment_row.addWidget(QLabel("Stitch Method"))
+        alignment_row.addWidget(QLabel("Alignment Method"))
         self.alignment_method_combo = QComboBox()
         self.alignment_method_combo.addItem("Light Translation", DEFAULT_ALIGNMENT_METHOD)
         self.alignment_method_combo.addItem("Robust Translation", ROBUST_ALIGNMENT_METHOD)
@@ -386,8 +399,27 @@ class AtlasStitchWidget(QWidget):
         self.alignment_method_help.setWordWrap(True)
         input_layout.addWidget(self.alignment_method_help)
 
+        overlap_row = QHBoxLayout()
+        overlap_row.addWidget(QLabel("Tile Overlap (%)"))
+        self.overlap_percent_edit = QLineEdit()
+        self.overlap_percent_edit.setPlaceholderText("10")
+        self.overlap_percent_edit.setText("10")
+        overlap_row.addWidget(self.overlap_percent_edit, 1)
+        input_layout.addLayout(overlap_row)
+
+        fusion_row = QHBoxLayout()
+        fusion_row.addWidget(QLabel("Fusion Method"))
+        self.fusion_method_combo = QComboBox()
+        self.fusion_method_combo.addItem("Overwrite", FUSION_OVERWRITE)
+        self.fusion_method_combo.addItem("Linear Blend", FUSION_LINEAR_BLEND)
+        self.fusion_method_combo.addItem("Average", FUSION_AVERAGE)
+        self.fusion_method_combo.addItem("Max Intensity", FUSION_MAX)
+        self.fusion_method_combo.addItem("Min Intensity", FUSION_MIN)
+        fusion_row.addWidget(self.fusion_method_combo, 1)
+        input_layout.addLayout(fusion_row)
+
         load_row = QHBoxLayout()
-        self.load_button = QPushButton("Load Atlas XML")
+        self.load_button = QPushButton("Load Atlas Source")
         load_row.addWidget(self.load_button)
         load_row.addStretch(1)
         input_layout.addLayout(load_row)
@@ -594,7 +626,12 @@ class AtlasStitchWidget(QWidget):
         self._update_repair_controls()
 
     def _browse_xml(self) -> None:
-        selected, _ = QFileDialog.getOpenFileName(self, "Select Atlas XML", "", "XML Files (*.xml);;All Files (*)")
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Atlas Source",
+            "",
+            "Atlas Sources (*.xml *.ve-mif);;XML Files (*.xml);;VE-MIF Files (*.ve-mif);;All Files (*)",
+        )
         if selected:
             self.xml_path_edit.setText(selected)
 
@@ -621,14 +658,14 @@ class AtlasStitchWidget(QWidget):
         xml_path = self.xml_path_edit.text().strip()
         tile_root_override = self.tile_root_edit.text().strip() or None
         if not xml_path:
-            self._set_status("Select an atlas XML file first.")
+            self._set_status("Select an atlas XML or VE-MIF source first.")
             return
         if not Path(xml_path).expanduser().exists():
-            self._set_status("Atlas XML file was not found.")
+            self._set_status("Atlas source file was not found.")
             return
 
         try:
-            self.project = parse_atlas_xml(xml_path, tile_root_override=tile_root_override)
+            self.project = parse_atlas_source(xml_path, tile_root_override=tile_root_override)
         except Exception as exc:
             self.project = None
             self._project_path = ""
@@ -637,12 +674,14 @@ class AtlasStitchWidget(QWidget):
             self.export_button.setEnabled(False)
             self.open_export_button.setEnabled(False)
             self._update_refinement_controls()
-            self._set_status(f"Failed to load atlas XML: {exc}")
+            self._set_status(f"Failed to load atlas source: {exc}")
             self._reset_progress("Idle")
             return
 
         self._project_path = ""
+        _refresh_project_tile_availability(self.project)
         self._sync_alignment_method_from_project()
+        self._apply_recommended_preview_downsample()
         self._populate_summary()
         self._populate_tile_table()
         self._refresh_repair_tile_options()
@@ -692,7 +731,9 @@ class AtlasStitchWidget(QWidget):
             return
         self.project = project
         self._project_path = str(Path(selected).expanduser())
+        _refresh_project_tile_availability(self.project)
         self._sync_alignment_method_from_project()
+        self._apply_recommended_preview_downsample()
         self._populate_summary()
         self._populate_tile_table()
         self._refresh_repair_tile_options()
@@ -714,6 +755,8 @@ class AtlasStitchWidget(QWidget):
             return
         if self._alignment_thread and self._alignment_thread.isRunning():
             self._set_status("Alignment estimation already running.")
+            return
+        if not self._store_processing_settings():
             return
         self.estimate_alignment_button.setEnabled(False)
         self.preview_refined_button.setEnabled(False)
@@ -772,6 +815,8 @@ class AtlasStitchWidget(QWidget):
         output_name = self.output_name_edit.text().strip() or (project.metadata.atlas_name or "atlas")
         destination = Path(output_folder).expanduser() / output_name
 
+        if not self._store_processing_settings():
+            return
         self.export_button.setEnabled(False)
         self.progress_label.setText("Export: queued")
         self._set_progress_busy()
@@ -781,6 +826,7 @@ class AtlasStitchWidget(QWidget):
             str(destination),
             chunk_size=chunk_size,
             build_pyramid=self.build_pyramid_checkbox.isChecked(),
+            fusion_method=self._selected_fusion_method(),
         )
 
     def _start_preview_worker(self, tiles: list[TileRecord], downsample: int, placement_mode: str) -> None:
@@ -815,10 +861,10 @@ class AtlasStitchWidget(QWidget):
         self._alignment_thread = thread
         thread.start()
 
-    def _start_export_worker(self, project: AtlasProject, output_path: str, *, chunk_size: int, build_pyramid: bool) -> None:
+    def _start_export_worker(self, project: AtlasProject, output_path: str, *, chunk_size: int, build_pyramid: bool, fusion_method: str) -> None:
         self._cleanup_export_worker()
         thread = QThread()
-        worker = ExportWorker(project, output_path, chunk_size, build_pyramid, atlas_project_path=self._project_path)
+        worker = ExportWorker(project, output_path, chunk_size, build_pyramid, fusion_method, atlas_project_path=self._project_path)
         worker.moveToThread(thread)
         worker.progress.connect(self._handle_export_progress)
         worker.completed.connect(self._handle_export_complete)
@@ -854,7 +900,7 @@ class AtlasStitchWidget(QWidget):
         self._update_refinement_controls()
         self.progress_label.setText(f"Preview failed: {message}")
         self._reset_progress(f"Preview failed: {message}")
-        self._set_status("Preview failed.")
+        self._set_status(f"Preview failed: {message}")
 
     def _handle_alignment_progress(self, message: str, current: int, total: int) -> None:
         self.progress_label.setText(message)
@@ -884,7 +930,7 @@ class AtlasStitchWidget(QWidget):
         self.progress_label.setText(message)
         self._update_progress_bar(current, total)
 
-    def _handle_export_complete(self, exported_path: str, chunk_size: int, build_pyramid: bool, atlas_project_path: str) -> None:
+    def _handle_export_complete(self, exported_path: str, chunk_size: int, build_pyramid: bool, atlas_project_path: str, fusion_method: str) -> None:
         self.export_button.setEnabled(True)
         self.progress_label.setText(f"Export complete: {exported_path}")
         self._set_progress_complete()
@@ -897,7 +943,7 @@ class AtlasStitchWidget(QWidget):
                 chunk_size=chunk_size,
                 build_pyramid=build_pyramid,
                 tile_count=len([tile for tile in self.project.tiles if tile.exists and tile.resolved_path and tile.start_x is not None and tile.start_y is not None]),
-                status="completed",
+                status=f"completed ({fusion_method})",
                 atlas_project_path=atlas_project_path,
             )
             self._populate_summary()
@@ -915,7 +961,7 @@ class AtlasStitchWidget(QWidget):
     def _parse_preview_downsample(self) -> int | None:
         text = self.preview_downsample_edit.text().strip()
         if not text:
-            return 1
+            return self._recommended_preview_downsample()
         try:
             value = int(text)
         except ValueError:
@@ -924,7 +970,42 @@ class AtlasStitchWidget(QWidget):
         if value < 1:
             self._set_status("Preview downsample must be at least 1.")
             return None
+        recommended = self._recommended_preview_downsample()
+        if value < recommended:
+            self.preview_downsample_edit.setText(str(recommended))
+            self._set_status(
+                f"Preview downsample increased from {value} to {recommended} for this atlas size."
+            )
+            return recommended
         return value
+
+    def _apply_recommended_preview_downsample(self) -> None:
+        recommended = self._recommended_preview_downsample()
+        current_text = self.preview_downsample_edit.text().strip()
+        try:
+            current_value = int(current_text) if current_text else 0
+        except ValueError:
+            current_value = 0
+        if recommended > max(0, current_value):
+            self.preview_downsample_edit.setText(str(recommended))
+
+    def _recommended_preview_downsample(self) -> int:
+        project = self.project
+        if project is None:
+            return 1
+        width = project.metadata.image_width
+        height = project.metadata.image_height
+        if width is None or height is None or width <= 0 or height <= 0:
+            width, height = _project_nominal_canvas(project)
+        if width <= 0 or height <= 0:
+            return 1
+        limit_dim = max(
+            math.ceil(width / 4096),
+            math.ceil(height / 4096),
+        )
+        limit_bytes = math.ceil(math.sqrt((width * height * 4) / float(128 * 1024 * 1024)))
+        recommended = max(1, limit_dim, limit_bytes)
+        return _next_power_of_two(recommended)
 
     def _parse_chunk_size(self) -> int | None:
         text = self.chunk_size_edit.text().strip()
@@ -943,6 +1024,35 @@ class AtlasStitchWidget(QWidget):
     def _selected_alignment_method(self) -> str:
         return str(self.alignment_method_combo.currentData() or DEFAULT_ALIGNMENT_METHOD)
 
+    def _selected_fusion_method(self) -> str:
+        return str(self.fusion_method_combo.currentData() or FUSION_OVERWRITE)
+
+    def _parse_overlap_percent(self) -> float | None:
+        text = self.overlap_percent_edit.text().strip()
+        if not text:
+            return 10.0
+        try:
+            value = float(text)
+        except ValueError:
+            self._set_status("Tile overlap percent must be a number.")
+            return None
+        if value <= 0 or value > 100:
+            self._set_status("Tile overlap percent must be between 0 and 100.")
+            return None
+        return value
+
+    def _store_processing_settings(self) -> bool:
+        if self.project is None:
+            return True
+        overlap_percent = self._parse_overlap_percent()
+        if overlap_percent is None:
+            return False
+        self.project.metadata.extra_metadata["atlas_stitch_refinement_method"] = self._selected_alignment_method()
+        self.project.metadata.extra_metadata["atlas_stitch_overlap_percent"] = overlap_percent
+        self.project.metadata.extra_metadata["atlas_stitch_overlap_fraction"] = overlap_percent / 100.0
+        self.project.metadata.extra_metadata["atlas_stitch_fusion_method"] = self._selected_fusion_method()
+        return True
+
     def _update_alignment_method_ui(self) -> None:
         method = self._selected_alignment_method()
         method_label = _alignment_method_label(method)
@@ -957,17 +1067,32 @@ class AtlasStitchWidget(QWidget):
             self.alignment_method_help.setText(
                 "Light translation is the faster, conservative first-pass alignment method."
             )
-        self.alignment_method_combo.setStatusTip(f"Selected stitch method: {method_label}")
+        self.alignment_method_combo.setStatusTip(f"Selected alignment method: {method_label}")
 
     def _sync_alignment_method_from_project(self) -> None:
         if self.project is None:
             return
-        method = str(self.project.metadata.extra_metadata.get("atlas_stitch_refinement_method") or "").strip()
-        if not method:
-            return
-        index = self.alignment_method_combo.findData(method)
-        if index >= 0:
-            self.alignment_method_combo.setCurrentIndex(index)
+        extra = self.project.metadata.extra_metadata
+        method = str(extra.get("atlas_stitch_refinement_method") or "").strip()
+        if method:
+            index = self.alignment_method_combo.findData(method)
+            if index >= 0:
+                self.alignment_method_combo.setCurrentIndex(index)
+        overlap_percent = extra.get("atlas_stitch_overlap_percent")
+        if overlap_percent in (None, ""):
+            overlap_fraction = extra.get("atlas_stitch_overlap_fraction")
+            if overlap_fraction not in (None, ""):
+                try:
+                    overlap_percent = float(overlap_fraction) * 100.0
+                except (TypeError, ValueError):
+                    overlap_percent = None
+        if overlap_percent not in (None, ""):
+            self.overlap_percent_edit.setText(_format_number(float(overlap_percent)))
+        fusion_method = str(extra.get("atlas_stitch_fusion_method") or "").strip()
+        if fusion_method:
+            fusion_index = self.fusion_method_combo.findData(fusion_method)
+            if fusion_index >= 0:
+                self.fusion_method_combo.setCurrentIndex(fusion_index)
         self._update_alignment_method_ui()
 
     def _populate_summary(self) -> None:
@@ -1951,7 +2076,7 @@ def build_project_summary(project: AtlasProject) -> str:
         (
             "Source",
             [
-                f"XML path: {metadata.xml_path or '(not available)'}",
+                f"Source path: {metadata.xml_path or '(not available)'}",
                 f"Tile root override: {metadata.tile_root_override or '(none)'}",
                 f"Source directory: {metadata.source_directory or '(not available)'}",
                 f"Source software: {_source_software_text(project)}",
@@ -1991,6 +2116,8 @@ def build_project_summary(project: AtlasProject) -> str:
             "Refinement",
             [
                 f"Refinement method: {_alignment_method_summary_text(extra)}",
+                f"Tile overlap: {_metadata_value_text(extra.get('atlas_stitch_overlap_percent'))} %",
+                f"Fusion method: {_metadata_text(extra, 'atlas_stitch_fusion_method') or '(not available)'}",
                 f"Refinement status: {_metadata_text(extra, 'atlas_stitch_refinement_status') or '(not available)'}",
                 f"Constraint count: {_metadata_value_text(extra.get('atlas_stitch_constraint_count'))}",
                 f"Constrained tile count: {_metadata_value_text(extra.get('atlas_stitch_constrained_tile_count'))}",
@@ -2056,6 +2183,18 @@ def _nominal_canvas_text(metadata) -> str:
 
 def _optional_dimension_text(value: int | None) -> str:
     return "(not available)" if value is None else str(value)
+
+
+def _project_nominal_canvas(project: AtlasProject) -> tuple[int, int]:
+    max_x = 0.0
+    max_y = 0.0
+    for tile in project.tiles:
+        tile_x = tile.start_x if tile.start_x is not None else tile.transform.nominal_x
+        tile_y = tile.start_y if tile.start_y is not None else tile.transform.nominal_y
+        tile_width, tile_height = _tile_shape(tile)
+        max_x = max(max_x, float(tile_x) + float(tile_width))
+        max_y = max(max_y, float(tile_y) + float(tile_height))
+    return int(math.ceil(max_x)), int(math.ceil(max_y))
 
 
 def _pixel_size_text(project: AtlasProject) -> str:
@@ -2239,6 +2378,49 @@ def _alignment_method_label(method: str) -> str:
     if value == ROBUST_ALIGNMENT_METHOD:
         return "Robust Translation"
     return "Light Translation"
+
+
+def _next_power_of_two(value: int) -> int:
+    value = max(1, int(value))
+    power = 1
+    while power < value:
+        power *= 2
+    return power
+
+
+def _refresh_project_tile_availability(project: AtlasProject | None) -> None:
+    if project is None:
+        return
+    missing: list[str] = []
+    for tile in project.tiles:
+        path = preferred_tile_path(tile)
+        tile.exists = bool(path and Path(path).expanduser().exists())
+        if tile.start_x is None:
+            tile.start_x = float(tile.transform.nominal_x)
+        if tile.start_y is None:
+            tile.start_y = float(tile.transform.nominal_y)
+        if not tile.exists:
+            missing.append(tile.file_name or tile.tile_id)
+    project.missing_tiles = missing
+
+
+def _project_overlap_fraction(project: AtlasProject | None) -> float:
+    if project is None:
+        return 0.1
+    extra = project.metadata.extra_metadata
+    value = extra.get("atlas_stitch_overlap_fraction")
+    if value in (None, ""):
+        percent = extra.get("atlas_stitch_overlap_percent")
+        if percent not in (None, ""):
+            try:
+                return max(0.01, min(1.0, float(percent) / 100.0))
+            except (TypeError, ValueError):
+                return 0.1
+        return 0.1
+    try:
+        return max(0.01, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.1
 
 
 def _preview_position(tile: TileRecord, placement_mode: str) -> tuple[float, float] | None:

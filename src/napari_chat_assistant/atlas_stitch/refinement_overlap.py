@@ -45,8 +45,15 @@ def estimate_translation_phasecorr(
     direction: str,
     *,
     method: str = DEFAULT_ALIGNMENT_METHOD,
+    overlap_fraction: float = OVERLAP_FRACTION,
 ) -> tuple[float, float, float] | None:
-    result = _estimate_translation_phasecorr_detailed(tile_A_path, tile_B_path, direction, method=method)
+    result = _estimate_translation_phasecorr_detailed(
+        tile_A_path,
+        tile_B_path,
+        direction,
+        method=method,
+        overlap_fraction=overlap_fraction,
+    )
     if result["status"] != "ok":
         return None
     return float(result["dx"]), float(result["dy"]), float(result["confidence"])
@@ -56,8 +63,10 @@ def build_neighbor_constraints(
     project: AtlasProject,
     *,
     method: str = DEFAULT_ALIGNMENT_METHOD,
+    overlap_fraction: float = OVERLAP_FRACTION,
 ) -> list[NeighborConstraint]:
     method = _normalize_alignment_method(method)
+    overlap_fraction = _normalize_overlap_fraction(overlap_fraction)
     tiles_by_grid = {
         (tile.row, tile.col): tile
         for tile in project.tiles
@@ -76,6 +85,7 @@ def build_neighbor_constraints(
                 right_neighbor,
                 direction="right_neighbor",
                 method=method,
+                overlap_fraction=overlap_fraction,
             )
             if constraint is not None:
                 constraints.append(constraint)
@@ -91,6 +101,7 @@ def build_neighbor_constraints(
                 bottom_neighbor,
                 direction="bottom_neighbor",
                 method=method,
+                overlap_fraction=overlap_fraction,
             )
             if constraint is not None:
                 constraints.append(constraint)
@@ -100,6 +111,7 @@ def build_neighbor_constraints(
                 skip_reasons[reason] += 1
 
     project.metadata.extra_metadata["atlas_stitch_refinement_method"] = method
+    project.metadata.extra_metadata["atlas_stitch_overlap_fraction"] = overlap_fraction
     project.metadata.extra_metadata["atlas_stitch_neighbor_pairs_total"] = pairs_total
     project.metadata.extra_metadata["atlas_stitch_neighbor_pairs_accepted"] = len(constraints)
     project.metadata.extra_metadata["atlas_stitch_neighbor_skip_reasons"] = dict(skip_reasons)
@@ -113,12 +125,19 @@ def _build_constraint_for_pair(
     *,
     direction: str,
     method: str,
+    overlap_fraction: float,
 ) -> tuple[NeighborConstraint | None, str]:
     usable_reason = _tile_pair_usable_reason(tile_a, tile_b)
     if usable_reason is not None:
         return None, usable_reason
 
-    estimate = _estimate_translation_phasecorr_detailed(tile_a.resolved_path, tile_b.resolved_path, direction, method=method)
+    estimate = _estimate_translation_phasecorr_detailed(
+        tile_a.resolved_path,
+        tile_b.resolved_path,
+        direction,
+        method=method,
+        overlap_fraction=overlap_fraction,
+    )
     if estimate["status"] != "ok":
         return _fallback_nominal_constraint(tile_a, tile_b, direction=direction, reason=str(estimate["status"]))
 
@@ -209,8 +228,10 @@ def _estimate_translation_phasecorr_detailed(
     direction: str,
     *,
     method: str = DEFAULT_ALIGNMENT_METHOD,
+    overlap_fraction: float = OVERLAP_FRACTION,
 ) -> dict[str, object]:
     method = _normalize_alignment_method(method)
+    overlap_fraction = _normalize_overlap_fraction(overlap_fraction)
     try:
         image_a = _load_tile_image(tile_A_path)
         image_b = _load_tile_image(tile_B_path)
@@ -218,16 +239,18 @@ def _estimate_translation_phasecorr_detailed(
         return {"status": "load_error"}
 
     if method == ROBUST_ALIGNMENT_METHOD:
-        return _estimate_translation_phasecorr_robust(image_a, image_b, direction)
-    return _estimate_translation_phasecorr_light(image_a, image_b, direction)
+        return _estimate_translation_phasecorr_robust(image_a, image_b, direction, overlap_fraction=overlap_fraction)
+    return _estimate_translation_phasecorr_light(image_a, image_b, direction, overlap_fraction=overlap_fraction)
 
 
 def _estimate_translation_phasecorr_light(
     image_a: np.ndarray,
     image_b: np.ndarray,
     direction: str,
+    *,
+    overlap_fraction: float,
 ) -> dict[str, object]:
-    pair = _prepare_overlap_pair(image_a, image_b, direction, fraction=OVERLAP_FRACTION)
+    pair = _prepare_overlap_pair(image_a, image_b, direction, fraction=overlap_fraction)
     if pair["status"] != "ok":
         return pair
     strip_a = pair["strip_a"]
@@ -244,8 +267,10 @@ def _estimate_translation_phasecorr_robust(
     image_a: np.ndarray,
     image_b: np.ndarray,
     direction: str,
+    *,
+    overlap_fraction: float,
 ) -> dict[str, object]:
-    candidate_fractions = (0.08, 0.1, 0.15, 0.2)
+    candidate_fractions = tuple(sorted({_normalize_overlap_fraction(overlap_fraction * scale) for scale in (0.8, 1.0, 1.5, 2.0)}))
     best: dict[str, object] | None = None
     statuses: Counter[str] = Counter()
     for fraction in candidate_fractions:
@@ -451,3 +476,13 @@ def _normalize_alignment_method(method: str) -> str:
     if value in {"robust", "robust_phasecorr", "robust_translation"}:
         return ROBUST_ALIGNMENT_METHOD
     raise ValueError(f"Unsupported alignment method: {method}")
+
+
+def _normalize_overlap_fraction(value: float) -> float:
+    try:
+        fraction = float(value)
+    except (TypeError, ValueError):
+        return OVERLAP_FRACTION
+    if not np.isfinite(fraction):
+        return OVERLAP_FRACTION
+    return float(np.clip(fraction, 0.01, 1.0))
