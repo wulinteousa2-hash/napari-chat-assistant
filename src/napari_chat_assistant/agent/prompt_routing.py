@@ -8,12 +8,138 @@ from .workflow_planner import (
 )
 
 
+LOCAL_WORKFLOW_PROMPT_LIBRARY = (
+    {
+        "id": "conservative_masking",
+        "keywords": (
+            "mask",
+            "masking",
+            "binary",
+            "threshold",
+            "segmentation",
+            "segment",
+            "foreground",
+        ),
+        "title": "Conservative Binary Masking",
+        "prompts": (
+            "Build a conservative binary mask for the selected image. Inspect it first, preview threshold before applying it, choose polarity correctly, and preserve faint real structures.",
+            "Create a conservative binary mask from the selected image and explain each workflow step before applying it.",
+            "Plan a conservative binary segmentation workflow for the selected layer, then run it with minimal cleanup.",
+        ),
+        "note": "These prompts are phrased to favor the local masking workflow.",
+    },
+    {
+        "id": "image_review",
+        "keywords": (
+            "review",
+            "viewer",
+            "grid",
+            "tile",
+            "scale bar",
+            "axes",
+            "image review",
+        ),
+        "title": "Image Review Setup",
+        "prompts": (
+            "Prepare this viewer for image review: hide labels and points, show only image layers, turn axes labels on, hide the scale bar, tile the images in grid view, and fit the view.",
+            "Set up the current viewer for image review with only image layers visible, grid view enabled, and the camera fit to visible data.",
+        ),
+        "note": "These prompts are phrased to favor safe quick-control workflows.",
+    },
+    {
+        "id": "roi_measurement",
+        "keywords": (
+            "roi",
+            "measure",
+            "measurement",
+            "intensity",
+            "shapes",
+            "polygon",
+            "statistics",
+        ),
+        "title": "ROI Measurement",
+        "prompts": (
+            "Open ROI Intensity Analysis for the current viewer.",
+            "Measure ROI intensity statistics for the selected Shapes ROI layer.",
+            "Open the ROI measurement widget with histogram and table for the current image.",
+        ),
+        "note": "These prompts are phrased to favor local ROI measurement tools.",
+    },
+)
+
+
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
 
 
 def _has_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(needle in text for needle in needles)
+
+
+def _looks_like_local_prompt_suggestion_request(source: str) -> bool:
+    if not source:
+        return False
+    prompt_terms = (
+        "write me a prompt",
+        "give me a prompt",
+        "make me a prompt",
+        "help me write a prompt",
+        "suggest a prompt",
+        "prompt to trigger",
+        "prompt that trigger",
+        "prompt that runs",
+        "how should i ask",
+        "how do i ask",
+        "how should i phrase",
+        "how do i phrase",
+    )
+    workflow_terms = (
+        "local workflow",
+        "workflow",
+        "mask",
+        "masking",
+        "threshold",
+        "segment",
+        "segmentation",
+        "roi",
+        "measure",
+        "review",
+        "viewer",
+    )
+    return _has_any(source, prompt_terms) and _has_any(source, workflow_terms)
+
+
+def _match_local_prompt_suggestion(source: str) -> dict | None:
+    best_match = None
+    best_score = 0
+    for record in LOCAL_WORKFLOW_PROMPT_LIBRARY:
+        score = sum(1 for keyword in record["keywords"] if keyword in source)
+        if score > best_score:
+            best_score = score
+            best_match = record
+    return best_match if best_score > 0 else None
+
+
+def _local_prompt_suggestion_message(source: str) -> str:
+    match = _match_local_prompt_suggestion(source)
+    if match is None:
+        examples = [
+            "Build a conservative binary mask for the selected image.",
+            "Open ROI Intensity Analysis for the current viewer.",
+            "Prepare this viewer for image review with only image layers visible.",
+        ]
+        rendered = "\n".join(f"- `{prompt}`" for prompt in examples)
+        return (
+            "Here are a few prompts phrased to favor local workflows:\n"
+            f"{rendered}\n\n"
+            "Tell me your goal, such as masking, ROI measurement, or viewer setup, and I can make it more specific."
+        )
+    rendered = "\n".join(f"- `{prompt}`" for prompt in match["prompts"])
+    return (
+        f"Try one of these prompts for **{match['title']}**:\n"
+        f"{rendered}\n\n"
+        f"{match['note']}"
+    )
 
 
 def infer_tool_clarification_request(message: str) -> dict | None:
@@ -651,6 +777,12 @@ def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None =
         return {
             "action": "reply",
             "message": _getting_started_message(has_selected_layer),
+        }
+
+    if _looks_like_local_prompt_suggestion_request(source):
+        return {
+            "action": "reply",
+            "message": _local_prompt_suggestion_message(source),
         }
 
     if _looks_like_restore_last_workflow_request(source):

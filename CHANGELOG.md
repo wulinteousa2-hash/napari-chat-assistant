@@ -2,6 +2,18 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.2.0
+
+- Added `Rate Result` so users can quickly mark the latest assistant outcome as `Helpful`, `Wrong Route`, `Wrong Answer`, or `Didn't Work`.
+- Added a `⏹ Stop` button in the chat panel to cancel long-running model requests.
+- Added cancellation telemetry with `quick` and `long` abandonment buckets for stopped model requests.
+- Reorganized telemetry into a dedicated `telemetry/` package for logging, summary, reporting, intent tracking, and activity tracking.
+- Reworked telemetry views into clearer tabs: `Summary`, `Model Activity`, `Intent Signals`, `Problems`, and `Raw Log`.
+- Added intent-aware telemetry signals so routing and outcome quality can be reviewed together.
+- Added prompt-coaching support for local workflows so users can ask for prompts that are more likely to trigger supported local actions.
+- Improved runtime guidance when generated code depends on packages that are not included by default, such as `cv2`.
+- Removed the old Help-menu action for marking the last result and unified result rating under `Rate Result`.
+
 ## 2.1.2
 
 - Added local planning and execution for conservative binary-mask workflows so multi-step segmentation prompts can inspect, threshold, clean, examine, refine, and report through deterministic built-in tools instead of falling back to ad hoc code.

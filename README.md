@@ -11,29 +11,18 @@ Local, Ollama-powered AI and deterministic workbench for napari image-analysis w
 
 The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
-## What's New In 2.1.0
+## What's New In 2.2.0
 
-Version `2.1.0` is a larger feature release because the plugin now gives users a faster way to control the viewer from natural language, reusable templates, or direct one-click actions.
+Version `2.2.0` makes the assistant easier to guide, easier to inspect, and easier to improve from real usage.
 
-The major addition is `Quick Controls` in both the `Templates` library and `Actions`. Instead of opening napari menus or writing code for common viewer setup, users can type a short prompt or run the matching action. With a layer selected, users can copy and try:
+New in this release:
+- `Rate Result` lets you quickly mark the latest result as `Helpful`, `Wrong Route`, `Wrong Answer`, or `Didn't Work`
+- telemetry is easier to inspect with clearer session views for `Model Activity`, `Intent Signals`, `Problems`, and `Raw Log`
+- the assistant can now suggest prompts that are more likely to trigger supported local workflows
+- long-running model requests can now be stopped directly from the chat panel
+- runtime guidance is clearer when generated code depends on packages that are not included by default
 
-```text
-Hide all layers except the selected layer.
-```
-
-The release also adds safe multi-step viewer workflows, so a prompt can run several viewer-control steps in order. With a layer selected, users can copy and try:
-
-```text
-1. Fit visible layers to view.
-2. Show viewer axes.
-3. Show scale bar.
-4. Show selected layer bounding box.
-5. Show selected layer name overlay.
-```
-
-Users can also say `undo last workflow` to restore the viewer-control state from before the previous quick-control workflow.
-
-Other improvements in this release include expanded Quick Controls templates, a better `What can you do with my current layers?` getting-started prompt, stronger `Atlas Stitch` source/export options, and local repair for the common invalid SciPy import `gaussian_noise`.
+These updates improve local workflow discovery, feedback-driven refinement, and day-to-day control of the assistant.
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 

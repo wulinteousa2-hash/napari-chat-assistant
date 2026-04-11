@@ -17,7 +17,14 @@ def _friendly_request_error(url: str, exc: Exception) -> RuntimeError:
     return RuntimeError(str(exc))
 
 
-def http_json(url: str, payload: dict | None = None, *, timeout: int = 30) -> dict:
+def http_json(
+    url: str,
+    payload: dict | None = None,
+    *,
+    timeout: int = 30,
+    response_holder: dict | None = None,
+    stop_event=None,
+) -> dict:
     if payload is None:
         req = request.Request(url, method="GET")
     else:
@@ -30,9 +37,20 @@ def http_json(url: str, payload: dict | None = None, *, timeout: int = 30) -> di
         )
     try:
         with request.urlopen(req, timeout=timeout) as resp:
+            if response_holder is not None:
+                response_holder["response"] = resp
+            if stop_event is not None and stop_event.is_set():
+                return {}
             body = resp.read().decode("utf-8")
-    except (HTTPError, URLError) as exc:
-        raise _friendly_request_error(url, exc) from exc
+    except Exception as exc:
+        if stop_event is not None and stop_event.is_set():
+            return {}
+        if isinstance(exc, (HTTPError, URLError)):
+            raise _friendly_request_error(url, exc) from exc
+        raise
+    finally:
+        if response_holder is not None:
+            response_holder.pop("response", None)
     return json.loads(body) if body else {}
 
 
@@ -108,6 +126,8 @@ def chat_ollama(
     user_payload: dict,
     options: dict,
     timeout: int = 1800,
+    response_holder: dict | None = None,
+    stop_event=None,
 ) -> str:
     payload = {
         "model": model_name,
@@ -118,6 +138,14 @@ def chat_ollama(
         "stream": False,
         "options": options,
     }
-    result = http_json(f"{base_url.rstrip('/')}/api/chat", payload, timeout=timeout)
+    result = http_json(
+        f"{base_url.rstrip('/')}/api/chat",
+        payload,
+        timeout=timeout,
+        response_holder=response_holder,
+        stop_event=stop_event,
+    )
+    if stop_event is not None and stop_event.is_set():
+        return ""
     message = result.get("message", {})
     return str(message.get("content", "")).strip() or '{"action":"reply","message":"[empty response]"}'

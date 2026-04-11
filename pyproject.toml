@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-chat-assistant"
-version = "2.1.2"
+version = "2.2.0"
 description = "Local AI and deterministic workbench for napari image-analysis workflows"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -50,7 +50,7 @@ test = [
 ]
 
 [project.scripts]
-napari-chat-assistant-telemetry-report = "napari_chat_assistant.agent.telemetry_report:main"
+napari-chat-assistant-telemetry-report = "napari_chat_assistant.telemetry.report:main"
 
 [project.entry-points."napari.manifest"]
 napari-chat-assistant = "napari_chat_assistant:napari.yaml"

@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from qtpy.QtCore import QSize, Qt
+from qtpy.QtGui import QColor, QIcon, QPainter, QPixmap
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
+
+
+def _make_stop_icon() -> QIcon:
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, False)
+    painter.fillRect(1, 1, 10, 10, QColor("#d32f2f"))
+    painter.end()
+    return QIcon(pixmap)
 
 
 class PendingCodePanel(QWidget):
@@ -25,8 +37,6 @@ class PendingCodePanel(QWidget):
         self.help_whats_new_action = self.help_menu.addAction("What's New")
         self.help_about_action = self.help_menu.addAction("About")
         self.help_report_bug_action = self.help_menu.addAction("Report Bug")
-        self.help_reject_memory_action = self.help_menu.addAction("Reject Last Answer")
-        self.help_reject_memory_action.setEnabled(False)
         self.help_menu.addSeparator()
         self.help_ui_toggle_action = self.help_menu.addAction("UI Help Enabled")
         self.help_ui_toggle_action.setCheckable(True)
@@ -70,6 +80,18 @@ class PendingCodePanel(QWidget):
         self.chat_font_down_btn.setToolTip("Decrease chat font size.")
         self.chat_font_up_btn = QPushButton("A+")
         self.chat_font_up_btn.setToolTip("Increase chat font size.")
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setIcon(_make_stop_icon())
+        self.stop_btn.setIconSize(QSize(12, 12))
+        self.stop_btn.setToolTip("Stop the current model request.")
+        self.feedback_btn = QPushButton("Rate Result")
+        self.feedback_btn.setToolTip("Rate the latest assistant result for local quality and routing improvement.")
+        self.feedback_menu = QMenu(self.feedback_btn)
+        self.feedback_helpful_action = self.feedback_menu.addAction("Helpful")
+        self.feedback_wrong_route_action = self.feedback_menu.addAction("Wrong Route")
+        self.feedback_wrong_answer_action = self.feedback_menu.addAction("Wrong Answer")
+        self.feedback_didnt_work_action = self.feedback_menu.addAction("Didn't Work")
+        self.feedback_btn.setMenu(self.feedback_menu)
 
         bottom_row = QWidget()
         bottom_row_layout = QHBoxLayout(bottom_row)
@@ -83,8 +105,10 @@ class PendingCodePanel(QWidget):
         top_row_layout.addWidget(self.refine_my_code_btn)
 
         bottom_row_layout.addStretch(1)
+        bottom_row_layout.addWidget(self.stop_btn)
         bottom_row_layout.addWidget(self.chat_font_down_btn)
         bottom_row_layout.addWidget(self.chat_font_up_btn)
+        bottom_row_layout.addWidget(self.feedback_btn)
         bottom_row_layout.addWidget(self.advanced_btn)
         bottom_row_layout.addWidget(self.help_btn)
 

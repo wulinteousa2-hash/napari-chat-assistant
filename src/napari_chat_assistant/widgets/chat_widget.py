@@ -5,6 +5,7 @@ import json
 import hashlib
 import importlib
 import re
+import threading
 import time
 import uuid
 from contextlib import redirect_stdout
@@ -65,7 +66,7 @@ from napari_chat_assistant.agent.dispatcher import (
     run_tool_sequence,
 )
 from napari_chat_assistant.agent.followup_semantics import parse_followup_constraint
-from napari_chat_assistant.agent.logging_utils import (
+from napari_chat_assistant.telemetry import (
     APP_LOG_PATH,
     CRASH_LOG_PATH,
     TELEMETRY_LOG_PATH,
@@ -147,11 +148,17 @@ from napari_chat_assistant.agent.session_memory import (
     set_active_dataset_focus,
     update_session_goal,
 )
-from napari_chat_assistant.agent.telemetry_summary import (
+from napari_chat_assistant.telemetry import (
     format_telemetry_summary,
     load_telemetry_events,
     read_telemetry_tail,
     summarize_telemetry_events,
+)
+from napari_chat_assistant.telemetry.intent_tracker import (
+    IntentEvent,
+    build_layer_context,
+    categorize_intent,
+    record_intent,
 )
 from napari_chat_assistant.agent.tools import ASSISTANT_TOOL_NAMES, assistant_system_prompt, next_output_name
 from napari_chat_assistant.agent.ui_help import answer_ui_question
@@ -451,9 +458,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
     help_whats_new_action = pending_code_panel.help_whats_new_action
     help_about_action = pending_code_panel.help_about_action
     help_report_bug_action = pending_code_panel.help_report_bug_action
-    help_reject_memory_action = pending_code_panel.help_reject_memory_action
     help_ui_toggle_action = pending_code_panel.help_ui_toggle_action
     advanced_btn = pending_code_panel.advanced_btn
+    feedback_btn = pending_code_panel.feedback_btn
+    feedback_helpful_action = pending_code_panel.feedback_helpful_action
+    feedback_wrong_route_action = pending_code_panel.feedback_wrong_route_action
+    feedback_wrong_answer_action = pending_code_panel.feedback_wrong_answer_action
+    feedback_didnt_work_action = pending_code_panel.feedback_didnt_work_action
     sam2_setup_action = pending_code_panel.sam2_setup_action
     sam2_live_action = pending_code_panel.sam2_live_action
     text_annotation_action = pending_code_panel.text_annotation_action
@@ -462,6 +473,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_my_code_btn = pending_code_panel.run_my_code_btn
     refine_my_code_btn = pending_code_panel.refine_my_code_btn
     copy_code_btn = pending_code_panel.copy_code_btn
+    stop_btn = pending_code_panel.stop_btn
     chat_font_down_btn = pending_code_panel.chat_font_down_btn
     chat_font_up_btn = pending_code_panel.chat_font_up_btn
     transcript_layout.addWidget(pending_code_panel)
@@ -580,7 +592,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
         "code": "",
         "error": "",
     }
-    last_turn_metrics = {"turn_id": "", "model": "", "action": "", "prompt_hash": ""}
+    last_turn_metrics = {
+        "turn_id": "",
+        "model": "",
+        "action": "",
+        "prompt_hash": "",
+        "intent_category": "",
+        "predicted_route": "",
+        "actual_route": "",
+        "outcome_type": "",
+        "tool_name": "",
+        "success": None,
+        "latency_ms": 0,
+        "feedback": "",
+    }
     pending_action_state = empty_pending_action()
     session_memory_state = load_session_memory()
     recent_action_state = empty_recent_action_state()
@@ -877,8 +902,148 @@ def chat_widget(napari_viewer=None) -> QWidget:
             )
         transcript.append(html)
 
+    def refresh_feedback_controls() -> None:
+        has_outcome = bool(last_turn_metrics.get("turn_id"))
+        feedback_given = bool(last_turn_metrics.get("feedback"))
+        feedback_btn.setEnabled(has_outcome)
+        enabled = has_outcome and not feedback_given
+        feedback_helpful_action.setEnabled(enabled)
+        feedback_wrong_route_action.setEnabled(enabled)
+        feedback_wrong_answer_action.setEnabled(enabled)
+        feedback_didnt_work_action.setEnabled(enabled)
+
+    def refresh_stop_button() -> None:
+        stop_btn.setEnabled(
+            any(callable(getattr(worker, "_assistant_cancel", None)) for worker in active_workers)
+        )
+
+    def stop_active_request(*_args) -> None:
+        cancellable_workers = [
+            worker
+            for worker in list(active_workers)
+            if callable(getattr(worker, "_assistant_cancel", None))
+        ]
+        if not cancellable_workers:
+            set_status("Status: no active model request to stop", ok=False)
+            append_log("Stop skipped: no active model request.")
+            return
+        for worker in cancellable_workers:
+            cancel = getattr(worker, "_assistant_cancel", None)
+            try:
+                cancel()
+            except Exception:
+                pass
+        latency_ms = int(last_turn_metrics.get("latency_ms", 0) or 0)
+        if not latency_ms and wait_indicator.get("active"):
+            latency_ms = int((time.perf_counter() - float(wait_indicator.get("started_at", 0.0))) * 1000)
+        cancel_bucket = "quick" if latency_ms < 10000 else "long"
+        record_telemetry(
+            "turn_cancelled",
+            {
+                "turn_id": last_turn_metrics.get("turn_id", ""),
+                "model": last_turn_metrics.get("model", ""),
+                "prompt_hash": last_turn_metrics.get("prompt_hash", ""),
+                "intent_category": last_turn_metrics.get("intent_category", ""),
+                "predicted_route": last_turn_metrics.get("predicted_route", ""),
+                "actual_route": "cancelled",
+                "outcome_type": "cancelled",
+                "latency_ms": latency_ms,
+                "source": "user",
+                "phase": "model_generation",
+                "cancel_bucket": cancel_bucket,
+            },
+        )
+        last_turn_metrics.update(
+            {
+                "actual_route": "cancelled",
+                "outcome_type": "cancelled",
+                "success": False,
+                "latency_ms": latency_ms,
+            }
+        )
+        stop_wait_indicator()
+        refresh_stop_button()
+        append_log("Stopped active model request.")
+        set_status("Status: stopped active model request", ok=None)
+
+    def set_latest_outcome(
+        *,
+        turn_id: str,
+        model: str = "",
+        action: str = "",
+        prompt_hash_value: str = "",
+        intent_category: str = "",
+        predicted_route: str = "",
+        actual_route: str = "",
+        outcome_type: str = "",
+        tool_name: str = "",
+        success: bool | None = None,
+        latency_ms: int = 0,
+    ) -> None:
+        last_turn_metrics.update(
+            {
+                "turn_id": turn_id,
+                "model": model,
+                "action": action,
+                "prompt_hash": prompt_hash_value,
+                "intent_category": intent_category,
+                "predicted_route": predicted_route,
+                "actual_route": actual_route,
+                "outcome_type": outcome_type or action,
+                "tool_name": tool_name,
+                "success": success,
+                "latency_ms": int(latency_ms or 0),
+                "feedback": "",
+            }
+        )
+        refresh_feedback_controls()
+
+    def serialize_telemetry_events(events: list[dict], *, empty_message: str) -> str:
+        if not events:
+            return empty_message
+        return "\n".join(json.dumps(event, ensure_ascii=True) for event in events)
+
+    def filter_telemetry_events(events: list[dict], kind: str) -> list[dict]:
+        if kind == "model":
+            return [
+                event for event in events
+                if str(event.get("event_type", "")).strip() in {"turn_started", "turn_completed", "code_execution"}
+            ]
+        if kind == "intent":
+            return [
+                event for event in events
+                if str(event.get("event_type", "")).strip() == "intent_captured"
+            ]
+        if kind == "feedback":
+            return [
+                event for event in events
+                if str(event.get("event_type", "")).strip() == "turn_feedback"
+            ]
+        if kind == "errors":
+            filtered: list[dict] = []
+            for event in events:
+                event_type = str(event.get("event_type", "")).strip()
+                if event_type == "turn_completed" and (
+                    str(event.get("response_action", "")).strip() == "error" or event.get("tool_success") is False
+                ):
+                    filtered.append(event)
+                elif event_type == "code_execution" and event.get("success") is False:
+                    filtered.append(event)
+            return filtered
+        return list(events)
+
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.2.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added `Rate Result` so you can quickly mark the latest result as `Helpful`, `Wrong Route`, `Wrong Answer`, or `Didn't Work`.\n"
+                "- Added a `⏹ Stop` button to cancel long model requests directly from the chat panel.\n"
+                "- Improved telemetry with clearer views for `Model Activity`, `Intent Signals`, `Problems`, and `Raw Log`.\n"
+                "- The assistant can now suggest prompts that are more likely to trigger supported local workflows such as masking, ROI measurement, and viewer setup.\n"
+                "- Runtime messages are clearer when generated code depends on packages that are not included by default.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.1.2":
             return (
                 f"**What's New In {current}**\n"
@@ -1246,6 +1411,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 target_profile=selected_layer_profile(),
                 state="approved",
             )
+            set_latest_outcome(
+                turn_id=turn_id_value or last_turn_metrics.get("turn_id", ""),
+                model="local_tool_runner",
+                action="tool",
+                prompt_hash_value=last_turn_metrics.get("prompt_hash", ""),
+                intent_category=last_turn_metrics.get("intent_category", ""),
+                predicted_route="local_tool",
+                actual_route="tool",
+                outcome_type="tool_result",
+                tool_name=tool_name,
+                success=True,
+            )
             return
         if prepared.get("mode") != "worker":
             set_status("Status: unsupported tool response", ok=False)
@@ -1276,6 +1453,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
             target_type="tool_result",
             target_profile=selected_layer_profile(),
             state="approved",
+        )
+        set_latest_outcome(
+            turn_id=turn_id_value or last_turn_metrics.get("turn_id", ""),
+            model="local_tool_runner",
+            action="tool",
+            prompt_hash_value=last_turn_metrics.get("prompt_hash", ""),
+            intent_category=last_turn_metrics.get("intent_category", ""),
+            predicted_route="local_tool",
+            actual_route="tool",
+            outcome_type="tool_result",
+            tool_name=tool_name,
+            success=True,
         )
 
     def adjust_prompt_library_font(delta: int):
@@ -1439,20 +1628,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         path_label.setWordWrap(True)
         dialog_layout.addWidget(path_label)
 
+        viewer_tabs = QTabWidget()
         summary_box = QTextEdit()
         summary_box.setReadOnly(True)
         summary_box.setMinimumHeight(200)
         summary_box.setStyleSheet(
             "QTextEdit { background: #10182b; color: #d6deeb; border: 1px solid #30415f; padding: 8px; }"
         )
-        dialog_layout.addWidget(summary_box)
-
+        model_box = QTextEdit()
+        intent_box = QTextEdit()
+        problems_box = QTextEdit()
         raw_box = QTextEdit()
-        raw_box.setReadOnly(True)
-        raw_box.setStyleSheet(
-            "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 8px; }"
-        )
-        dialog_layout.addWidget(raw_box, 1)
+        for box in (model_box, intent_box, problems_box, raw_box):
+            box.setReadOnly(True)
+            box.setStyleSheet(
+                "QTextEdit { background: #0b1021; color: #d6deeb; border: 1px solid #22304a; padding: 8px; }"
+            )
+        viewer_tabs.addTab(summary_box, "Summary")
+        viewer_tabs.addTab(model_box, "Model Activity")
+        viewer_tabs.addTab(intent_box, "Intent Signals")
+        viewer_tabs.addTab(problems_box, "Problems")
+        viewer_tabs.addTab(raw_box, "Raw Log")
+        dialog_layout.addWidget(viewer_tabs, 1)
 
         button_row = QWidget()
         button_layout = QHBoxLayout(button_row)
@@ -1463,7 +1660,36 @@ def chat_widget(napari_viewer=None) -> QWidget:
         dialog_layout.addWidget(button_row)
 
         def refresh_dialog():
-            summary_box.setMarkdown(telemetry_summary_text())
+            events, invalid_lines = load_telemetry_events()
+            summary_box.setMarkdown(format_telemetry_summary(summarize_telemetry_events(events, invalid_lines)))
+            model_box.setPlainText(
+                serialize_telemetry_events(
+                    filter_telemetry_events(events, "model"),
+                    empty_message="[No model telemetry events recorded]",
+                )
+            )
+            intent_box.setPlainText(
+                "\n\n".join(
+                    part
+                    for part in (
+                        serialize_telemetry_events(
+                            filter_telemetry_events(events, "intent"),
+                            empty_message="[No intent telemetry events recorded]",
+                        ),
+                        serialize_telemetry_events(
+                            filter_telemetry_events(events, "feedback"),
+                            empty_message="[No feedback events recorded]",
+                        ),
+                    )
+                    if part
+                )
+            )
+            problems_box.setPlainText(
+                serialize_telemetry_events(
+                    filter_telemetry_events(events, "errors"),
+                    empty_message="[No error events recorded]",
+                )
+            )
             raw_box.setPlainText(read_telemetry_tail(max_lines=250) or "[Telemetry log is empty]")
 
         refresh_dialog_btn.clicked.connect(refresh_dialog)
@@ -1610,6 +1836,20 @@ def chat_widget(napari_viewer=None) -> QWidget:
         except Exception:
             logger.exception("Failed to append telemetry event: %s", event_type)
 
+    def record_intent_telemetry(event: IntentEvent) -> None:
+        if not bool(ui_state.get("telemetry_enabled", False)):
+            return
+        try:
+            record_intent(event)
+        except Exception:
+            logger.exception("Failed to append intent telemetry event.")
+
+    def current_workspace_state() -> str:
+        try:
+            return "loaded" if len(viewer.layers) else "new"
+        except Exception:
+            return "loaded"
+
     def refresh_telemetry_controls():
         enabled = bool(ui_state.get("telemetry_enabled", False))
         telemetry_summary_btn.setVisible(enabled)
@@ -1672,7 +1912,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     def set_last_memory_candidates(item_ids: list[str]):
         nonlocal last_memory_candidate_ids
         last_memory_candidate_ids = [item_id for item_id in item_ids if item_id]
-        help_reject_memory_action.setEnabled(bool(last_memory_candidate_ids))
 
     def remember_assistant_outcome(summary: str, *, target_type: str, target_profile: dict | None, state: str = "provisional"):
         clean = " ".join(str(summary or "").split()).strip()
@@ -1955,28 +2194,44 @@ def chat_widget(napari_viewer=None) -> QWidget:
         std_text = f"{float(stats.get('std', 0.0)):.6g}" if "std" in stats else "n/a"
         return f"This intensity summary is a quick whole-image readout for [{layer_name}]. Mean={mean_text} gives the average brightness, std={std_text} shows intensity spread, and median/min/max help describe the image without opening an interactive widget."
 
-    def reject_last_memory(*_args):
+    def submit_feedback(feedback_label: str) -> None:
         nonlocal session_memory_state
-        if not last_memory_candidate_ids:
-            set_status("Status: no recent answer to reject", ok=False)
-            append_log("Reject feedback skipped: no recent assistant memory candidates.")
+        normalized_feedback = str(feedback_label or "").strip().lower()
+        if not last_turn_metrics.get("turn_id"):
+            set_status("Status: no recent assistant result to rate", ok=False)
+            append_log("Feedback skipped: no recent assistant outcome.")
             return
-        session_memory_state = reject_items(session_memory_state, last_memory_candidate_ids)
-        persist_session_memory()
-        append_chat_message("assistant", "Marked the last assistant outcome as rejected for this session memory.")
+        if normalized_feedback == "wrong_answer" and last_memory_candidate_ids:
+            session_memory_state = reject_items(session_memory_state, last_memory_candidate_ids)
+            persist_session_memory()
+            set_last_memory_candidates([])
         record_telemetry(
             "turn_feedback",
             {
                 "turn_id": last_turn_metrics.get("turn_id", ""),
                 "model": last_turn_metrics.get("model", ""),
-                "feedback": "reject",
+                "feedback": normalized_feedback,
                 "response_action": last_turn_metrics.get("action", ""),
                 "prompt_hash": last_turn_metrics.get("prompt_hash", ""),
+                "intent_category": last_turn_metrics.get("intent_category", ""),
+                "predicted_route": last_turn_metrics.get("predicted_route", ""),
+                "actual_route": last_turn_metrics.get("actual_route", ""),
+                "outcome_type": last_turn_metrics.get("outcome_type", ""),
+                "tool_name": last_turn_metrics.get("tool_name", ""),
+                "success": last_turn_metrics.get("success"),
+                "latency_ms": last_turn_metrics.get("latency_ms", 0),
             },
         )
-        append_log("Rejected last assistant memory candidates.")
-        set_status("Status: last answer rejected from session memory", ok=None)
-        set_last_memory_candidates([])
+        last_turn_metrics["feedback"] = normalized_feedback
+        refresh_feedback_controls()
+        feedback_display = {
+            "helpful": "Helpful",
+            "wrong_route": "Wrong Route",
+            "wrong_answer": "Wrong Answer",
+            "didnt_work": "Didn't Work",
+        }.get(normalized_feedback, normalized_feedback or "Feedback")
+        append_log(f"Recorded feedback for latest assistant outcome: {feedback_display}")
+        set_status(f"Status: feedback saved ({feedback_display})", ok=True)
 
     apply_chat_font_size(int(ui_state.get("chat_font_size", transcript.font().pointSize() or 10)))
 
@@ -2091,6 +2346,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 "Approved code failed because `scikit-image` is not installed in the napari Python environment.\n"
                 "Install it in the same environment that launches napari, then try again.\n"
                 "Suggested command: `python -m pip install scikit-image`"
+            )
+        if "no module named 'cv2'" in lowered or 'no module named "cv2"' in lowered:
+            return (
+                "OpenCV is not included by default here.\n"
+                "Prefer scipy/skimage, or install `opencv-python-headless` in the napari environment if needed."
             )
         if "skimage." in lowered and "no attribute" in lowered:
             return (
@@ -5087,6 +5347,28 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if promoted_ids:
             append_log(f"Promoted {len(promoted_ids)} provisional memory item(s) from user follow-up.")
         persist_session_memory()
+        intent_event = IntentEvent(
+            intent_category=categorize_intent(text),
+            intent_description=text[:200],
+            layer_context=build_layer_context(current_profile),
+            workspace_state=current_workspace_state(),
+            success=False,
+            duration_ms=0,
+            metadata={"full_prompt_hash": prompt_hash(text), "turn_id": turn_id},
+        )
+        record_intent_telemetry(intent_event)
+        turn_intent_category = intent_event.intent_category
+
+        def finalize_intent(success: bool, feedback: str, metadata: dict | None = None) -> int:
+            latency_ms = int((time.perf_counter() - request_started_at) * 1000)
+            intent_event.success = success
+            intent_event.duration_ms = latency_ms
+            intent_event.feedback = feedback
+            if metadata:
+                intent_event.metadata = {**(intent_event.metadata or {}), **metadata}
+            record_intent_telemetry(intent_event)
+            return latency_ms
+
         manual_code = extract_manual_code_submission(text)
         if manual_code:
             upsert_recent_code(prompt_library_state, manual_code)
@@ -5136,6 +5418,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="manual",
+                    action="manual_code_blocked",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="manual_code",
+                    actual_route="manual_code_blocked",
+                    outcome_type="code_result",
+                    success=False,
+                )
+                finalize_intent(False, "failed", {"response_action": "manual_code_blocked"})
                 return
             set_pending_code(manual_code, message=code_message)
             pending_code["turn_id"] = turn_id
@@ -5169,6 +5463,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     **selected_layer_snapshot(),
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="manual",
+                action="manual_code",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="manual_code",
+                actual_route="manual_code",
+                outcome_type="code_result",
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "manual_code"})
             return
         code_repair_context = build_code_repair_context(text, viewer=viewer)
         followup_constraint = parse_followup_constraint(text)
@@ -5193,6 +5499,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     **selected_layer_snapshot(),
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="local_ui_help",
+                action="reply",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="ui_help",
+                actual_route="ui_help",
+                outcome_type="reply",
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "reply", "model": "local_ui_help"})
             return
         recent_action_route = route_recent_action_followup(
             text,
@@ -5211,6 +5529,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 turn_id_value=turn_id,
             )
             append_log(f"Handled recent-action follow-up locally: {tool_name}")
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="local_recent_action_router",
+                action="tool",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="recent_action_followup",
+                actual_route="tool",
+                outcome_type="tool_result",
+                tool_name=tool_name,
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "tool", "tool_name": tool_name})
             return
         threshold_followup_reply = reply_for_threshold_followup(text) if looks_like_threshold_followup(text) else ""
         if threshold_followup_reply:
@@ -5231,6 +5562,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     **selected_layer_snapshot(),
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="local_threshold_explainer",
+                action="reply",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="local_explainer",
+                actual_route="reply",
+                outcome_type="reply",
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "reply", "model": "local_threshold_explainer"})
             return
         histogram_followup_reply = reply_for_histogram_followup(text) if looks_like_histogram_followup(text) else ""
         if histogram_followup_reply:
@@ -5251,6 +5594,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     **selected_layer_snapshot(),
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="local_histogram_explainer",
+                action="reply",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="local_explainer",
+                actual_route="reply",
+                outcome_type="reply",
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "reply", "model": "local_histogram_explainer"})
             return
         intensity_summary_followup_reply = reply_for_intensity_summary_followup(text) if looks_like_intensity_summary_followup(text) else ""
         if intensity_summary_followup_reply:
@@ -5271,6 +5626,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     **selected_layer_snapshot(),
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id,
+                model="local_intensity_summary_explainer",
+                action="reply",
+                prompt_hash_value=prompt_hash(text),
+                intent_category=turn_intent_category,
+                predicted_route="local_explainer",
+                actual_route="reply",
+                outcome_type="reply",
+                success=True,
+            )
+            finalize_intent(True, "completed", {"response_action": "reply", "model": "local_intensity_summary_explainer"})
             return
         current_profile = selected_layer_profile() or {}
         selected_layer_name = str(current_profile.get("layer_name", "")).strip()
@@ -5308,6 +5675,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
         if not base_url or not model_name:
             append_chat_message("assistant", "Model settings are incomplete. Choose a model and open Connection if you need to adjust the Base URL.")
             set_status("Status: missing saved model settings", ok=False)
+            finalize_intent(False, "failed", {"response_action": "configuration_error"})
             return
         local_workflow_route = None
         skip_local_workflow = should_skip_local_workflow_route(intent_state)
@@ -5352,6 +5720,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="reply",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="reply",
+                    outcome_type="reply",
+                    success=True,
+                )
+                finalize_intent(True, "completed", {"response_action": "reply", "model": "local_workflow_router"})
                 return
             if route_action == "workflow_plan":
                 route_message = str(local_workflow_route.get("message", "")).strip()
@@ -5377,6 +5757,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="workflow_plan",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="workflow_plan",
+                    outcome_type="workflow_plan",
+                    tool_name="plan_conservative_binary_segmentation",
+                    success=True,
+                )
+                finalize_intent(True, "completed", {"response_action": "workflow_plan", "model": "local_workflow_router"})
                 return
             if route_action == "workflow_report":
                 mode = str(local_workflow_route.get("mode", "")).strip().lower() or "compact"
@@ -5400,6 +5793,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
                 append_log(f"Handled request via local workflow route: workflow_report[{mode}]")
                 set_status("Status: workflow report shown", ok=True)
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="workflow_report",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="workflow_report",
+                    outcome_type="workflow_report",
+                    success=True,
+                )
+                finalize_intent(True, "completed", {"response_action": "workflow_report", "mode": mode, "model": "local_workflow_router"})
                 return
             if route_action == "workflow_execute":
                 route_message = str(local_workflow_route.get("message", "")).strip()
@@ -5427,6 +5832,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="workflow_execute",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="workflow_execute",
+                    outcome_type="workflow_execute",
+                    tool_name="execute_workflow_plan",
+                    success=bool(execution_result.get("ok", False)),
+                )
+                finalize_intent(bool(execution_result.get("ok", False)), "completed", {"response_action": "workflow_execute", "model": "local_workflow_router"})
                 return
             if route_action == "tool_sequence":
                 nonlocal last_tool_sequence_undo_snapshot
@@ -5458,6 +5876,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="tool_sequence",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="tool_sequence",
+                    outcome_type="tool_sequence",
+                    tool_name="run_tool_sequence",
+                    success=True,
+                )
+                finalize_intent(True, "completed", {"response_action": "tool_sequence", "model": "local_workflow_router"})
                 return
             if route_action == "restore_tool_sequence":
                 if not last_tool_sequence_undo_snapshot:
@@ -5487,6 +5918,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         **selected_layer_snapshot(),
                     },
                 )
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model="local_workflow_router",
+                    action="restore_tool_sequence",
+                    prompt_hash_value=prompt_hash(text),
+                    intent_category=turn_intent_category,
+                    predicted_route="local_workflow",
+                    actual_route="restore_tool_sequence",
+                    outcome_type="workflow_restore",
+                    tool_name="restore_viewer_control_snapshot",
+                    success=True,
+                )
+                finalize_intent(True, "completed", {"response_action": "restore_tool_sequence", "model": "local_workflow_router"})
                 return
             tool_name = str(local_workflow_route.get("tool", "")).strip()
             if should_block_tool(intent_state, tool_name):
@@ -5521,6 +5965,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             **selected_layer_snapshot(),
                         },
                     )
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model="local_workflow_router",
+                        action="tool",
+                        prompt_hash_value=prompt_hash(text),
+                        intent_category=turn_intent_category,
+                        predicted_route="local_workflow",
+                        actual_route="tool",
+                        outcome_type="tool_result",
+                        tool_name=tool_name,
+                        success=True,
+                    )
+                    finalize_intent(True, "completed", {"response_action": "tool", "tool_name": tool_name, "model": "local_workflow_router"})
                 else:
                     job = prepared["job"]
                     start_wait_indicator(phase=f"processing {tool_name}")
@@ -5568,6 +6025,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                                 **selected_layer_snapshot(),
                             },
                         )
+                        set_latest_outcome(
+                            turn_id=turn_id,
+                            model="local_workflow_router",
+                            action="tool",
+                            prompt_hash_value=prompt_hash(text),
+                            intent_category=turn_intent_category,
+                            predicted_route="local_workflow",
+                            actual_route="tool",
+                            outcome_type="tool_result",
+                            tool_name=tool_name,
+                            success=True,
+                        )
+                        finalize_intent(True, "completed", {"response_action": "tool", "tool_name": tool_name, "model": "local_workflow_router"})
                         local_tool_finish()
 
                     def local_tool_error(*args):
@@ -5578,6 +6048,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         append_log(f"Local workflow route failed: {tool_name} | {error_text}")
                         set_status(f"Status: {tool_name} failed", ok=False)
                         last_failed_tool_state = remember_failed_tool(tool_name, error_text)
+                        set_latest_outcome(
+                            turn_id=turn_id,
+                            model="local_workflow_router",
+                            action="tool",
+                            prompt_hash_value=prompt_hash(text),
+                            intent_category=turn_intent_category,
+                            predicted_route="local_workflow",
+                            actual_route="tool",
+                            outcome_type="tool_result",
+                            tool_name=tool_name,
+                            success=False,
+                        )
+                        finalize_intent(False, "failed", {"response_action": "tool", "tool_name": tool_name, "error": error_text, "model": "local_workflow_router"})
                         local_tool_finish()
 
                     tool_worker.returned.connect(local_tool_returned)
@@ -5604,6 +6087,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
         start_wait_indicator(phase="Thinking")
         set_status(f"Status: sending to {model_name}", ok=None)
+        response_holder: dict = {}
+        stop_event = threading.Event()
 
         @thread_worker(ignore_errors=True)
         def run_chat():
@@ -5623,18 +6108,35 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 },
                 options=dict(generation_defaults),
                 timeout=1800,
+                response_holder=response_holder,
+                stop_event=stop_event,
             )
 
         worker = run_chat()
+        def cancel_chat_request() -> None:
+            stop_event.set()
+            response = response_holder.get("response")
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+        setattr(worker, "_assistant_cancel", cancel_chat_request)
         active_workers.append(worker)
+        refresh_stop_button()
 
         def finish():
             stop_wait_indicator()
             if worker in active_workers:
                 active_workers.remove(worker)
+            refresh_stop_button()
 
         def on_returned(reply):
             nonlocal last_failed_tool_state
+            if stop_event.is_set():
+                finish()
+                return
             try:
                 parsed = normalize_model_response(reply)
             except Exception as exc:
@@ -5642,6 +6144,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 replace_last_assistant(f"Response parse failed:\n{exc}\n\nRaw reply:\n{reply}")
                 set_status("Status: response parse failed", ok=False)
                 append_log("Failed to parse model response.")
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model=model_name,
+                    action="error",
+                    prompt_hash_value=turn_prompt_hash,
+                    intent_category=turn_intent_category,
+                    predicted_route="model_request",
+                    actual_route="error",
+                    outcome_type="error",
+                    success=False,
+                )
                 finish()
                 return
 
@@ -5657,6 +6170,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     )
                     set_status("Status: blocked incompatible built-in tool", ok=False)
                     append_log(f"Blocked tool by intent-state guard: {tool_name}")
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model=model_name,
+                        action="tool_blocked",
+                        prompt_hash_value=turn_prompt_hash,
+                        intent_category=turn_intent_category,
+                        predicted_route="model_tool",
+                        actual_route="blocked",
+                        outcome_type="tool_result",
+                        tool_name=tool_name,
+                        success=False,
+                    )
+                    finalize_intent(False, "failed", {"response_action": "tool_blocked", "tool_name": tool_name})
                     finish()
                     return
                 arguments = parsed.get("arguments", {})
@@ -5675,14 +6201,37 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         replace_last_assistant(f"{tool_name} failed:\n{exc}")
                         set_status(f"Status: {tool_name} failed", ok=False)
                         append_log(f"Immediate tool failed: {tool_name} | {exc}")
+                        set_latest_outcome(
+                            turn_id=turn_id,
+                            model=model_name,
+                            action="tool",
+                            prompt_hash_value=turn_prompt_hash,
+                            intent_category=turn_intent_category,
+                            predicted_route="model_tool",
+                            actual_route="tool",
+                            outcome_type="tool_result",
+                            tool_name=tool_name,
+                            success=False,
+                        )
+                        finalize_intent(False, "failed", {"response_action": "tool", "tool_name": tool_name, "error": str(exc), "model": model_name})
                         finish()
                         return
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
                     last_failed_tool_state = remember_failed_tool(tool_name, result_message)
-                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-                    last_turn_metrics.update(
-                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    latency_ms = finalize_intent(True, "completed", {"response_action": "tool", "tool_name": tool_name, "model": model_name})
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model=model_name,
+                        action="tool",
+                        prompt_hash_value=turn_prompt_hash,
+                        intent_category=turn_intent_category,
+                        predicted_route="model_tool",
+                        actual_route="tool",
+                        outcome_type="tool_result",
+                        tool_name=tool_name,
+                        success=True,
+                        latency_ms=latency_ms,
                     )
                     record_telemetry(
                         "turn_completed",
@@ -5740,9 +6289,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     refresh_context()
                     replace_last_assistant(f"{tool_message}\n{result_message}" if tool_message else result_message)
                     last_failed_tool_state = remember_failed_tool(tool_name, result_message)
-                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-                    last_turn_metrics.update(
-                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    latency_ms = finalize_intent(True, "completed", {"response_action": "tool", "tool_name": tool_name, "model": model_name})
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model=model_name,
+                        action="tool",
+                        prompt_hash_value=turn_prompt_hash,
+                        intent_category=turn_intent_category,
+                        predicted_route="model_tool",
+                        actual_route="tool",
+                        outcome_type="tool_result",
+                        tool_name=tool_name,
+                        success=True,
+                        latency_ms=latency_ms,
                     )
                     record_telemetry(
                         "turn_completed",
@@ -5782,9 +6341,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     logger.exception("Tool execution failed: %s | %s", tool_name, error_text)
                     replace_last_assistant(f"Tool execution failed: {error_text}")
                     last_failed_tool_state = remember_failed_tool(tool_name, error_text)
-                    latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-                    last_turn_metrics.update(
-                        {"turn_id": turn_id, "model": model_name, "action": "tool", "prompt_hash": turn_prompt_hash}
+                    latency_ms = finalize_intent(False, "failed", {"response_action": "tool", "tool_name": tool_name, "error": error_text, "model": model_name})
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model=model_name,
+                        action="tool",
+                        prompt_hash_value=turn_prompt_hash,
+                        intent_category=turn_intent_category,
+                        predicted_route="model_tool",
+                        actual_route="tool",
+                        outcome_type="tool_result",
+                        tool_name=tool_name,
+                        success=False,
+                        latency_ms=latency_ms,
                     )
                     record_telemetry(
                         "turn_completed",
@@ -5840,6 +6409,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     )
                     append_log("Rejected generated code after local validation.")
                     set_status("Status: code rejected", ok=False)
+                    set_latest_outcome(
+                        turn_id=turn_id,
+                        model=model_name,
+                        action="code_rejected",
+                        prompt_hash_value=turn_prompt_hash,
+                        intent_category=turn_intent_category,
+                        predicted_route="model_code",
+                        actual_route="code_rejected",
+                        outcome_type="code_result",
+                        success=False,
+                    )
                     finish()
                     return
                 set_pending_code(code_text, message=code_message, validation_mode="strict", code_source="assistant")
@@ -5853,9 +6433,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         heading="Local validation summary for generated code.",
                     ) + "\n\n"
                 replace_last_assistant(f"{report_prefix}{code_message}\n{format_code_block(code_text)}")
-                latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-                last_turn_metrics.update(
-                    {"turn_id": turn_id, "model": model_name, "action": "code", "prompt_hash": turn_prompt_hash}
+                latency_ms = finalize_intent(True, "completed", {"response_action": "code", "model": model_name})
+                set_latest_outcome(
+                    turn_id=turn_id,
+                    model=model_name,
+                    action="code",
+                    prompt_hash_value=turn_prompt_hash,
+                    intent_category=turn_intent_category,
+                    predicted_route="model_code",
+                    actual_route="code",
+                    outcome_type="code_result",
+                    success=True,
+                    latency_ms=latency_ms,
                 )
                 record_telemetry(
                     "turn_completed",
@@ -5886,9 +6475,18 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 )
             )
             replace_last_assistant(message_text)
-            latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-            last_turn_metrics.update(
-                {"turn_id": turn_id, "model": model_name, "action": "reply", "prompt_hash": turn_prompt_hash}
+            latency_ms = finalize_intent(True, "completed", {"response_action": "reply", "model": model_name})
+            set_latest_outcome(
+                turn_id=turn_id,
+                model=model_name,
+                action="reply",
+                prompt_hash_value=turn_prompt_hash,
+                intent_category=turn_intent_category,
+                predicted_route="model_reply",
+                actual_route="reply",
+                outcome_type="reply",
+                success=True,
+                latency_ms=latency_ms,
             )
             record_telemetry(
                 "turn_completed",
@@ -5915,12 +6513,24 @@ def chat_widget(napari_viewer=None) -> QWidget:
         worker.returned.connect(on_returned)
 
         def request_failed(*args):
+            if stop_event.is_set():
+                finish()
+                return
             error_text = format_worker_error(*args)
             logger.exception("Chat request failed: %s", error_text)
             replace_last_assistant(f"Request failed: {error_text}")
-            latency_ms = int((time.perf_counter() - request_started_at) * 1000)
-            last_turn_metrics.update(
-                {"turn_id": turn_id, "model": model_name, "action": "error", "prompt_hash": turn_prompt_hash}
+            latency_ms = finalize_intent(False, "failed", {"response_action": "error", "error": error_text, "model": model_name})
+            set_latest_outcome(
+                turn_id=turn_id,
+                model=model_name,
+                action="error",
+                prompt_hash_value=turn_prompt_hash,
+                intent_category=turn_intent_category,
+                predicted_route="model_request",
+                actual_route="error",
+                outcome_type="error",
+                success=False,
+                latency_ms=latency_ms,
             )
             record_telemetry(
                 "turn_completed",
@@ -6119,6 +6729,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "error": error_text,
                 },
             )
+            set_latest_outcome(
+                turn_id=turn_id or last_turn_metrics.get("turn_id", ""),
+                model=model_name or last_turn_metrics.get("model", ""),
+                action="code_execution",
+                prompt_hash_value=last_turn_metrics.get("prompt_hash", ""),
+                intent_category=last_turn_metrics.get("intent_category", ""),
+                predicted_route="code_execution",
+                actual_route="code_execution",
+                outcome_type="code_result",
+                success=False,
+            )
             append_log(f"{code_label.capitalize()} failed: {error_text}")
             set_status(f"Status: {code_label} failed", ok=False)
             if disable_pending_buttons and pending_code["code"]:
@@ -6150,6 +6771,17 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 "success": True,
                 "stdout_chars": len(stdout_text),
             },
+        )
+        set_latest_outcome(
+            turn_id=turn_id or last_turn_metrics.get("turn_id", ""),
+            model=model_name or last_turn_metrics.get("model", ""),
+            action="code_execution",
+            prompt_hash_value=last_turn_metrics.get("prompt_hash", ""),
+            intent_category=last_turn_metrics.get("intent_category", ""),
+            predicted_route="code_execution",
+            actual_route="code_execution",
+            outcome_type="code_result",
+            success=True,
         )
         append_log(f"{code_label.capitalize()} executed successfully.")
         set_status(f"Status: {code_label} done", ok=True)
@@ -6332,7 +6964,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
     run_my_code_btn.clicked.connect(run_prompt_code)
     refine_my_code_btn.clicked.connect(refine_prompt_code)
     copy_code_btn.clicked.connect(copy_pending_code)
-    help_reject_memory_action.triggered.connect(reject_last_memory)
+    feedback_helpful_action.triggered.connect(lambda *_args: submit_feedback("helpful"))
+    feedback_wrong_route_action.triggered.connect(lambda *_args: submit_feedback("wrong_route"))
+    feedback_wrong_answer_action.triggered.connect(lambda *_args: submit_feedback("wrong_answer"))
+    feedback_didnt_work_action.triggered.connect(lambda *_args: submit_feedback("didnt_work"))
+    stop_btn.clicked.connect(stop_active_request)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)
@@ -6390,6 +7026,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     connect_viewer_context_events()
     refresh_telemetry_controls()
+    refresh_feedback_controls()
+    refresh_stop_button()
     refresh_context()
     set_pending_code()
     refresh_code_action_buttons()

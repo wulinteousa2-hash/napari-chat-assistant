@@ -95,6 +95,31 @@ def test_route_local_workflow_prompt_routes_direct_synthetic_variant_request():
     assert route["arguments"]["variant"] == "2d_gray"
 
 
+def test_route_local_workflow_prompt_suggests_masking_prompts_for_local_workflow():
+    route = route_local_workflow_prompt(
+        "Write me a prompt to reveal local workflow on masking my image.",
+        {"layer_type": "image", "layer_name": "image_a", "semantic_type": "2d_intensity"},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "Conservative Binary Masking" in route["message"]
+    assert "Build a conservative binary mask for the selected image." in route["message"]
+    assert "favor the local masking workflow" in route["message"]
+
+
+def test_route_local_workflow_prompt_suggests_roi_prompts_when_user_asks_how_to_phrase_request():
+    route = route_local_workflow_prompt(
+        "How should I phrase a prompt to trigger a local workflow for ROI intensity measurement?",
+        {"layer_type": "image", "layer_name": "image_a"},
+    )
+
+    assert route is not None
+    assert route["action"] == "reply"
+    assert "ROI Measurement" in route["message"]
+    assert "Open ROI Intensity Analysis for the current viewer." in route["message"]
+
+
 def test_route_local_workflow_prompt_routes_conservative_binary_segmentation_to_plan():
     route = route_local_workflow_prompt(
         (

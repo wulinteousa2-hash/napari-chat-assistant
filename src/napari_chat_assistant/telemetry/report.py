@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from napari_chat_assistant.agent.logging_utils import TELEMETRY_LOG_PATH
-from napari_chat_assistant.agent.telemetry_summary import (
+from napari_chat_assistant.telemetry.logging_utils import TELEMETRY_LOG_PATH
+from napari_chat_assistant.telemetry.summary import (
     format_telemetry_summary,
     load_telemetry_events,
     summarize_telemetry_events,
@@ -20,6 +20,14 @@ def _format_percent(numerator: int, denominator: int) -> str:
 def _response_count(item: dict, action: str) -> int:
     actions = item.get("actions", {})
     return int(actions.get(action, 0))
+
+
+def _feedback_summary(feedback: dict) -> str:
+    counts = dict(feedback or {})
+    if not counts:
+        return "-"
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name}:{count}" for name, count in ordered)
 
 
 def format_markdown_telemetry_report(
@@ -65,6 +73,18 @@ def format_markdown_telemetry_report(
             f"- Reject feedback: {summary.get('reject_feedback', 0)}",
         ]
     )
+    if summary.get("feedback_counts"):
+        feedback_bits = [
+            f"`{name}` ({count})"
+            for name, count in summary.get("feedback_counts", {}).most_common()
+        ]
+        lines.append(f"- Feedback mix: {', '.join(feedback_bits)}")
+    if summary.get("cancel_counts"):
+        cancel_bits = [
+            f"`{name}` ({count})"
+            for name, count in summary.get("cancel_counts", {}).most_common()
+        ]
+        lines.append(f"- Abandonment: {', '.join(cancel_bits)}")
     if summary.get("invalid_lines"):
         lines.append(f"- Invalid JSONL lines skipped: {summary.get('invalid_lines', 0)}")
 
@@ -73,6 +93,12 @@ def format_markdown_telemetry_report(
         action_bits.append(f"`{action_name}` ({count})")
     if action_bits:
         lines.extend(["", "## Response Mix", "", f"- {', '.join(action_bits)}"])
+
+    intent_bits = []
+    for intent_name, count in summary.get("intent_categories", {}).most_common():
+        intent_bits.append(f"`{intent_name}` ({count})")
+    if intent_bits:
+        lines.extend(["", "## Intent Mix", "", f"- {', '.join(intent_bits)}"])
 
     lines.extend(
         [
@@ -106,6 +132,35 @@ def format_markdown_telemetry_report(
             + " |"
         )
 
+    per_intent = summary.get("per_intent", [])
+    if per_intent:
+        lines.extend(
+            [
+                "",
+                "## Intent Routing Signals",
+                "",
+                "| Intent | Captures | Trigger Share | Success | Median Duration (ms) | Feedback | Likely Trigger Terms |",
+                "| --- | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for item in per_intent:
+            trigger_terms = ", ".join(f"`{term}`" for term in item.get("top_triggers", [])) or "-"
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        f"`{item.get('intent_category', '')}`",
+                        str(item.get("count", 0)),
+                        _format_percent(int(item.get("count", 0)), int(summary.get("intent_total", 0))),
+                        _format_percent(int(item.get("success", 0)), int(item.get("success", 0)) + int(item.get("failure", 0))),
+                        str(item.get("duration_median_ms", "-") if item.get("duration_count") else "-"),
+                        _feedback_summary(item.get("feedback", {})),
+                        trigger_terms,
+                    ]
+                )
+                + " |"
+            )
+
     ranking = summary.get("ranking", {})
     ranking_lines: list[str] = []
     fastest = ranking.get("fastest")
@@ -134,6 +189,22 @@ def format_markdown_telemetry_report(
         code_total = int(worst_code.get("code_success", 0)) + int(worst_code.get("code_failure", 0))
         ranking_lines.append(
             f"- Weakest code-run signal: `{worst_code.get('model', '')}` at {_format_percent(int(worst_code.get('code_success', 0)), code_total)} over {code_total} executions"
+        )
+    intent_ranking = summary.get("intent_ranking", {})
+    most_triggered = intent_ranking.get("most_triggered")
+    if most_triggered:
+        ranking_lines.append(
+            f"- Most triggered intent: `{most_triggered.get('intent_category', '')}` at {_format_percent(int(most_triggered.get('count', 0)), int(summary.get('intent_total', 0)))} of captured intent events"
+        )
+    most_successful = intent_ranking.get("most_successful")
+    if most_successful:
+        ranking_lines.append(
+            f"- Strongest routing fit: `{most_successful.get('intent_category', '')}` at {_format_percent(int(most_successful.get('success', 0)), int(most_successful.get('success', 0)) + int(most_successful.get('failure', 0)))} success over {most_successful.get('count', 0)} captures"
+        )
+    least_successful = intent_ranking.get("least_successful")
+    if least_successful:
+        ranking_lines.append(
+            f"- Weakest routing fit: `{least_successful.get('intent_category', '')}` at {_format_percent(int(least_successful.get('success', 0)), int(least_successful.get('success', 0)) + int(least_successful.get('failure', 0)))} success over {least_successful.get('count', 0)} captures"
         )
 
     if ranking_lines:

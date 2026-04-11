@@ -5,7 +5,39 @@ from collections import Counter, defaultdict, deque
 from pathlib import Path
 from statistics import median
 
-from napari_chat_assistant.agent.logging_utils import TELEMETRY_LOG_PATH
+from napari_chat_assistant.telemetry.logging_utils import TELEMETRY_LOG_PATH
+
+
+_INTENT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "apply",
+    "can",
+    "current",
+    "for",
+    "from",
+    "how",
+    "i",
+    "image",
+    "in",
+    "is",
+    "it",
+    "layer",
+    "make",
+    "me",
+    "my",
+    "of",
+    "on",
+    "please",
+    "show",
+    "the",
+    "this",
+    "to",
+    "use",
+    "want",
+    "with",
+}
 
 
 def load_telemetry_events(path: Path | None = None) -> tuple[list[dict], int]:
@@ -45,6 +77,35 @@ def read_telemetry_tail(path: Path | None = None, *, max_lines: int = 200) -> st
     return "\n".join(recent_lines)
 
 
+def _extract_trigger_terms(text: str) -> list[str]:
+    tokens = []
+    for raw_token in str(text or "").lower().split():
+        token = "".join(ch for ch in raw_token if ch.isalnum() or ch == "_")
+        if len(token) < 4 or token.isdigit() or token in _INTENT_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def build_intent_ranking(per_intent: list[dict]) -> dict:
+    ranked_success = [item for item in per_intent if item.get("count")]
+    ranking: dict[str, dict | None] = {
+        "most_triggered": per_intent[0] if per_intent else None,
+        "least_successful": None,
+        "most_successful": None,
+    }
+    if ranked_success:
+        ranking["most_successful"] = max(
+            ranked_success,
+            key=lambda item: (item.get("success_rate", 0.0), item.get("count", 0)),
+        )
+        ranking["least_successful"] = min(
+            ranked_success,
+            key=lambda item: (item.get("success_rate", 0.0), -item.get("count", 0)),
+        )
+    return ranking
+
+
 def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> dict:
     models = Counter()
     actions = Counter()
@@ -59,9 +120,18 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
     code_success = 0
     code_failure = 0
     reject_feedback = 0
+    feedback_counts = Counter()
+    cancel_counts = Counter()
+    model_cancels = Counter()
     latest_errors: list[str] = []
     first_timestamp = ""
     last_timestamp = ""
+    intent_categories = Counter()
+    intent_durations: dict[str, list[int]] = defaultdict(list)
+    intent_success = Counter()
+    intent_failure = Counter()
+    intent_feedback: dict[str, Counter] = defaultdict(Counter)
+    intent_trigger_terms: dict[str, Counter] = defaultdict(Counter)
 
     for event in events:
         timestamp = str(event.get("timestamp", "")).strip()
@@ -98,10 +168,20 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
                 if error_text:
                     latest_errors.append(error_text)
 
-        if event_type == "turn_feedback" and str(event.get("feedback", "")).strip() == "reject":
-            reject_feedback += 1
+        if event_type == "turn_feedback":
+            feedback = str(event.get("feedback", "")).strip().lower()
+            if feedback:
+                feedback_counts[feedback] += 1
+            if feedback in {"reject", "wrong_answer"}:
+                reject_feedback += 1
+                if model:
+                    model_rejects[model] += 1
+
+        if event_type == "turn_cancelled":
+            cancel_bucket = str(event.get("cancel_bucket", "")).strip().lower() or "unknown"
+            cancel_counts[cancel_bucket] += 1
             if model:
-                model_rejects[model] += 1
+                model_cancels[model] += 1
 
         if event_type == "code_execution":
             if event.get("success") is True:
@@ -115,6 +195,22 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
                 error_text = str(event.get("error", "")).strip()
                 if error_text:
                     latest_errors.append(error_text)
+
+        if event_type == "intent_captured":
+            intent_category = str(event.get("intent_category", "")).strip() or "unknown"
+            intent_categories[intent_category] += 1
+            duration_ms = event.get("duration_ms")
+            if isinstance(duration_ms, (int, float)) and int(duration_ms) > 0:
+                intent_durations[intent_category].append(int(duration_ms))
+            if event.get("success") is True:
+                intent_success[intent_category] += 1
+            elif event.get("success") is False:
+                intent_failure[intent_category] += 1
+            feedback = str(event.get("feedback", "")).strip().lower()
+            if feedback:
+                intent_feedback[intent_category][feedback] += 1
+            for token in _extract_trigger_terms(str(event.get("intent_description", ""))):
+                intent_trigger_terms[intent_category][token] += 1
 
     latest_errors = [text for text in latest_errors if text][-3:]
     per_model: list[dict] = []
@@ -132,10 +228,34 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
                 "reject_rate": model_rejects.get(model_name, 0) / turn_count if turn_count else None,
                 "code_success": model_code_success.get(model_name, 0),
                 "code_failure": model_code_failure.get(model_name, 0),
+                "cancels": model_cancels.get(model_name, 0),
             }
         )
 
     ranking = build_model_ranking(per_model)
+    intent_total = sum(intent_categories.values())
+    per_intent: list[dict] = []
+    for intent_name, count in intent_categories.most_common():
+        durations = intent_durations.get(intent_name, [])
+        success_count = intent_success.get(intent_name, 0)
+        failure_count = intent_failure.get(intent_name, 0)
+        feedback_counts = intent_feedback.get(intent_name, Counter())
+        per_intent.append(
+            {
+                "intent_category": intent_name,
+                "count": count,
+                "share": count / intent_total if intent_total else 0.0,
+                "success": success_count,
+                "failure": failure_count,
+                "success_rate": success_count / max(1, success_count + failure_count),
+                "duration_count": len(durations),
+                "duration_median_ms": int(median(durations)) if durations else None,
+                "duration_max_ms": max(durations) if durations else None,
+                "feedback": feedback_counts,
+                "top_triggers": [token for token, _ in intent_trigger_terms.get(intent_name, Counter()).most_common(5)],
+            }
+        )
+    intent_ranking = build_intent_ranking(per_intent)
 
     return {
         "total_events": len(events),
@@ -152,9 +272,16 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
         "code_success": code_success,
         "code_failure": code_failure,
         "reject_feedback": reject_feedback,
+        "feedback_counts": feedback_counts,
+        "cancel_counts": cancel_counts,
+        "cancel_total": sum(cancel_counts.values()),
         "latest_errors": latest_errors,
         "per_model": per_model,
         "ranking": ranking,
+        "intent_total": intent_total,
+        "intent_categories": intent_categories,
+        "per_intent": per_intent,
+        "intent_ranking": intent_ranking,
     }
 
 
@@ -230,6 +357,10 @@ def format_telemetry_summary(summary: dict) -> str:
         f"`{name}` ({count})"
         for name, count in summary.get("actions", {}).most_common()
     ]
+    intent_bits = [
+        f"`{name}` ({count})"
+        for name, count in summary.get("intent_categories", {}).most_common(5)
+    ]
 
     lines = [
         "**Telemetry Summary**",
@@ -244,6 +375,8 @@ def format_telemetry_summary(summary: dict) -> str:
         lines.append(f"- Models: {', '.join(model_bits)}")
     if action_bits:
         lines.append(f"- Completed turns: {summary.get('turn_completed', 0)} via {', '.join(action_bits)}")
+    if intent_bits:
+        lines.append(f"- Intent events: {summary.get('intent_total', 0)} via {', '.join(intent_bits)}")
     if summary.get("latency_count"):
         lines.append(
             "- Latency: median "
@@ -321,6 +454,45 @@ def format_telemetry_summary(summary: dict) -> str:
                 f"{latency_text}; {reject_text}; {code_text}; actions: "
                 f"{', '.join(action_counts) if action_counts else 'none'}"
             )
+    per_intent = summary.get("per_intent", [])
+    if per_intent:
+        lines.append("**Intent Routing Signals**")
+        intent_ranking = summary.get("intent_ranking", {})
+        most_triggered = intent_ranking.get("most_triggered")
+        if most_triggered:
+            lines.append(
+                f"- Most triggered intent: `{most_triggered.get('intent_category', '')}` "
+                f"({int(round(100 * (most_triggered.get('share') or 0.0)))}% of captured intent events)"
+            )
+        most_successful = intent_ranking.get("most_successful")
+        if most_successful:
+            lines.append(
+                f"- Strongest routing fit: `{most_successful.get('intent_category', '')}` "
+                f"({int(round(100 * (most_successful.get('success_rate') or 0.0)))}% success over {most_successful.get('count', 0)} captures)"
+            )
+        least_successful = intent_ranking.get("least_successful")
+        if least_successful:
+            lines.append(
+                f"- Weakest routing fit: `{least_successful.get('intent_category', '')}` "
+                f"({int(round(100 * (least_successful.get('success_rate') or 0.0)))}% success over {least_successful.get('count', 0)} captures)"
+            )
+        for item in per_intent:
+            feedback_counts = item.get("feedback", Counter())
+            feedback_text = ", ".join(
+                f"`{name}` ({count})" for name, count in feedback_counts.most_common()
+            ) or "none"
+            duration_text = "no duration recorded"
+            if item.get("duration_count"):
+                duration_text = (
+                    f"median {item.get('duration_median_ms')} ms, max {item.get('duration_max_ms')} ms"
+                )
+            trigger_text = ", ".join(f"`{token}`" for token in item.get("top_triggers", [])) or "none"
+            lines.append(
+                f"- `{item.get('intent_category', '')}`: {item.get('count', 0)} captures "
+                f"({int(round(100 * (item.get('share') or 0.0)))}% trigger share); "
+                f"{int(round(100 * (item.get('success_rate') or 0.0)))}% success; "
+                f"{duration_text}; feedback: {feedback_text}; likely triggers: {trigger_text}"
+            )
     lines.append(
         "- Code execution: "
         f"{summary.get('code_success', 0)} succeeded, {summary.get('code_failure', 0)} failed"
@@ -328,6 +500,18 @@ def format_telemetry_summary(summary: dict) -> str:
     lines.append(f"- Reject feedback: {summary.get('reject_feedback', 0)}")
     if summary.get("tool_failures"):
         lines.append(f"- Tool failures: {summary.get('tool_failures', 0)}")
+    if summary.get("feedback_counts"):
+        feedback_bits = [
+            f"`{name}` ({count})"
+            for name, count in summary.get("feedback_counts", {}).most_common()
+        ]
+        lines.append(f"- Feedback: {', '.join(feedback_bits)}")
+    if summary.get("cancel_counts"):
+        cancel_bits = [
+            f"`{name}` ({count})"
+            for name, count in summary.get("cancel_counts", {}).most_common()
+        ]
+        lines.append(f"- Abandonment: {', '.join(cancel_bits)}")
     if summary.get("invalid_lines"):
         lines.append(f"- Invalid JSONL lines skipped: {summary.get('invalid_lines', 0)}")
     if summary.get("latest_errors"):
