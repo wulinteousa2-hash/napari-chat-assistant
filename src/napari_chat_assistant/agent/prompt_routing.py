@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import re
 
+from .workflow_planner import (
+    looks_like_conservative_binary_segmentation_request,
+    plan_conservative_binary_segmentation,
+)
+
 
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
@@ -585,6 +590,46 @@ def _looks_like_restore_last_workflow_request(source: str) -> bool:
     )
 
 
+def _workflow_report_mode_request(source: str) -> str:
+    if _has_any(source, ("show debug", "show full debug", "debug workflow", "full debug trace")):
+        return "debug"
+    if _has_any(source, ("show details", "show full steps", "show step details", "show workflow details")):
+        return "details"
+    if _has_any(source, ("show plan", "show workflow plan", "what was the plan", "full plan")):
+        return "plan"
+    if _has_any(source, ("show summary", "compact summary", "short summary")):
+        return "compact"
+    return ""
+
+
+def _replace_label_value_request(source: str) -> dict | None:
+    if not source:
+        return None
+    if not _has_any(source, ("label", "labels", "mask", "foreground")):
+        return None
+
+    patterns = (
+        r"(?:change|replace|relabel|set)\s+(?:the\s+)?(?:label\s+)?value\s+(\d+)\s+(?:to|with|as)\s+(\d+)",
+        r"(?:replace|relabel)\s+(?:label\s+)?(\d+)\s+(?:with|to|as)\s+(\d+)",
+        r"(?:change|replace|relabel|set)\s+(?:the\s+)?(?:selected\s+)?(?:mask\s+)?(?:foreground\s+)?(?:label\s+)?(?:value\s+)?from\s+(\d+)\s+(?:to|with|as)\s+(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source)
+        if match:
+            return {"source_value": int(match.group(1)), "target_value": int(match.group(2))}
+
+    default_source_patterns = (
+        r"(?:change|replace|relabel|set)\s+(?:the\s+)?(?:selected\s+)?(?:current\s+)?(?:mask\s+)?foreground(?:\s+label)?(?:\s+value)?\s+(?:to|as)\s+(\d+)",
+        r"(?:change|replace|relabel|set)\s+(?:the\s+)?(?:selected\s+)?(?:current\s+)?(?:mask\s+)?(?:label\s+)?value\s+(?:to|as)\s+(\d+)",
+        r"(?:change|replace|relabel|set)\s+(?:the\s+)?current value\s+(?:to|as)\s+(\d+)",
+    )
+    for pattern in default_source_patterns:
+        match = re.search(pattern, source)
+        if match:
+            return {"source_value": 1, "target_value": int(match.group(1))}
+    return None
+
+
 def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None = None) -> dict | None:
     source = _normalize_text(text)
     if not source:
@@ -613,6 +658,39 @@ def route_local_workflow_prompt(text: str, selected_layer_profile: dict | None =
             "action": "restore_tool_sequence",
             "message": "Restoring viewer controls from before the last quick-control workflow.",
         }
+
+    workflow_report_mode = _workflow_report_mode_request(source)
+    if workflow_report_mode:
+        return {
+            "action": "workflow_report",
+            "mode": workflow_report_mode,
+            "message": f"Showing the last workflow {workflow_report_mode} view.",
+        }
+
+    if layer_type == "labels":
+        replace_request = _replace_label_value_request(source)
+        if replace_request is not None:
+            arguments = dict(replace_request)
+            if layer_name:
+                arguments["layer_name"] = layer_name
+            return {
+                "action": "tool",
+                "tool": "replace_label_value",
+                "arguments": arguments,
+                "message": (
+                    f"Replacing label value {arguments['source_value']} with {arguments['target_value']} "
+                    "in the selected labels layer."
+                ),
+            }
+
+    if (not layer_type or layer_type == "image") and looks_like_conservative_binary_segmentation_request(source):
+        plan = plan_conservative_binary_segmentation(text, selected_layer_profile=profile)
+        if plan is not None:
+            return {
+                "action": "workflow_execute",
+                "plan": plan.to_dict(),
+                "message": "Running a conservative binary segmentation workflow planned from your prompt.",
+            }
 
     if _looks_like_image_review_setup_request(source):
         return {

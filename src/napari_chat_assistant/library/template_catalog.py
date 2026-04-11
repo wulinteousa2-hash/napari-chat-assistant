@@ -25,6 +25,7 @@ CATEGORY_ORDER = {
     "plugin_prompt": [
         "Getting Started",
         "Quick Controls",
+        "Workflow",
         "Inspect & Plan",
         "Process & Segment",
         "Measure & Compare",
@@ -89,6 +90,18 @@ PROMPT_TEMPLATE_RECORDS: list[dict[str, Any]] = [
         "suggested_followup": "Ask it to execute only the first recommended step after the explanation.",
         "tags": ["prompt", "getting-started", "viewer", "orientation"],
         "prompt": "What can you do with my current layers? Inspect the viewer first, then suggest the most useful built-in actions.",
+    },
+    {
+        "id": "prompt_conservative_binary_mask_workflow",
+        "branch": "plugin_prompt",
+        "template_type": "prompt",
+        "title": "Conservative Binary Mask Workflow",
+        "category": "Workflow",
+        "description": "Run a built-in stepwise masking workflow that inspects the selected image, previews thresholding, applies conservative cleanup, checks quality, and refines when needed.",
+        "best_for": "Repeated threshold-based segmentation when you want a structured built-in workflow instead of one-off tool calls or generated code.",
+        "suggested_followup": "After it runs, say `show details`, `show plan`, or `show debug` to inspect the workflow trace.",
+        "tags": ["prompt", "workflow", "segmentation", "binary-mask", "threshold", "built-in"],
+        "prompt": "Build a conservative binary mask for the selected image using a built-in workflow. Inspect the selected image first and describe signal, background, and noise. Preview threshold before applying it. Decide whether the foreground is brighter or dimmer than the background. Clean the mask with minimum necessary morphology, measure mask quality after each major step, refine if the mask is too loose or too strict, preserve faint real structures, and prefer built-in tools over code.",
     },
     {
         "id": "prompt_isolate_selected_layer",
@@ -629,6 +642,18 @@ PROMPT_TEMPLATE_RECORDS: list[dict[str, Any]] = [
         "suggested_followup": "Ask the assistant to include code only after the explanation if needed.",
         "tags": ["prompt", "markdown", "formatting", "explanation"],
         "prompt": "Reply in markdown. Use bullets and short sections. Explain first, then give runnable plugin code if needed.",
+    },
+    {
+        "id": "prompt_relabel_mask_values",
+        "branch": "plugin_prompt",
+        "template_type": "prompt",
+        "title": "Relabel Mask Values",
+        "category": "Workflow",
+        "description": "Change one integer value in the selected labels layer to another value using a deterministic relabel step.",
+        "best_for": "Binary or labels masks where foreground value 1 needs to become another class id such as 5.",
+        "suggested_followup": "Ask for a measurement or table after relabeling if the new label ids will be analyzed next.",
+        "tags": ["prompt", "workflow", "labels", "mask", "relabel"],
+        "prompt": "Change label value 1 to 5 in the selected mask.",
     },
 ]
 

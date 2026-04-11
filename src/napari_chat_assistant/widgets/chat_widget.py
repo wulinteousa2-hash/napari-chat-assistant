@@ -102,6 +102,12 @@ from napari_chat_assistant.agent.prompt_library import (
     upsert_saved_code,
     upsert_saved_prompt,
 )
+from napari_chat_assistant.agent.workflow_executor import execute_workflow_plan
+from napari_chat_assistant.agent.workflow_executor import (
+    workflow_execution_to_compact_markdown,
+    workflow_execution_to_debug_markdown,
+)
+from napari_chat_assistant.agent.workflow_planner import workflow_plan_to_markdown
 from napari_chat_assistant.agent.pending_action import (
     advance_pending_action_turn,
     build_pending_action_from_assistant_message,
@@ -581,6 +587,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
     intent_state = empty_intent_state()
     last_failed_tool_state = empty_failed_tool_state()
     last_tool_sequence_undo_snapshot: dict = {}
+    last_workflow_plan_payload: dict = {}
+    last_workflow_execution_payload: dict = {}
     context_visibility_snapshot: dict[str, bool] | None = None
     last_memory_candidate_ids: list[str] = []
     prompt_library_state = load_prompt_library()
@@ -602,6 +610,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     }
     wait_timer = QTimer(root)
     wait_timer.setInterval(250)
+    local_workflow_marker = "[Local workflow]"
 
     def refresh_workspace_path_label() -> None:
         current_path = str(ui_state.get("last_workspace_path", "")).strip()
@@ -870,6 +879,15 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.1.2":
+            return (
+                f"**What's New In {current}**\n"
+                "- Conservative binary-mask workflow prompts now run through a local planner and executor instead of relying on one-off model tool choices.\n"
+                "- Workflow replies are compact by default, with `show plan`, `show details`, and `show debug` available when you want the full trace.\n"
+                "- A new `Widgets` action, `Relabel Mask Value`, opens a small dock for repeated labels-value changes without using chat.\n"
+                "- Routing for plain-English workflow prompts is more reliable because follow-up carry-over and code-repair detection are now stricter.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.1.0":
             return (
                 f"**What's New In {current}**\n"
@@ -1507,6 +1525,13 @@ def chat_widget(napari_viewer=None) -> QWidget:
             module_name="napari_chat_assistant.widgets.line_profile_widget",
             function_name="open_line_profile_gaussian_fit_widget",
             feature_name="Line Profile Analysis",
+        )
+
+    def show_relabel_mask_widget(*_args):
+        return _open_optional_widget(
+            module_name="napari_chat_assistant.widgets.relabel_mask_widget",
+            function_name="open_relabel_mask_widget",
+            feature_name="Relabel Mask Values",
         )
 
     def show_atlas_stitch(*_args):
@@ -3501,6 +3526,9 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if target == "open_intensity_metrics_widget":
                 if show_intensity_metrics_widget():
                     append_chat_message("assistant", f"Opened {title}.")
+            elif target == "open_relabel_mask_widget":
+                if show_relabel_mask_widget():
+                    append_chat_message("assistant", f"Opened {title}.")
             elif target == "open_line_profile_gaussian_fit_widget":
                 if show_line_profile_widget():
                     append_chat_message("assistant", f"Opened {title}.")
@@ -5282,14 +5310,31 @@ def chat_widget(napari_viewer=None) -> QWidget:
             set_status("Status: missing saved model settings", ok=False)
             return
         local_workflow_route = None
-        if code_repair_context is None and not should_skip_local_workflow_route(intent_state):
+        skip_local_workflow = should_skip_local_workflow_route(intent_state)
+        if code_repair_context is not None:
+            append_log("Local workflow route skipped: code repair context is active for this turn.")
+        elif skip_local_workflow:
+            append_log(
+                "Local workflow route skipped by intent-state guard: "
+                f"mode_preference={str(intent_state.get('mode_preference', '')).strip()!r} "
+                f"negative_constraints={list(intent_state.get('negative_constraints', []) or [])!r}"
+            )
+        else:
             local_workflow_route = route_local_workflow_prompt(text, selected_layer_profile())
+            if isinstance(local_workflow_route, dict):
+                append_log(
+                    "Local workflow route matched: "
+                    f"action={str(local_workflow_route.get('action', '')).strip().lower()!r}"
+                )
+            else:
+                append_log("Local workflow route did not match this message; falling back to model/tool path.")
         if isinstance(local_workflow_route, dict):
+            nonlocal last_workflow_plan_payload, last_workflow_execution_payload
             set_pending_action(None)
             route_action = str(local_workflow_route.get("action", "")).strip().lower()
             if route_action == "reply":
                 reply_message = str(local_workflow_route.get("message", "")).strip() or "I could not resolve that request."
-                append_chat_message("assistant", reply_message)
+                append_chat_message("assistant", f"{local_workflow_marker} {reply_message}")
                 append_log("Handled request via local workflow route: reply")
                 set_status("Status: local workflow reply completed", ok=True)
                 record_telemetry(
@@ -5308,6 +5353,81 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     },
                 )
                 return
+            if route_action == "workflow_plan":
+                route_message = str(local_workflow_route.get("message", "")).strip()
+                plan_payload = local_workflow_route.get("plan", {})
+                last_workflow_plan_payload = dict(plan_payload or {})
+                plan_text = workflow_plan_to_markdown(plan_payload)
+                message = f"{route_message}\n\n{plan_text}" if route_message else plan_text
+                append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
+                append_log("Handled request via local workflow route: workflow_plan")
+                set_status("Status: workflow plan created", ok=True)
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "workflow_plan",
+                        "tool_name": "plan_conservative_binary_segmentation",
+                        "tool_success": True,
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
+            if route_action == "workflow_report":
+                mode = str(local_workflow_route.get("mode", "")).strip().lower() or "compact"
+                if not last_workflow_plan_payload and not last_workflow_execution_payload:
+                    append_chat_message("assistant", "No workflow report is available yet.")
+                    append_log("Workflow report request skipped: no saved workflow state.")
+                    set_status("Status: no workflow report available", ok=False)
+                    return
+                route_message = str(local_workflow_route.get("message", "")).strip()
+                if mode == "plan":
+                    report_text = workflow_plan_to_markdown(last_workflow_plan_payload)
+                elif mode == "debug":
+                    report_text = workflow_execution_to_debug_markdown(last_workflow_execution_payload)
+                elif mode == "details":
+                    plan_text = workflow_plan_to_markdown(last_workflow_plan_payload)
+                    debug_text = workflow_execution_to_debug_markdown(last_workflow_execution_payload)
+                    report_text = "\n\n".join(part for part in (plan_text, debug_text) if part)
+                else:
+                    report_text = workflow_execution_to_compact_markdown(last_workflow_execution_payload)
+                message = f"{route_message}\n\n{report_text}" if route_message else report_text
+                append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
+                append_log(f"Handled request via local workflow route: workflow_report[{mode}]")
+                set_status("Status: workflow report shown", ok=True)
+                return
+            if route_action == "workflow_execute":
+                route_message = str(local_workflow_route.get("message", "")).strip()
+                plan_payload = local_workflow_route.get("plan", {})
+                last_workflow_plan_payload = dict(plan_payload or {})
+                execution_result = execute_workflow_plan(viewer, plan_payload)
+                last_workflow_execution_payload = dict(execution_result or {})
+                execution_text = workflow_execution_to_compact_markdown(execution_result)
+                message = f"{route_message}\n\n{execution_text}" if route_message else execution_text
+                append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
+                append_log("Handled request via local workflow route: workflow_execute")
+                set_status("Status: workflow executed", ok=bool(execution_result.get("ok", False)))
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": "local_workflow_router",
+                        "base_url": "",
+                        "prompt_hash": prompt_hash(text),
+                        "prompt_category": "local_workflow_route",
+                        "response_action": "workflow_execute",
+                        "tool_name": "execute_workflow_plan",
+                        "tool_success": bool(execution_result.get("ok", False)),
+                        "pending_code_generated": False,
+                        **selected_layer_snapshot(),
+                    },
+                )
+                return
             if route_action == "tool_sequence":
                 nonlocal last_tool_sequence_undo_snapshot
                 sequence_message = str(local_workflow_route.get("message", "")).strip()
@@ -5319,10 +5439,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 result_message = str(sequence_result.get("message", "")).strip() or "Workflow sequence did not return a result."
                 if sequence_result.get("completed", 0):
                     result_message = f"{result_message}\nYou can say `undo last workflow` to restore the previous viewer controls."
-                append_chat_message(
-                    "assistant",
-                    f"{sequence_message}\n{result_message}" if sequence_message else result_message,
-                )
+                message = f"{sequence_message}\n{result_message}" if sequence_message else result_message
+                append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
                 append_log("Handled request via local workflow route: tool_sequence")
                 set_status("Status: workflow sequence completed", ok=bool(sequence_result.get("completed", 0)))
                 record_telemetry(
@@ -5350,7 +5468,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 restore_message = restore_viewer_control_snapshot(viewer, last_tool_sequence_undo_snapshot)
                 last_tool_sequence_undo_snapshot = {}
                 route_message = str(local_workflow_route.get("message", "")).strip()
-                append_chat_message("assistant", f"{route_message}\n{restore_message}" if route_message else restore_message)
+                message = f"{route_message}\n{restore_message}" if route_message else restore_message
+                append_chat_message("assistant", f"{local_workflow_marker}\n{message}")
                 append_log("Handled request via local workflow route: restore_tool_sequence")
                 set_status("Status: workflow controls restored", ok=True)
                 record_telemetry(

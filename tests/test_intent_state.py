@@ -76,3 +76,27 @@ def test_remember_failed_tool_detects_image_only_montage_failure():
 
 def test_empty_failed_tool_state_is_blank():
     assert empty_failed_tool_state()["tool_name"] == ""
+
+
+def test_extract_turn_intent_does_not_carry_forward_for_new_selected_image_workflow_request():
+    state = extract_turn_intent(
+        "Help me make a careful binary mask from the selected image. First inspect the image, then preview a threshold before applying it."
+    )
+
+    assert state["target_layer_types"] == ["image"]
+    assert state["carry_forward"] is False
+
+
+def test_merge_intent_state_does_not_preserve_old_explain_mode_for_new_selected_image_request():
+    previous = {
+        **empty_intent_state(),
+        "mode_preference": "explain",
+    }
+    current = extract_turn_intent(
+        "Help me make a careful binary mask from the selected image. First inspect the image, then preview a threshold before applying it."
+    )
+
+    merged = merge_intent_state(previous, current)
+
+    assert merged["mode_preference"] == ""
+    assert should_skip_local_workflow_route(merged) is False

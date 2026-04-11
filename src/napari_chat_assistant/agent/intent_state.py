@@ -42,7 +42,10 @@ def extract_turn_intent(text: str, *, last_failed_tool_state: dict[str, Any] | N
         _infer_negative_constraints(source),
         [str(item).strip() for item in followup.get("negations", []) if str(item).strip()],
     )
-    state["carry_forward"] = bool(followup.get("is_followup")) or _looks_like_followup_constraint(source)
+    # Do not carry forward prior intent just because a fresh request mentions
+    # the selected/current image or a target layer type. Reserve carry-forward
+    # for actual follow-up language that reuses or edits a prior plan.
+    state["carry_forward"] = bool(followup.get("reuse_previous")) or _looks_like_followup_constraint(source)
 
     failed_tool = dict(last_failed_tool_state or {})
     failed_tool_name = str(failed_tool.get("tool_name", "")).strip()

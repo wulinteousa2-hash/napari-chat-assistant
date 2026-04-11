@@ -253,21 +253,28 @@ def _looks_like_python_text(text: str) -> bool:
     source = str(text or "").strip()
     if not source:
         return False
-    python_signals = (
+    strong_python_signals = (
         "viewer.",
         "selected_layer",
         "import ",
         "from ",
         "def ",
-        "for ",
-        "if ",
-        "while ",
         "np.",
         "napari",
         "run_in_background",
     )
     line_count = len([line for line in source.splitlines() if line.strip()])
-    return any(signal in source for signal in python_signals) and line_count >= 1
+    if any(signal in source for signal in strong_python_signals):
+        return line_count >= 1
+    control_flow_patterns = (
+        r"(?m)^\s*if\b.+:\s*$",
+        r"(?m)^\s*for\b.+:\s*$",
+        r"(?m)^\s*while\b.+:\s*$",
+    )
+    if any(re.search(pattern, source) for pattern in control_flow_patterns):
+        return True
+    assignment_pattern = r"(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*.+$"
+    return bool(re.search(assignment_pattern, source))
 
 
 def _layer_kind(layer) -> str:

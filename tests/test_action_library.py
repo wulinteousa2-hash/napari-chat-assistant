@@ -28,6 +28,7 @@ def test_action_library_contains_function_and_tool_actions():
     assert "function" in kinds
     assert "tool" in kinds
     assert "ROI Intensity Analysis" in titles
+    assert "Relabel Mask Value" in titles
     assert "Line Profile Analysis" in titles
     assert "Group Comparison Statistics" in titles
     assert "Delete All" in titles

@@ -95,6 +95,87 @@ def test_route_local_workflow_prompt_routes_direct_synthetic_variant_request():
     assert route["arguments"]["variant"] == "2d_gray"
 
 
+def test_route_local_workflow_prompt_routes_conservative_binary_segmentation_to_plan():
+    route = route_local_workflow_prompt(
+        (
+            "Inspect the selected image first and describe its likely signal, background, and noise pattern. "
+            "Then build the cleanest possible binary mask step by step for the main foreground objects using a "
+            "conservative workflow. Preview threshold first, choose polarity correctly, refine iteratively, "
+            "prefer built-in tools, and do not destroy faint real structures."
+        ),
+        {"layer_type": "image", "layer_name": "image_a", "semantic_type": "2d_intensity"},
+    )
+
+    assert route is not None
+    assert route["action"] == "workflow_execute"
+    assert route["plan"]["workflow_type"] == "conservative_binary_segmentation"
+    assert route["plan"]["target_layer"] == "image_a"
+
+
+def test_route_local_workflow_prompt_routes_short_conservative_binary_mask_prompt():
+    route = route_local_workflow_prompt(
+        (
+            "Build a conservative binary mask for the selected image. Inspect it first, preview threshold before applying it, "
+            "decide whether the objects are brighter or dimmer than the background, clean the mask minimally, "
+            "measure quality after each major step, and preserve faint real structures."
+        ),
+        {"layer_type": "image", "layer_name": "image_a", "semantic_type": "2d_intensity"},
+    )
+
+    assert route is not None
+    assert route["action"] == "workflow_execute"
+    assert route["plan"]["workflow_type"] == "conservative_binary_segmentation"
+
+
+def test_route_local_workflow_prompt_routes_workflow_report_requests():
+    route = route_local_workflow_prompt("show plan", {"layer_type": "image", "layer_name": "image_a"})
+    assert route is not None
+    assert route["action"] == "workflow_report"
+    assert route["mode"] == "plan"
+
+    route = route_local_workflow_prompt("show details", {"layer_type": "image", "layer_name": "image_a"})
+    assert route is not None
+    assert route["action"] == "workflow_report"
+    assert route["mode"] == "details"
+
+    route = route_local_workflow_prompt("show debug", {"layer_type": "image", "layer_name": "image_a"})
+    assert route is not None
+    assert route["action"] == "workflow_report"
+    assert route["mode"] == "debug"
+
+
+def test_route_local_workflow_prompt_routes_selected_labels_revalue_request():
+    route = route_local_workflow_prompt(
+        "Change label value 1 to 5 in the selected mask.",
+        {"layer_type": "labels", "layer_name": "mask_a", "semantic_type": "label_mask"},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool"
+    assert route["tool"] == "replace_label_value"
+    assert route["arguments"] == {
+        "layer_name": "mask_a",
+        "source_value": 1,
+        "target_value": 5,
+    }
+
+
+def test_route_local_workflow_prompt_routes_selected_mask_default_foreground_revalue_request():
+    route = route_local_workflow_prompt(
+        "Set the current mask foreground value to 5.",
+        {"layer_type": "labels", "layer_name": "mask_a", "semantic_type": "label_mask"},
+    )
+
+    assert route is not None
+    assert route["action"] == "tool"
+    assert route["tool"] == "replace_label_value"
+    assert route["arguments"] == {
+        "layer_name": "mask_a",
+        "source_value": 1,
+        "target_value": 5,
+    }
+
+
 def test_route_local_workflow_prompt_routes_image_review_setup_to_tool_sequence():
     route = route_local_workflow_prompt(
         "Prepare this viewer for image review: hide labels and points layers, show only image layers, "

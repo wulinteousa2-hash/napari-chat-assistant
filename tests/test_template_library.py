@@ -18,6 +18,7 @@ def test_template_library_uses_sections_and_learning_branch():
     assert "Bounding Box Toggle" in titles
     assert "Layer Name Toggle" in titles
     assert "Show Only Image Layers" in titles
+    assert "Conservative Binary Mask Workflow" in titles
     assert "Prepare Image Review Workflow" in titles
     assert "Undo Last Workflow" in titles
     assert "Labels Layers Visibility" in titles
@@ -51,6 +52,7 @@ def test_template_library_uses_sections_and_learning_branch():
     prompt_section = next(section for section in payload["sections"] if section["label"] == "Prompt Templates")
     prompt_categories = [str(category.get("name", "")).strip() for category in prompt_section["categories"]]
     assert "Quick Controls" in prompt_categories
+    assert "Workflow" in prompt_categories
 
 
 def test_template_library_moves_widget_launchers_out_of_templates():

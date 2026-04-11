@@ -284,6 +284,18 @@ def test_build_code_repair_context_ignores_regular_non_code_requests():
     assert build_code_repair_context("show all images in grid") is None
 
 
+def test_build_code_repair_context_ignores_plain_english_workflow_prompt():
+    text = (
+        "Build a conservative binary mask for the selected image using a built-in workflow. "
+        "Inspect the selected image first and describe signal, background, and noise. "
+        "Preview threshold before applying it. Decide whether the foreground is brighter or dimmer than the background. "
+        "Clean the mask with minimum necessary morphology, measure mask quality after each major step, "
+        "refine if the mask is too loose or too strict, preserve faint real structures, and prefer built-in tools over code."
+    )
+
+    assert build_code_repair_context(text) is None
+
+
 def test_build_code_repair_context_includes_layer_binding_hints_for_template_images(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
     image_a = viewer.add_image(np.asarray([[1, 2], [3, 4]], dtype=np.float32), name="sample_a")

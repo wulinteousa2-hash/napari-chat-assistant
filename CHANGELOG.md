@@ -2,6 +2,14 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.1.2
+
+- Added local planning and execution for conservative binary-mask workflows so multi-step segmentation prompts can inspect, threshold, clean, examine, refine, and report through deterministic built-in tools instead of falling back to ad hoc code.
+- Added layered workflow reporting with compact default output plus explicit `show plan`, `show details`, and `show debug` follow-ups, along with local workflow diagnostics and markers for easier routing verification.
+- Improved workflow routing reliability by tightening follow-up carry-forward and code-repair detection so plain-English workflow prompts are less likely to be misclassified before they reach the local workflow engine.
+- Added deterministic relabeling of labels values through both prompts and a new `Widgets -> Relabel Mask Value` dock, making it easier to change mask or class ids repeatedly without typing code.
+- Expanded the library with a `Workflow` prompt-template category and reusable workflow prompts for conservative mask building and mask-value relabeling.
+
 ## 2.1.1
 
 - Added an `Info` button in `Layer Context` -> `Layers` so users can copy fuller layer details without making the row itself crowded.

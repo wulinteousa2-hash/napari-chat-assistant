@@ -207,6 +207,30 @@ def test_measure_mask_returns_immediate_message_from_registry(make_napari_viewer
     assert "foreground=9 px" in prepared["message"]
 
 
+def test_replace_label_value_adds_relabeled_output_layer(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_labels(
+        np.array([[0, 1, 1], [2, 0, 3], [1, 3, 0]], dtype=np.int32),
+        name="mask_a",
+        scale=(1.5, 2.5),
+        translate=(10.0, 20.0),
+    )
+
+    result = run_tool_job(prepare_tool_job(viewer, "replace_label_value", {"source_value": 1, "target_value": 5})["job"])
+    message = apply_tool_job_result(viewer, result)
+
+    assert "mask_a_relabel_1_to_5" in viewer.layers
+    relabeled = viewer.layers["mask_a_relabel_1_to_5"]
+    assert np.array_equal(
+        np.asarray(relabeled.data),
+        np.array([[0, 5, 5], [2, 0, 3], [5, 3, 0]], dtype=np.int32),
+    )
+    assert tuple(relabeled.scale) == (1.5, 2.5)
+    assert tuple(relabeled.translate) == (10.0, 20.0)
+    assert "Replaced label value 1 with 5" in message
+    assert "affected_pixels=3" in message
+
+
 def test_create_synthetic_demo_image_adds_2d_grayscale_layer(make_napari_viewer_proxy):
     viewer = make_napari_viewer_proxy()
 

@@ -33,6 +33,7 @@ def test_builtin_registry_includes_workbench_scaffold_tools():
         "run_mask_op",
         "run_mask_op_batch",
         "fill_mask_holes",
+        "replace_label_value",
         "edit_mask_in_roi",
         "keep_largest_component",
         "label_connected_components",

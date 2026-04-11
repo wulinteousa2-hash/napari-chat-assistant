@@ -43,6 +43,26 @@ ACTION_RECORDS: list[dict[str, Any]] = [
         },
     },
     {
+        "id": "widget_open_relabel_mask",
+        "title": "Relabel Mask Value",
+        "category": "Widgets",
+        "description": "Open a small widget to inspect class values in a Labels layer and relabel one value to another.",
+        "tags": ["widget", "labels", "mask", "relabel"],
+        "best_for": "Repeatedly changing binary or multi-class labels values without typing prompts.",
+        "expected_input": "One or more Labels layers in the current viewer.",
+        "load_prompt": "Open the relabel mask values widget.",
+        "runtime": {
+            "plugin_runtime_required": True,
+            "uses_viewer": True,
+            "uses_selected_layer": True,
+            "uses_run_in_background": False,
+        },
+        "execution": {
+            "kind": "function",
+            "target": "open_relabel_mask_widget",
+        },
+    },
+    {
         "id": "widget_open_group_comparison",
         "title": "Group Comparison Statistics",
         "category": "Widgets",

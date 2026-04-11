@@ -3895,6 +3895,93 @@ class FillMaskHolesTool:
         return f"Filled mask holes in [{payload['layer_name']}] into [{payload['output_name']}]."
 
 
+class ReplaceLabelValueTool:
+    spec = ToolSpec(
+        name="replace_label_value",
+        display_name="Replace Label Value",
+        category="segmentation_cleanup",
+        description="Replace one integer label value with another in a labels layer.",
+        execution_mode="worker",
+        supported_layer_types=("labels",),
+        parameter_schema=(
+            ParamSpec("layer_name", "string", description="Optional labels layer name."),
+            ParamSpec("source_value", "int", description="Label value to replace.", default=1, minimum=0),
+            ParamSpec("target_value", "int", description="Replacement label value.", required=True, minimum=0),
+        ),
+        output_type="labels_layer",
+        ui_metadata={"panel_group": "Segmentation Cleanup"},
+        provenance_metadata={"algorithm": "replace_label_value", "deterministic": True},
+    )
+
+    def prepare(self, ctx: ToolContext, arguments: dict[str, object]) -> PreparedJob | str:
+        args = arguments or {}
+        labels_layer = find_labels_layer(ctx.viewer, args.get("layer_name"))
+        if labels_layer is None:
+            return "No valid labels layer available for label-value replacement."
+        source_value = normalize_int(args.get("source_value", 1), default=1, minimum=0, maximum=2_147_483_647)
+        target_raw = args.get("target_value", None)
+        if target_raw is None:
+            return "Provide target_value for the replacement label."
+        target_value = normalize_int(target_raw, default=1, minimum=0, maximum=2_147_483_647)
+        if source_value == target_value:
+            return f"Source and target label values are both {source_value}; no replacement is needed."
+        data = np.asarray(labels_layer.data)
+        affected_pixels = int(np.count_nonzero(data == source_value))
+        if affected_pixels <= 0:
+            return f"Label value {source_value} was not present in [{labels_layer.name}]."
+        return PreparedJob(
+            tool_name=self.spec.name,
+            kind=self.spec.name,
+            mode="worker",
+            payload={
+                "kind": self.spec.name,
+                "layer_name": labels_layer.name,
+                "source_value": source_value,
+                "target_value": target_value,
+                "affected_pixels": affected_pixels,
+                "output_name": next_output_name(ctx.viewer, f"{labels_layer.name}_relabel_{source_value}_to_{target_value}"),
+                "data": data.copy(),
+                "dtype": str(data.dtype),
+                "scale": tuple(labels_layer.scale),
+                "translate": tuple(labels_layer.translate),
+            },
+        )
+
+    def execute(self, job: PreparedJob) -> ToolResult:
+        payload = dict(job.payload)
+        result = np.asarray(payload["data"]).copy()
+        result[result == payload["source_value"]] = payload["target_value"]
+        payload["result"] = result
+        return ToolResult(
+            tool_name=self.spec.name,
+            kind=job.kind,
+            payload=payload,
+            provenance={
+                "tool_name": self.spec.name,
+                "parameters": {
+                    "source_value": payload["source_value"],
+                    "target_value": payload["target_value"],
+                },
+                "input_layer": payload["layer_name"],
+                "output_layer": payload["output_name"],
+            },
+        )
+
+    def apply(self, ctx: ToolContext, result: ToolResult) -> str:
+        payload = result.payload
+        ctx.viewer.add_labels(
+            payload["result"],
+            name=payload["output_name"],
+            scale=payload["scale"],
+            translate=payload["translate"],
+        )
+        return (
+            f"Replaced label value {payload['source_value']} with {payload['target_value']} in "
+            f"[{payload['layer_name']}] as [{payload['output_name']}]. "
+            f"affected_pixels={payload['affected_pixels']}."
+        )
+
+
 class EditMaskInROITool:
     spec = ToolSpec(
         name="edit_mask_in_roi",
@@ -5837,6 +5924,7 @@ def workbench_scaffold_tools():
         GaussianDenoiseTool(),
         RemoveSmallObjectsTool(),
         FillMaskHolesTool(),
+        ReplaceLabelValueTool(),
         EditMaskInROITool(),
         KeepLargestComponentTool(),
         LabelConnectedComponentsTool(),

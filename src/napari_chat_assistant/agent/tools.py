@@ -86,6 +86,7 @@ ASSISTANT_TOOL_NAMES = {
     "measure_labels_table",
     "remove_small_objects",
     "fill_mask_holes",
+    "replace_label_value",
     "edit_mask_in_roi",
     "summarize_intensity",
     "plot_histogram",
@@ -282,6 +283,7 @@ def assistant_system_prompt() -> str:
         '- measure_labels_table: {"layer_name": optional string, "intensity_layer": optional string, "properties": optional list}\n'
         '- remove_small_objects: {"layer_name": optional string, "min_size": optional int}\n'
         '- fill_mask_holes: {"layer_name": optional string}\n'
+        '- replace_label_value: {"layer_name": optional string, "source_value": optional int, "target_value": int}\n'
         '- edit_mask_in_roi: {"mask_layer": optional string, "roi_layer": string, "op": "convert_to_mask|dilate|erode|open|close|median|outline|fill_holes|skeletonize|distance_map|ultimate_points|watershed|voronoi|remove_small|keep_largest", "radius": optional int, "min_size": optional int}\n'
         '- summarize_intensity: {"layer_name": optional string}\n'
         '- plot_histogram: {"layer_name": optional string, "bins": optional int}\n'
@@ -412,6 +414,7 @@ def assistant_system_prompt() -> str:
         "- If the user asks for per-object measurements, a measurement table, region properties, centroids, bounding boxes, or mean intensity by label, use measure_labels_table.\n"
         "- If the user asks to remove small mask objects, tiny components, or speckle-like labels noise from a labels layer, use remove_small_objects.\n"
         "- If the user asks to fill holes inside a mask or segmentation, use fill_mask_holes.\n"
+        "- If the user asks to change a labels value, relabel mask foreground from 1 to another integer, replace one label id with another, or set the foreground value in a binary mask, use replace_label_value.\n"
         "- If the user asks to smooth, clean, or edit a mask only inside a Shapes ROI or selected area, use edit_mask_in_roi.\n"
         "- Use edit_mask_in_roi for local mask cleanup such as opening, closing, fill_holes, remove_small, or keep_largest constrained to an ROI. Do not apply a global mask edit when the user asks for only one region or selected area.\n"
         "- If the user asks for intensity summary statistics such as mean, std, median, min, or max for an image layer, use summarize_intensity and keep the answer as a text result in chat.\n"
