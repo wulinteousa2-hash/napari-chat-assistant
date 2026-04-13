@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-chat-assistant"
-version = "2.2.0"
+version = "2.3.0"
 description = "Local AI and deterministic workbench for napari image-analysis workflows"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -44,6 +44,9 @@ Repository = "https://github.com/wulinteousa2-hash/napari-chat-assistant"
 Issues = "https://github.com/wulinteousa2-hash/napari-chat-assistant/issues"
 
 [project.optional-dependencies]
+voice = [
+  "faster-whisper",
+]
 test = [
   "pytest",
   "pytest-cov",

@@ -11,18 +11,26 @@ Local, Ollama-powered AI and deterministic workbench for napari image-analysis w
 
 The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
-## What's New In 2.2.0
+## What's New In 2.3.0
 
-Version `2.2.0` makes the assistant easier to guide, easier to inspect, and easier to improve from real usage.
+Version `2.3.0` adds an optional local `Voice Input` workflow for users who prefer speaking prompts instead of typing them.
 
-New in this release:
-- `Rate Result` lets you quickly mark the latest result as `Helpful`, `Wrong Route`, `Wrong Answer`, or `Didn't Work`
-- telemetry is easier to inspect with clearer session views for `Model Activity`, `Intent Signals`, `Problems`, and `Raw Log`
-- the assistant can now suggest prompts that are more likely to trigger supported local workflows
-- long-running model requests can now be stopped directly from the chat panel
-- runtime guidance is clearer when generated code depends on packages that are not included by default
+This update was added in response to feedback from Ron DeSpain on image.sc:
+- https://forum.image.sc/t/napari-chat-assistant-experimenting-with-a-local-chat-assistant-inside-napari-looking-for-feedback/120351/2
 
-These updates improve local workflow discovery, feedback-driven refinement, and day-to-day control of the assistant.
+Quick feature summary:
+- optional `Voice Input` entry under `Advanced`
+- local microphone recording with input-device selection
+- live green input-level meter during recording
+- local transcription with [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper)
+- editable transcript preview before execution
+- direct `Run` from the voice window without an extra prompt-send step
+- reusable non-blocking voice window that stays open while you work in napari
+
+Important:
+- voice input is optional and is not required for the base plugin
+- it requires [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) installed in the same Python environment as napari
+- microphone support also depends on the Qt multimedia stack available in that same environment
 
 For complete release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -113,6 +121,7 @@ Current workflows include:
 - learn from built-in content for microscopy, electron microscopy, imaging physics, quantitative imaging, statistics, academic prompting, and language support
 - save and restore workspace state with a JSON manifest plus OME-Zarr assets for generated image and labels data
 - use `Atlas Stitch` from the advanced menu for specialized stitching and export workflows
+- use optional local `Voice Input` from `Advanced` for microphone recording, transcript review, and direct prompt execution
 
 Example requests:
 - `Inspect the selected layer`
@@ -180,6 +189,14 @@ Install the plugin:
 pip install napari-chat-assistant
 ```
 
+Optional voice input support:
+
+```bash
+pip install faster-whisper
+```
+
+Install `faster-whisper` in the same Python environment that launches napari if you want to use `Advanced -> Voice Input`.
+
 Development install:
 
 ```bash
@@ -200,6 +217,19 @@ The plugin does not bundle Ollama or model weights. Larger models may require su
 6. Start chatting, or use the Library for repeatable tasks and reusable code.
 
 The assistant works best when prompts describe a concrete action. If you already have Python code, paste it into the Prompt box and use `Run My Code`. If pasted code fails or needs adaptation to the current viewer, use `Refine My Code`.
+
+### Optional Voice Input
+
+`Advanced -> Voice Input` opens a small reusable voice window for users who want a local speech-to-text path inside napari.
+
+The flow is:
+- choose the microphone input device
+- start and stop recording
+- watch the live input-level meter to confirm the mic is active
+- review and edit the transcript
+- press `Run` or hit `Enter` to execute it directly
+
+This feature is intentionally optional and advanced. It depends on [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) being installed in the same Python environment as napari.
 
 Examples:
 - `Inspect the selected layer`
@@ -249,7 +279,7 @@ Built-in workflows include:
 - annotation overlays, including free text, particle labels, callouts, and boxed titles
 - workspace save/restore with a JSON manifest plus OME-Zarr assets for generated image and labels data
 - deterministic `Actions`, reusable `Templates`, and user-defined `Shortcuts`
-- optional advanced workflows such as SAM2 and Atlas Stitch
+- optional advanced workflows such as Voice Input, SAM2, and Atlas Stitch
 
 ### Code generation workflows
 

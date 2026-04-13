@@ -1,6 +1,6 @@
 name: napari-chat-assistant
 display_name: Local Chat Assistant
-description: Local AI and deterministic workbench for napari image-analysis workflows
+description: Local AI and deterministic workbench for napari image-analysis workflows, with optional Advanced voice input when faster-whisper is installed in the same environment
 visibility: public
 categories:
   - Utilities

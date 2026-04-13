@@ -2,6 +2,18 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.3.0
+
+- Added an optional `Advanced -> Voice Input` workflow for local speech-to-text prompt entry inside napari.
+- Added a dedicated reusable voice window with `Start Recording`, `Stop Recording`, transcript preview/editing, and direct `Run` execution.
+- Added local transcription through `faster-whisper`, while keeping voice support out of the required base plugin dependencies.
+- Added explicit runtime guidance that voice input requires `faster-whisper` installed in the same Python environment as napari.
+- Added microphone input-device selection plus persistence of the last selected device across sessions.
+- Added a live green input-level meter so users can confirm that microphone capture is active before transcription.
+- Improved Linux microphone handling for PyQt5 and Qt multimedia environments by supporting both Qt5 and Qt6 audio APIs and by trying multiple detected ALSA input routes.
+- Kept the voice window modeless so it can stay open and be moved aside without blocking the viewer.
+- Documented this release as following feedback from Ron DeSpain on image.sc about adding voice input to the plugin.
+
 ## 2.2.0
 
 - Added `Rate Result` so users can quickly mark the latest assistant outcome as `Helpful`, `Wrong Route`, `Wrong Answer`, or `Didn't Work`.

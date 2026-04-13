@@ -46,6 +46,7 @@ class PendingCodePanel(QWidget):
         self.advanced_btn = QPushButton("Advanced")
         self.advanced_btn.setToolTip("Open advanced and optional integrations.")
         self.advanced_menu = QMenu(self.advanced_btn)
+        self.voice_input_action = self.advanced_menu.addAction("Voice Input")
         self.sam2_setup_action = self.advanced_menu.addAction("SAM2 Setup")
         self.sam2_live_action = self.advanced_menu.addAction("SAM2 Live")
         self.text_annotation_action = self.advanced_menu.addAction("Text Annotation")
