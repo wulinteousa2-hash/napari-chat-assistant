@@ -465,6 +465,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     feedback_wrong_route_action = pending_code_panel.feedback_wrong_route_action
     feedback_wrong_answer_action = pending_code_panel.feedback_wrong_answer_action
     feedback_didnt_work_action = pending_code_panel.feedback_didnt_work_action
+    voice_input_action = pending_code_panel.voice_input_action
     sam2_setup_action = pending_code_panel.sam2_setup_action
     sam2_live_action = pending_code_panel.sam2_live_action
     text_annotation_action = pending_code_panel.text_annotation_action
@@ -1034,6 +1035,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.3.0":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added optional `Voice Input` under `Advanced` for local microphone recording and speech-to-text prompt entry.\n"
+                "- Voice input uses local `faster-whisper` transcription when it is installed in the same napari Python environment.\n"
+                "- The voice window now supports microphone-device selection, a live input meter, transcript editing, and direct `Run`.\n"
+                "- The selected microphone is remembered, and the voice window stays open without blocking the viewer.\n"
+                "- This update follows voice-input feedback from Ron DeSpain on image.sc.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.2.0":
             return (
                 f"**What's New In {current}**\n"
@@ -1766,6 +1777,32 @@ def chat_widget(napari_viewer=None) -> QWidget:
             function_name="open_atlas_stitch_widget",
             feature_name="Atlas Stitch",
         )
+
+    def show_voice_input(*_args):
+        def submit_voice_prompt(text: str) -> None:
+            content = str(text or "").strip()
+            if not content:
+                return
+            prompt.setPlainText(content)
+            append_log("Sending reviewed voice transcript.")
+            set_status("Status: sending voice transcript", ok=None)
+            send_message()
+
+        try:
+            module = importlib.import_module("napari_chat_assistant.voice.controller")
+            opener = getattr(module, "open_voice_input_dialog")
+        except Exception as exc:
+            logger.exception("Voice Input failed to import.")
+            append_chat_message(
+                "assistant",
+                f"Could not open Voice Input.\n{exc}",
+                render_markdown=False,
+            )
+            append_log(f"Voice Input import failed: {exc}")
+            set_status("Status: Voice Input unavailable", ok=False)
+            return False
+        opener(parent=root, submit_callback=submit_voice_prompt)
+        return True
 
     def reset_telemetry_log(*_args):
         try:
@@ -6969,6 +7006,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     feedback_wrong_answer_action.triggered.connect(lambda *_args: submit_feedback("wrong_answer"))
     feedback_didnt_work_action.triggered.connect(lambda *_args: submit_feedback("didnt_work"))
     stop_btn.clicked.connect(stop_active_request)
+    voice_input_action.triggered.connect(show_voice_input)
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)

@@ -176,7 +176,7 @@ UI_HELP_ITEMS = [
         "label": "Advanced",
         "aliases": ("advanced menu", "advanced controls"),
         "purpose": "Holds optional integrations and advanced controls that do not belong in the main workflow.",
-        "when": "Use it when you need optional features such as experimental SAM2 setup or SAM2 Live.",
+        "when": "Use it when you need optional features such as Voice Input, experimental SAM2 setup, or SAM2 Live.",
         "tip": "The default workflow should work without touching Advanced.",
     },
     {
@@ -402,7 +402,7 @@ def build_ui_help_prompt_block() -> str:
         "- Reject: rejects the last assistant outcome from session memory.",
         "- Pending Code: indicates whether assistant code is waiting for review.",
         "- Layer Context: copyable layer/session summary with per-layer Info, visibility, Insert, and Copy actions.",
-        "- Advanced: optional integrations such as experimental SAM2 controls.",
+        "- Advanced: optional integrations such as Voice Input and experimental SAM2 controls.",
         "- Quick Compare Grid: shows open image layers side by side in napari grid view for quick comparison without moving the layers.",
         "- Grid Spacing: controls the gap between image tiles in grid view.",
         "- Turn Off Compare Grid: turns grid view off and restores non-image layers hidden for comparison.",

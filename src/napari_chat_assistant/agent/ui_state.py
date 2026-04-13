@@ -20,6 +20,7 @@ DEFAULT_UI_STATE = {
     "sam2_checkpoint_path": "checkpoints/sam2.1_hiera_large.pt",
     "sam2_config_path": "configs/sam2.1/sam2.1_hiera_l.yaml",
     "sam2_device": "cuda",
+    "voice_input_device": "",
 }
 
 
@@ -62,6 +63,7 @@ def load_ui_state() -> dict:
         "sam2_checkpoint_path": str(payload.get("sam2_checkpoint_path", DEFAULT_UI_STATE["sam2_checkpoint_path"])).strip(),
         "sam2_config_path": str(payload.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip(),
         "sam2_device": str(payload.get("sam2_device", DEFAULT_UI_STATE["sam2_device"])).strip() or "cuda",
+        "voice_input_device": str(payload.get("voice_input_device", DEFAULT_UI_STATE["voice_input_device"])).strip(),
     }
 
 
@@ -86,5 +88,6 @@ def save_ui_state(data: dict) -> None:
         "sam2_checkpoint_path": str(data.get("sam2_checkpoint_path", DEFAULT_UI_STATE["sam2_checkpoint_path"])).strip(),
         "sam2_config_path": str(data.get("sam2_config_path", DEFAULT_UI_STATE["sam2_config_path"])).strip(),
         "sam2_device": str(data.get("sam2_device", DEFAULT_UI_STATE["sam2_device"])).strip() or "cuda",
+        "voice_input_device": str(data.get("voice_input_device", DEFAULT_UI_STATE["voice_input_device"])).strip(),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
