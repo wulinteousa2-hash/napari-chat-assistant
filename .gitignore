@@ -16,3 +16,6 @@ coverage.xml
 htmlcov/
 .DS_Store
 .private/
+.napari-code-assistant-index/
+
+
