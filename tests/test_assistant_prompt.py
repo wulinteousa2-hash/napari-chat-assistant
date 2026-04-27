@@ -18,7 +18,7 @@ def test_assistant_system_prompt_includes_response_examples():
     assert '"ok", "okay", "go", or "continue"' in prompt
     assert "do not use `run_in_background(...)`" in prompt
     assert "setting layer.scale" in prompt
-    assert "Templates` -> `Data`" in prompt
+    assert "Templates` -> `Code Templates` -> `Data Setup`" in prompt
     assert "synthetic 2D grayscale, 3D grayscale, or RGB example" in prompt
     assert 'user says "howdy, who are you?"' in prompt
     assert "natural, confident, helpful tone" in prompt

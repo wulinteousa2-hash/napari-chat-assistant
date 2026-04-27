@@ -463,9 +463,9 @@ def _demo_onboarding_message() -> str:
     return (
         "No problem. You do not need a real microscopy image to test the plugin.\n\n"
         "The fastest options are:\n"
-        "- Use the Library `Templates` tab, open the `Data` category, and double-click a synthetic dataset template to run it immediately.\n"
+        "- Use the Library `Templates` tab, open `Code Templates` -> `Data Setup`, and double-click a synthetic dataset template to run it immediately.\n"
         "- If you prefer, ask me to generate a synthetic image here in chat, such as a 2D grayscale image, a 3D grayscale volume, or an RGB sample.\n\n"
-        "If you are not comfortable with Python, the `Templates` -> `Data` route is the easiest because it creates demo layers for you directly. "
+        "If you are not comfortable with Python, the `Templates` -> `Code Templates` -> `Data Setup` route is the easiest because it creates demo layers for you directly. "
         "You can also load a template first to inspect the code before running it.\n\n"
         "Once the demo image is loaded, I can show ROI measurement, histogram plotting, thresholding, segmentation, and widget-based analysis."
     )
@@ -499,7 +499,7 @@ def _getting_started_message(has_selected_layer: bool) -> str:
         )
     return (
         "The easiest start is to load or generate a test image, then try one simple workflow on it.\n\n"
-        "You can use the Library `Templates` tab, open the `Data` category, and run a synthetic dataset, or I can generate a synthetic 2D grayscale, 3D grayscale, 2D RGB, or 3D RGB demo image here in chat.\n\n"
+        "You can use the Library `Templates` tab, open `Code Templates` -> `Data Setup`, and run a synthetic dataset, or I can generate a synthetic 2D grayscale, 3D grayscale, 2D RGB, or 3D RGB demo image here in chat.\n\n"
         "Once an image is loaded, good first things to try are histogram plotting, denoising, threshold preview, ROI measurement, or opening an analysis widget."
     )
 

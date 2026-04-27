@@ -269,7 +269,7 @@ This keeps inspection, analysis, code review, and workflow reuse close to the cu
 
 ## Synthetic Data Templates
 
-Use the Library `Templates > Data` area or built-in code snippets to load repeatable synthetic datasets.
+Use the Library `Templates > Code Templates > Data Setup` area or built-in code snippets to load repeatable synthetic datasets.
 
 Current built-in synthetic generators include:
 - Synthetic 2D SNR Sweep Gray
