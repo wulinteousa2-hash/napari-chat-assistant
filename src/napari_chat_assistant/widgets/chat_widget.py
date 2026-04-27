@@ -1042,6 +1042,16 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.3.1":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added local-model performance telemetry for Ollama, including prompt-eval tokens, generation tokens, durations, and tokens-per-second metrics.\n"
+                "- Telemetry summaries now include tokenization diagnostics so you can see input size, system-prompt share, and local-model bottlenecks.\n"
+                "- Model requests now send a compact viewer context instead of verbose per-layer profiler evidence, reducing the dynamic payload sent to local models.\n"
+                "- Telemetry Log views now show newest records first.\n"
+                "- `Copy Report` copies a full shareable Markdown telemetry report to the clipboard.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.3.0":
             return (
                 f"**What's New In {current}**\n"
