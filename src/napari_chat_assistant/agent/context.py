@@ -186,6 +186,63 @@ def layer_context_json(viewer: napari.Viewer) -> dict:
     }
 
 
+def _compact_layer_profile(layer, profile: dict | None = None) -> dict:
+    profile = profile if isinstance(profile, dict) else profile_layer(layer)
+    return {
+        "name": str(getattr(layer, "name", "")),
+        "type": layer.__class__.__name__,
+        "shape": profile.get("shape"),
+        "dtype": profile.get("dtype"),
+        "semantic_type": profile.get("semantic_type"),
+        "confidence": profile.get("confidence"),
+        "axes_detected": profile.get("axes_detected"),
+        "source_kind": profile.get("source_kind"),
+        "is_multiscale": profile.get("is_multiscale"),
+        "is_lazy_or_chunked": profile.get("is_lazy_or_chunked"),
+        "pixel_or_voxel_scale_present": profile.get("pixel_or_voxel_scale_present"),
+        "time_calibration_present": profile.get("time_calibration_present"),
+        "channel_metadata_present": profile.get("channel_metadata_present"),
+        "wavelength_metadata_present": profile.get("wavelength_metadata_present"),
+        "recommended_operation_classes": profile.get("recommended_operation_classes", []),
+        "discouraged_operation_classes": profile.get("discouraged_operation_classes", []),
+    }
+
+
+def layer_context_for_model(viewer: napari.Viewer) -> dict:
+    """Return compact viewer context for model prompts.
+
+    Keep layer identity and semantic guidance, but omit verbose profiler evidence
+    strings that are useful for debugging and expensive in local LLM prompts.
+    """
+    if viewer is None:
+        return {"layers": [], "selected_layer": None, "selected_layer_profile": None}
+
+    layers = []
+    selected_profile = None
+    selected = viewer.layers.selection.active
+    selected_name = None if selected is None else selected.name
+    for layer in viewer.layers:
+        profile = profile_layer(layer)
+        compact = _compact_layer_profile(layer, profile)
+        if isinstance(layer, napari.layers.Labels):
+            try:
+                compact["mask_stats"] = mask_statistics(np.asarray(layer.data))
+            except Exception:
+                compact["mask_stats"] = None
+        layers.append(compact)
+        if selected is layer:
+            selected_profile = compact
+
+    if selected is not None and selected_profile is None:
+        selected_profile = _compact_layer_profile(selected)
+
+    return {
+        "layers": layers,
+        "selected_layer": selected_name,
+        "selected_layer_profile": selected_profile,
+    }
+
+
 def mask_measurement_summary(layer: napari.layers.Labels) -> str:
     data = np.asarray(layer.data)
     stats = mask_statistics(data)

@@ -65,7 +65,7 @@ def load_telemetry_events(path: Path | None = None) -> tuple[list[dict], int]:
     return events, invalid_lines
 
 
-def read_telemetry_tail(path: Path | None = None, *, max_lines: int = 200) -> str:
+def read_telemetry_tail(path: Path | None = None, *, max_lines: int = 200, newest_first: bool = False) -> str:
     source = path or TELEMETRY_LOG_PATH
     if not source.exists():
         return ""
@@ -74,7 +74,10 @@ def read_telemetry_tail(path: Path | None = None, *, max_lines: int = 200) -> st
     with source.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             recent_lines.append(raw_line.rstrip("\n"))
-    return "\n".join(recent_lines)
+    lines = list(recent_lines)
+    if newest_first:
+        lines.reverse()
+    return "\n".join(lines)
 
 
 def _extract_trigger_terms(text: str) -> list[str]:
@@ -106,6 +109,58 @@ def build_intent_ranking(per_intent: list[dict]) -> dict:
     return ranking
 
 
+def _numeric_value(value) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * max(0.0, min(100.0, float(percentile))) / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _metric_summary(values: list[float]) -> dict:
+    clean = [float(value) for value in values if isinstance(value, (int, float))]
+    if not clean:
+        return {"count": 0, "median": None, "p90": None, "max": None}
+    return {
+        "count": len(clean),
+        "median": median(clean),
+        "p90": _percentile(clean, 90),
+        "max": max(clean),
+    }
+
+
+def _collect_model_metric(per_model_metrics: dict[str, dict[str, list[float]]], model: str, metric: str, value) -> None:
+    numeric = _numeric_value(value)
+    if numeric is None or not model:
+        return
+    per_model_metrics[model][metric].append(numeric)
+
+
+def _format_number(value, *, digits: int = 0) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except Exception:
+        return "n/a"
+    if digits <= 0:
+        return str(int(round(numeric)))
+    return f"{numeric:.{digits}f}"
+
+
 def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> dict:
     models = Counter()
     actions = Counter()
@@ -132,6 +187,30 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
     intent_failure = Counter()
     intent_feedback: dict[str, Counter] = defaultdict(Counter)
     intent_trigger_terms: dict[str, Counter] = defaultdict(Counter)
+    perf_metrics: dict[str, list[float]] = defaultdict(list)
+    perf_by_model: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    perf_turns = 0
+
+    perf_field_names = (
+        "input_chars",
+        "input_bytes",
+        "estimated_input_tokens",
+        "system_prompt_chars",
+        "estimated_system_prompt_tokens",
+        "user_payload_chars",
+        "estimated_user_payload_tokens",
+        "full_request_chars",
+        "estimated_full_request_tokens",
+        "prompt_eval_count",
+        "prompt_eval_duration_ms",
+        "eval_count",
+        "eval_duration_ms",
+        "total_duration_ms",
+        "prompt_eval_tokens_per_second",
+        "generation_tokens_per_second",
+        "output_chars",
+        "estimated_output_tokens",
+    )
 
     for event in events:
         timestamp = str(event.get("timestamp", "")).strip()
@@ -167,6 +246,15 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
                 error_text = str(event.get("error", "")).strip()
                 if error_text:
                     latest_errors.append(error_text)
+            if any(_numeric_value(event.get(field)) is not None for field in perf_field_names):
+                perf_turns += 1
+                for field in perf_field_names:
+                    numeric = _numeric_value(event.get(field))
+                    if numeric is None:
+                        continue
+                    perf_metrics[field].append(numeric)
+                    if model:
+                        _collect_model_metric(perf_by_model, model, field, numeric)
 
         if event_type == "turn_feedback":
             feedback = str(event.get("feedback", "")).strip().lower()
@@ -256,6 +344,30 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
             }
         )
     intent_ranking = build_intent_ranking(per_intent)
+    performance = {
+        "turns": perf_turns,
+        "metrics": {field: _metric_summary(values) for field, values in perf_metrics.items()},
+        "per_model": [],
+        "bottleneck": "",
+        "system_prompt_share_median": None,
+    }
+    input_median = performance["metrics"].get("input_chars", {}).get("median")
+    system_median = performance["metrics"].get("system_prompt_chars", {}).get("median")
+    prompt_eval_median = performance["metrics"].get("prompt_eval_duration_ms", {}).get("median")
+    eval_median = performance["metrics"].get("eval_duration_ms", {}).get("median")
+    if input_median and system_median:
+        performance["system_prompt_share_median"] = float(system_median) / max(1.0, float(input_median))
+    if prompt_eval_median is not None and eval_median is not None:
+        performance["bottleneck"] = "prompt_eval" if prompt_eval_median > eval_median else "generation"
+    for model_name, model_metrics in perf_by_model.items():
+        performance["per_model"].append(
+            {
+                "model": model_name,
+                "turns": max((len(values) for values in model_metrics.values()), default=0),
+                "metrics": {field: _metric_summary(values) for field, values in model_metrics.items()},
+            }
+        )
+    performance["per_model"].sort(key=lambda item: item.get("turns", 0), reverse=True)
 
     return {
         "total_events": len(events),
@@ -282,6 +394,7 @@ def summarize_telemetry_events(events: list[dict], invalid_lines: int = 0) -> di
         "intent_categories": intent_categories,
         "per_intent": per_intent,
         "intent_ranking": intent_ranking,
+        "performance": performance,
     }
 
 
@@ -382,6 +495,61 @@ def format_telemetry_summary(summary: dict) -> str:
             "- Latency: median "
             f"{summary.get('latency_median_ms')} ms, max {summary.get('latency_max_ms')} ms"
         )
+    performance = summary.get("performance", {})
+    if performance.get("turns"):
+        metrics = performance.get("metrics", {})
+        prompt_eval_count = metrics.get("prompt_eval_count", {})
+        estimated_input_tokens = metrics.get("estimated_input_tokens", {})
+        system_prompt_chars = metrics.get("system_prompt_chars", {})
+        user_payload_chars = metrics.get("user_payload_chars", {})
+        prompt_eval_duration = metrics.get("prompt_eval_duration_ms", {})
+        eval_duration = metrics.get("eval_duration_ms", {})
+        total_duration = metrics.get("total_duration_ms", {})
+        prompt_eval_tps = metrics.get("prompt_eval_tokens_per_second", {})
+        generation_tps = metrics.get("generation_tokens_per_second", {})
+        share = performance.get("system_prompt_share_median")
+        share_text = "n/a" if share is None else f"{int(round(100 * float(share)))}%"
+        lines.append("**Tokenization And Local Model Performance**")
+        lines.append(
+            f"- Instrumented turns: {performance.get('turns', 0)}; bottleneck: "
+            f"`{performance.get('bottleneck') or 'unknown'}`"
+        )
+        lines.append(
+            "- Input context: median "
+            f"{_format_number(prompt_eval_count.get('median'))} actual prompt tokens "
+            f"({_format_number(estimated_input_tokens.get('median'))} estimated); "
+            f"p90 {_format_number(prompt_eval_count.get('p90'))} actual tokens"
+        )
+        lines.append(
+            "- Context composition: median system prompt "
+            f"{_format_number(system_prompt_chars.get('median'))} chars, user payload "
+            f"{_format_number(user_payload_chars.get('median'))} chars; "
+            f"system prompt share {share_text}"
+        )
+        lines.append(
+            "- Timing: median prompt eval "
+            f"{_format_number(prompt_eval_duration.get('median'))} ms, generation "
+            f"{_format_number(eval_duration.get('median'))} ms, Ollama total "
+            f"{_format_number(total_duration.get('median'))} ms"
+        )
+        lines.append(
+            "- Throughput: median prompt eval "
+            f"{_format_number(prompt_eval_tps.get('median'), digits=1)} tok/s, generation "
+            f"{_format_number(generation_tps.get('median'), digits=1)} tok/s"
+        )
+        for item in performance.get("per_model", []):
+            model_metrics = item.get("metrics", {})
+            model_prompt_tokens = model_metrics.get("prompt_eval_count", {})
+            model_prompt_ms = model_metrics.get("prompt_eval_duration_ms", {})
+            model_eval_ms = model_metrics.get("eval_duration_ms", {})
+            model_total_ms = model_metrics.get("total_duration_ms", {})
+            lines.append(
+                f"- `{item.get('model', '')}`: {item.get('turns', 0)} instrumented turns; "
+                f"median input {_format_number(model_prompt_tokens.get('median'))} tokens; "
+                f"prompt eval {_format_number(model_prompt_ms.get('median'))} ms; "
+                f"generation {_format_number(model_eval_ms.get('median'))} ms; "
+                f"total {_format_number(model_total_ms.get('median'))} ms"
+            )
     ranking = summary.get("ranking", {})
     if ranking:
         lines.append("**Quick Ranking**")

@@ -35,6 +35,17 @@ def test_summarize_and_format_telemetry_events_reports_core_metrics():
             "model": "m1",
             "response_action": "reply",
             "latency_ms": 120,
+            "input_chars": 40000,
+            "estimated_input_tokens": 10000,
+            "system_prompt_chars": 30000,
+            "user_payload_chars": 9000,
+            "prompt_eval_count": 9500,
+            "prompt_eval_duration_ms": 1000,
+            "eval_count": 100,
+            "eval_duration_ms": 3000,
+            "total_duration_ms": 4200,
+            "prompt_eval_tokens_per_second": 9500,
+            "generation_tokens_per_second": 33.3,
         },
         {
             "timestamp": "2026-03-30T10:01:01+00:00",
@@ -44,6 +55,17 @@ def test_summarize_and_format_telemetry_events_reports_core_metrics():
             "latency_ms": 350,
             "tool_success": False,
             "error": "tool boom",
+            "input_chars": 60000,
+            "estimated_input_tokens": 15000,
+            "system_prompt_chars": 30000,
+            "user_payload_chars": 29000,
+            "prompt_eval_count": 14500,
+            "prompt_eval_duration_ms": 2000,
+            "eval_count": 200,
+            "eval_duration_ms": 6000,
+            "total_duration_ms": 8200,
+            "prompt_eval_tokens_per_second": 7250,
+            "generation_tokens_per_second": 33.3,
         },
         {
             "timestamp": "2026-03-30T10:02:01+00:00",
@@ -64,6 +86,17 @@ def test_summarize_and_format_telemetry_events_reports_core_metrics():
             "model": "m2",
             "response_action": "reply",
             "latency_ms": 900,
+            "input_chars": 20000,
+            "estimated_input_tokens": 5000,
+            "system_prompt_chars": 12000,
+            "user_payload_chars": 7000,
+            "prompt_eval_count": 4800,
+            "prompt_eval_duration_ms": 800,
+            "eval_count": 80,
+            "eval_duration_ms": 1000,
+            "total_duration_ms": 1900,
+            "prompt_eval_tokens_per_second": 6000,
+            "generation_tokens_per_second": 80,
         },
         {
             "timestamp": "2026-03-30T10:03:40+00:00",
@@ -153,10 +186,23 @@ def test_summarize_and_format_telemetry_events_reports_core_metrics():
     assert summary["ranking"]["slowest"]["model"] == "m2"
     assert summary["ranking"]["best_code_success"]["model"] == "m2"
     assert summary["ranking"]["worst_code_success"]["model"] == "m1"
+    assert summary["performance"]["turns"] == 3
+    assert summary["performance"]["bottleneck"] == "generation"
+    assert summary["performance"]["metrics"]["prompt_eval_count"]["median"] == 9500
+    assert summary["performance"]["metrics"]["prompt_eval_duration_ms"]["median"] == 1000
+    assert summary["performance"]["metrics"]["eval_duration_ms"]["median"] == 3000
+    assert round(summary["performance"]["system_prompt_share_median"], 2) == 0.75
+    assert summary["performance"]["per_model"][0]["model"] == "m1"
+    assert summary["performance"]["per_model"][0]["metrics"]["prompt_eval_count"]["median"] == 12000
     assert "Records: 13" in rendered
     assert "Completed turns: 3 via `reply` (2), `tool` (1)" in rendered
     assert "Intent events: 3 via `analysis` (2), `workflow` (1)" in rendered
     assert "Fastest: `m1` by median latency (235 ms across 2 completed turns)" in rendered
+    assert "Tokenization And Local Model Performance" in rendered
+    assert "Instrumented turns: 3; bottleneck: `generation`" in rendered
+    assert "median 9500 actual prompt tokens" in rendered
+    assert "system prompt share 75%" in rendered
+    assert "`m1`: 2 instrumented turns; median input 12000 tokens; prompt eval 1500 ms; generation 4500 ms; total 6200 ms" in rendered
     assert "Slowest: `m2` by median latency (900 ms across 1 completed turns)" in rendered
     assert "Best code-run signal: `m2` (100% success over 1 executions)" in rendered
     assert "Weakest code-run signal: `m1` (50% success over 2 executions)" in rendered
@@ -186,3 +232,12 @@ def test_read_telemetry_tail_returns_last_lines(tmp_path):
     tail = read_telemetry_tail(telemetry_path, max_lines=2)
 
     assert tail == "3\n4"
+
+
+def test_read_telemetry_tail_can_return_newest_first(tmp_path):
+    telemetry_path = tmp_path / "model_telemetry.jsonl"
+    telemetry_path.write_text("1\n2\n3\n4\n", encoding="utf-8")
+
+    tail = read_telemetry_tail(telemetry_path, max_lines=3, newest_first=True)
+
+    assert tail == "4\n3\n2"

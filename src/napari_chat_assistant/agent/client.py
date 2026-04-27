@@ -6,6 +6,15 @@ from urllib.error import HTTPError, URLError
 from urllib import request
 
 
+OLLAMA_TIMING_FIELDS = (
+    "prompt_eval_count",
+    "prompt_eval_duration",
+    "eval_count",
+    "eval_duration",
+    "total_duration",
+)
+
+
 def _friendly_request_error(url: str, exc: Exception) -> RuntimeError:
     if isinstance(exc, HTTPError):
         return RuntimeError(f"Ollama request failed with HTTP {exc.code} for {url}.")
@@ -52,6 +61,90 @@ def http_json(
         if response_holder is not None:
             response_holder.pop("response", None)
     return json.loads(body) if body else {}
+
+
+def _estimate_tokens_from_chars(text: str) -> int:
+    # A coarse provider-neutral estimate; Ollama metadata gives exact counts when available.
+    return max(1, round(len(str(text or "")) / 4)) if text else 0
+
+
+def _duration_ms(value) -> float | None:
+    try:
+        raw = float(value)
+    except Exception:
+        return None
+    if raw <= 0:
+        return None
+    # Ollama durations are nanoseconds.
+    return raw / 1_000_000.0
+
+
+def _tokens_per_second(count, duration) -> float | None:
+    try:
+        token_count = float(count)
+    except Exception:
+        return None
+    duration_ms = _duration_ms(duration)
+    if not duration_ms:
+        return None
+    return token_count / (duration_ms / 1000.0)
+
+
+def ollama_chat_request_stats(payload: dict) -> dict:
+    messages = payload.get("messages", []) if isinstance(payload, dict) else []
+    system_content = ""
+    user_content = ""
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "")).strip()
+            content = str(message.get("content", ""))
+            if role == "system":
+                system_content = content
+            elif role == "user":
+                user_content = content
+    request_text = json.dumps(payload)
+    input_text = system_content + "\n" + user_content
+    return {
+        "input_chars": len(input_text),
+        "input_bytes": len(input_text.encode("utf-8")),
+        "estimated_input_tokens": _estimate_tokens_from_chars(input_text),
+        "system_prompt_chars": len(system_content),
+        "system_prompt_bytes": len(system_content.encode("utf-8")),
+        "estimated_system_prompt_tokens": _estimate_tokens_from_chars(system_content),
+        "user_payload_chars": len(user_content),
+        "user_payload_bytes": len(user_content.encode("utf-8")),
+        "estimated_user_payload_tokens": _estimate_tokens_from_chars(user_content),
+        "full_request_chars": len(request_text),
+        "full_request_bytes": len(request_text.encode("utf-8")),
+        "estimated_full_request_tokens": _estimate_tokens_from_chars(request_text),
+    }
+
+
+def ollama_response_metadata(result: dict) -> dict:
+    metadata = {}
+    for field in OLLAMA_TIMING_FIELDS:
+        if field in result:
+            metadata[field] = result.get(field)
+
+    prompt_eval_duration_ms = _duration_ms(result.get("prompt_eval_duration"))
+    eval_duration_ms = _duration_ms(result.get("eval_duration"))
+    total_duration_ms = _duration_ms(result.get("total_duration"))
+    if prompt_eval_duration_ms is not None:
+        metadata["prompt_eval_duration_ms"] = prompt_eval_duration_ms
+    if eval_duration_ms is not None:
+        metadata["eval_duration_ms"] = eval_duration_ms
+    if total_duration_ms is not None:
+        metadata["total_duration_ms"] = total_duration_ms
+
+    prompt_eval_tps = _tokens_per_second(result.get("prompt_eval_count"), result.get("prompt_eval_duration"))
+    generation_tps = _tokens_per_second(result.get("eval_count"), result.get("eval_duration"))
+    if prompt_eval_tps is not None:
+        metadata["prompt_eval_tokens_per_second"] = prompt_eval_tps
+    if generation_tps is not None:
+        metadata["generation_tokens_per_second"] = generation_tps
+    return metadata
 
 
 def list_ollama_models(base_url: str) -> list[str]:
@@ -127,6 +220,8 @@ def chat_ollama(
     options: dict,
     timeout: int = 1800,
     response_holder: dict | None = None,
+    request_metadata_holder: dict | None = None,
+    response_metadata_holder: dict | None = None,
     stop_event=None,
 ) -> str:
     payload = {
@@ -138,6 +233,9 @@ def chat_ollama(
         "stream": False,
         "options": options,
     }
+    if request_metadata_holder is not None:
+        request_metadata_holder.clear()
+        request_metadata_holder.update(ollama_chat_request_stats(payload))
     result = http_json(
         f"{base_url.rstrip('/')}/api/chat",
         payload,
@@ -147,5 +245,8 @@ def chat_ollama(
     )
     if stop_event is not None and stop_event.is_set():
         return ""
+    if response_metadata_holder is not None:
+        response_metadata_holder.clear()
+        response_metadata_holder.update(ollama_response_metadata(result))
     message = result.get("message", {})
     return str(message.get("content", "")).strip() or '{"action":"reply","message":"[empty response]"}'

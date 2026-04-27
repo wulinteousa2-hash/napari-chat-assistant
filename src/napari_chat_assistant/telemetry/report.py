@@ -30,6 +30,18 @@ def _feedback_summary(feedback: dict) -> str:
     return ", ".join(f"{name}:{count}" for name, count in ordered)
 
 
+def _format_number(value, *, digits: int = 0) -> str:
+    if value is None:
+        return "-"
+    try:
+        numeric = float(value)
+    except Exception:
+        return "-"
+    if digits <= 0:
+        return str(int(round(numeric)))
+    return f"{numeric:.{digits}f}"
+
+
 def format_markdown_telemetry_report(
     summary: dict,
     *,
@@ -99,6 +111,60 @@ def format_markdown_telemetry_report(
         intent_bits.append(f"`{intent_name}` ({count})")
     if intent_bits:
         lines.extend(["", "## Intent Mix", "", f"- {', '.join(intent_bits)}"])
+
+    performance = summary.get("performance", {})
+    if performance.get("turns"):
+        metrics = performance.get("metrics", {})
+        prompt_eval_count = metrics.get("prompt_eval_count", {})
+        estimated_input_tokens = metrics.get("estimated_input_tokens", {})
+        system_prompt_chars = metrics.get("system_prompt_chars", {})
+        user_payload_chars = metrics.get("user_payload_chars", {})
+        prompt_eval_duration = metrics.get("prompt_eval_duration_ms", {})
+        eval_duration = metrics.get("eval_duration_ms", {})
+        total_duration = metrics.get("total_duration_ms", {})
+        prompt_eval_tps = metrics.get("prompt_eval_tokens_per_second", {})
+        generation_tps = metrics.get("generation_tokens_per_second", {})
+        share = performance.get("system_prompt_share_median")
+        share_text = "-" if share is None else f"{int(round(100 * float(share)))}%"
+        lines.extend(
+            [
+                "",
+                "## Tokenization And Local Model Performance",
+                "",
+                f"- Instrumented turns: {performance.get('turns', 0)}",
+                f"- Bottleneck: `{performance.get('bottleneck') or 'unknown'}`",
+                f"- Median actual prompt tokens: {_format_number(prompt_eval_count.get('median'))}",
+                f"- P90 actual prompt tokens: {_format_number(prompt_eval_count.get('p90'))}",
+                f"- Median estimated input tokens: {_format_number(estimated_input_tokens.get('median'))}",
+                f"- Median system prompt chars: {_format_number(system_prompt_chars.get('median'))}",
+                f"- Median user payload chars: {_format_number(user_payload_chars.get('median'))}",
+                f"- Median system prompt share: {share_text}",
+                f"- Median prompt eval: {_format_number(prompt_eval_duration.get('median'))} ms",
+                f"- Median generation: {_format_number(eval_duration.get('median'))} ms",
+                f"- Median Ollama total: {_format_number(total_duration.get('median'))} ms",
+                f"- Median prompt eval throughput: {_format_number(prompt_eval_tps.get('median'), digits=1)} tok/s",
+                f"- Median generation throughput: {_format_number(generation_tps.get('median'), digits=1)} tok/s",
+                "",
+                "| Model | Instrumented Turns | Median Input Tokens | Median Prompt Eval (ms) | Median Generation (ms) | Median Total (ms) |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for item in performance.get("per_model", []):
+            model_metrics = item.get("metrics", {})
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        f"`{item.get('model', '')}`",
+                        str(item.get("turns", 0)),
+                        _format_number(model_metrics.get("prompt_eval_count", {}).get("median")),
+                        _format_number(model_metrics.get("prompt_eval_duration_ms", {}).get("median")),
+                        _format_number(model_metrics.get("eval_duration_ms", {}).get("median")),
+                        _format_number(model_metrics.get("total_duration_ms", {}).get("median")),
+                    ]
+                )
+                + " |"
+            )
 
     lines.extend(
         [
@@ -216,6 +282,135 @@ def format_markdown_telemetry_report(
         lines.extend(["", "## Recent Errors", ""])
         for error_text in latest_errors:
             lines.append(f"- {error_text}")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_chat_telemetry_report(
+    summary: dict,
+    *,
+    path: Path | None = None,
+    title: str = "Telemetry Report",
+) -> str:
+    source_path = path or TELEMETRY_LOG_PATH
+    if not summary.get("total_events"):
+        return "\n".join(
+            [
+                f"**{title}**",
+                f"- No telemetry events were found in `{source_path}`.",
+            ]
+        )
+
+    lines: list[str] = [
+        f"**{title}**",
+        "- Local telemetry from real plugin usage; hardware, model quantization, dataset size, and workflow type affect results.",
+        f"- Source: `{source_path}`",
+        f"- Records: {summary.get('total_events', 0)}",
+        f"- Completed turns: {summary.get('turn_completed', 0)}",
+    ]
+    if summary.get("first_timestamp") or summary.get("last_timestamp"):
+        lines.append(f"- Time range: `{summary.get('first_timestamp', '')}` to `{summary.get('last_timestamp', '')}`")
+    if summary.get("latency_count"):
+        lines.append(f"- Overall latency: median {summary.get('latency_median_ms')} ms, max {summary.get('latency_max_ms')} ms")
+    lines.append(f"- Tool failures: {summary.get('tool_failures', 0)}")
+    lines.append(f"- Code execution: {summary.get('code_success', 0)} succeeded, {summary.get('code_failure', 0)} failed")
+    lines.append(f"- Reject feedback: {summary.get('reject_feedback', 0)}")
+
+    action_bits = [f"`{name}` ({count})" for name, count in summary.get("actions", {}).most_common()]
+    if action_bits:
+        lines.extend(["", "**Response Mix**", f"- {', '.join(action_bits)}"])
+
+    performance = summary.get("performance", {})
+    if performance.get("turns"):
+        metrics = performance.get("metrics", {})
+        share = performance.get("system_prompt_share_median")
+        share_text = "n/a" if share is None else f"{int(round(100 * float(share)))}%"
+        lines.extend(
+            [
+                "",
+                "**Tokenization And Local Model Performance**",
+                f"- Instrumented turns: {performance.get('turns', 0)}",
+                f"- Bottleneck: `{performance.get('bottleneck') or 'unknown'}`",
+                f"- Median actual prompt tokens: {_format_number(metrics.get('prompt_eval_count', {}).get('median'))}",
+                f"- P90 actual prompt tokens: {_format_number(metrics.get('prompt_eval_count', {}).get('p90'))}",
+                f"- Median system prompt chars: {_format_number(metrics.get('system_prompt_chars', {}).get('median'))}",
+                f"- Median user payload chars: {_format_number(metrics.get('user_payload_chars', {}).get('median'))}",
+                f"- Median system prompt share: {share_text}",
+                f"- Median prompt eval: {_format_number(metrics.get('prompt_eval_duration_ms', {}).get('median'))} ms",
+                f"- Median generation: {_format_number(metrics.get('eval_duration_ms', {}).get('median'))} ms",
+                f"- Median Ollama total: {_format_number(metrics.get('total_duration_ms', {}).get('median'))} ms",
+                f"- Prompt eval throughput: {_format_number(metrics.get('prompt_eval_tokens_per_second', {}).get('median'), digits=1)} tok/s",
+                f"- Generation throughput: {_format_number(metrics.get('generation_tokens_per_second', {}).get('median'), digits=1)} tok/s",
+            ]
+        )
+        for item in performance.get("per_model", [])[:8]:
+            model_metrics = item.get("metrics", {})
+            lines.append(
+                f"- `{item.get('model', '')}`: {item.get('turns', 0)} turns; "
+                f"input {_format_number(model_metrics.get('prompt_eval_count', {}).get('median'))} tokens; "
+                f"prompt eval {_format_number(model_metrics.get('prompt_eval_duration_ms', {}).get('median'))} ms; "
+                f"generation {_format_number(model_metrics.get('eval_duration_ms', {}).get('median'))} ms; "
+                f"total {_format_number(model_metrics.get('total_duration_ms', {}).get('median'))} ms"
+            )
+
+    per_model = summary.get("per_model", [])
+    if per_model:
+        lines.extend(["", "**Per-Model Summary**"])
+        for item in per_model:
+            code_total = int(item.get("code_success", 0)) + int(item.get("code_failure", 0))
+            latency_text = "no latency"
+            if item.get("latency_count"):
+                latency_text = f"median {item.get('latency_median_ms')} ms, max {item.get('latency_max_ms')} ms"
+            action_bits = [
+                f"{name}:{count}"
+                for name, count in item.get("actions", {}).most_common()
+            ]
+            lines.append(
+                f"- `{item.get('model', '')}`: {item.get('turns', 0)} turns; "
+                f"{latency_text}; rejects {_format_percent(int(item.get('rejects', 0)), int(item.get('turns', 0)))}; "
+                f"code success {_format_percent(int(item.get('code_success', 0)), code_total)}; "
+                f"actions {', '.join(action_bits) if action_bits else 'none'}"
+            )
+
+    per_intent = summary.get("per_intent", [])
+    if per_intent:
+        lines.extend(["", "**Intent Routing Signals**"])
+        for item in per_intent:
+            trigger_terms = ", ".join(f"`{term}`" for term in item.get("top_triggers", [])) or "none"
+            lines.append(
+                f"- `{item.get('intent_category', '')}`: {item.get('count', 0)} captures; "
+                f"share {_format_percent(int(item.get('count', 0)), int(summary.get('intent_total', 0)))}; "
+                f"success {_format_percent(int(item.get('success', 0)), int(item.get('success', 0)) + int(item.get('failure', 0)))}; "
+                f"median duration {item.get('duration_median_ms', '-') if item.get('duration_count') else '-'} ms; "
+                f"feedback {_feedback_summary(item.get('feedback', {}))}; triggers {trigger_terms}"
+            )
+
+    ranking = summary.get("ranking", {})
+    intent_ranking = summary.get("intent_ranking", {})
+    takeaway_lines: list[str] = []
+    fastest = ranking.get("fastest")
+    if fastest:
+        takeaway_lines.append(f"- Fastest median latency: `{fastest.get('model', '')}` at {fastest.get('latency_median_ms')} ms")
+    slowest = ranking.get("slowest")
+    if slowest:
+        takeaway_lines.append(f"- Slowest median latency: `{slowest.get('model', '')}` at {slowest.get('latency_median_ms')} ms")
+    most_used = ranking.get("most_used")
+    if most_used:
+        takeaway_lines.append(f"- Most used: `{most_used.get('model', '')}` with {most_used.get('turns', 0)} completed turns")
+    most_triggered = intent_ranking.get("most_triggered")
+    if most_triggered:
+        takeaway_lines.append(
+            f"- Most triggered intent: `{most_triggered.get('intent_category', '')}` at "
+            f"{_format_percent(int(most_triggered.get('count', 0)), int(summary.get('intent_total', 0)))}"
+        )
+    if takeaway_lines:
+        lines.extend(["", "**Quick Takeaways**"])
+        lines.extend(takeaway_lines)
+
+    latest_errors = summary.get("latest_errors", [])
+    if latest_errors:
+        lines.extend(["", "**Recent Errors**"])
+        lines.extend(f"- {error_text}" for error_text in latest_errors)
 
     return "\n".join(lines).rstrip() + "\n"
 

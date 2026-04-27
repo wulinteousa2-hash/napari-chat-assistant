@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from napari_chat_assistant.agent.context import layer_context_json
+from napari_chat_assistant.agent.context import layer_context_for_model, layer_context_json
 from napari_chat_assistant.agent.profiler import profile_layer
 
 
@@ -84,3 +84,27 @@ def test_layer_context_json_exposes_selected_layer_profile(make_napari_viewer_pr
     assert "evidence" in payload["selected_layer_profile"]
     assert len(payload["layers"]) == 2
     assert all("profile" in item for item in payload["layers"])
+
+
+def test_layer_context_for_model_uses_compact_profiles(make_napari_viewer_proxy):
+    viewer = make_napari_viewer_proxy()
+    viewer.add_image(np.random.default_rng(0).random((4, 5), dtype=np.float32), name="image_a")
+    selected = viewer.add_image(
+        np.zeros((4, 3, 5, 5), dtype=np.float32),
+        name="time_a",
+        metadata={"axes": "TCYX", "frame_interval": 2.5},
+    )
+    viewer.layers.selection.active = selected
+
+    payload = layer_context_for_model(viewer)
+
+    assert payload["selected_layer"] == "time_a"
+    assert payload["selected_layer_profile"]["name"] == "time_a"
+    assert payload["selected_layer_profile"]["semantic_type"] == "time_series"
+    assert payload["selected_layer_profile"]["axes_detected"] == "TCYX"
+    assert payload["selected_layer_profile"]["time_calibration_present"] is True
+    assert "evidence" not in payload["selected_layer_profile"]
+    assert "reasons" not in payload["selected_layer_profile"]
+    assert len(payload["layers"]) == 2
+    assert all("profile" not in item for item in payload["layers"])
+    assert all("recommended_operation_classes" in item for item in payload["layers"])

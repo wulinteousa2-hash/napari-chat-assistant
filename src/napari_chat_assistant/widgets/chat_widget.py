@@ -57,7 +57,7 @@ from napari_chat_assistant.agent.code_validation import (
     normalize_generated_code_if_needed,
     validate_generated_code,
 )
-from napari_chat_assistant.agent.context import get_viewer, layer_context_json, layer_summary
+from napari_chat_assistant.agent.context import get_viewer, layer_context_for_model, layer_context_json, layer_summary
 from napari_chat_assistant.agent.dispatcher import (
     apply_tool_job_result,
     prepare_tool_job,
@@ -149,6 +149,7 @@ from napari_chat_assistant.agent.session_memory import (
     update_session_goal,
 )
 from napari_chat_assistant.telemetry import (
+    format_markdown_telemetry_report,
     format_telemetry_summary,
     load_telemetry_events,
     read_telemetry_tail,
@@ -367,10 +368,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
     log_btn_layout = QHBoxLayout(log_btn_row)
     telemetry_toggle = QCheckBox("Enable Telemetry")
     telemetry_toggle.setChecked(bool(ui_state.get("telemetry_enabled", False)))
-    telemetry_toggle.setToolTip("Turn on performance telemetry and advanced telemetry tools only when you want them.")
+    telemetry_toggle.setToolTip("Turn on telemetry recording. Summary, Copy Report, and Log can inspect existing local telemetry even when recording is off.")
     telemetry_summary_btn = QPushButton("Summary")
     telemetry_summary_btn.setToolTip(
         "Show a quick performance summary from local telemetry only."
+    )
+    telemetry_report_btn = QPushButton("Copy Report")
+    telemetry_report_btn.setToolTip(
+        "Copy the full shareable telemetry Markdown report to the clipboard."
     )
     telemetry_view_btn = QPushButton("Log")
     telemetry_view_btn.setToolTip(
@@ -382,9 +387,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
     )
     log_btn_layout.addWidget(telemetry_toggle)
     log_btn_layout.addWidget(telemetry_summary_btn)
+    log_btn_layout.addWidget(telemetry_report_btn)
     log_btn_layout.addWidget(telemetry_view_btn)
     log_btn_layout.addWidget(telemetry_reset_btn)
-    telemetry_hint = QLabel("Telemetry is optional. Enable it only when you want performance tracking and advanced diagnostics.")
+    telemetry_hint = QLabel("Telemetry recording is optional. Use Summary, Copy Report, or Log to inspect existing local telemetry.")
     telemetry_hint.setWordWrap(True)
     telemetry_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     telemetry_hint.setStyleSheet("QLabel { color: #cbd5e1; padding: 0 0 4px 0; }")
@@ -999,10 +1005,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
         )
         refresh_feedback_controls()
 
-    def serialize_telemetry_events(events: list[dict], *, empty_message: str) -> str:
+    def serialize_telemetry_events(events: list[dict], *, empty_message: str, newest_first: bool = True) -> str:
         if not events:
             return empty_message
-        return "\n".join(json.dumps(event, ensure_ascii=True) for event in events)
+        ordered_events = list(reversed(events)) if newest_first else list(events)
+        return "\n".join(json.dumps(event, ensure_ascii=True) for event in ordered_events)
 
     def filter_telemetry_events(events: list[dict], kind: str) -> list[dict]:
         if kind == "model":
@@ -1584,6 +1591,11 @@ def chat_widget(napari_viewer=None) -> QWidget:
         summary = summarize_telemetry_events(events, invalid_lines)
         return format_telemetry_summary(summary)
 
+    def telemetry_report_text() -> str:
+        events, invalid_lines = load_telemetry_events()
+        summary = summarize_telemetry_events(events, invalid_lines)
+        return format_markdown_telemetry_report(summary, path=TELEMETRY_LOG_PATH)
+
     def show_text_log_dialog(*, title: str, path, empty_message: str, log_prefix: str, status_text: str):
         dialog = QDialog(root)
         dialog.setWindowTitle(title)
@@ -1627,6 +1639,12 @@ def chat_widget(napari_viewer=None) -> QWidget:
         append_chat_message("assistant", telemetry_summary_text())
         append_log("Displayed telemetry summary.")
         set_status("Status: telemetry summary ready", ok=True)
+
+    def show_telemetry_report(*_args):
+        report_text = telemetry_report_text()
+        QApplication.clipboard().setText(report_text)
+        append_log("Copied telemetry report to clipboard.")
+        set_status("Status: telemetry report copied", ok=True)
 
     def show_telemetry_viewer(*_args):
         dialog = QDialog(root)
@@ -1701,7 +1719,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     empty_message="[No error events recorded]",
                 )
             )
-            raw_box.setPlainText(read_telemetry_tail(max_lines=250) or "[Telemetry log is empty]")
+            raw_box.setPlainText(read_telemetry_tail(max_lines=250, newest_first=True) or "[Telemetry log is empty]")
 
         refresh_dialog_btn.clicked.connect(refresh_dialog)
         close_dialog_btn.clicked.connect(dialog.accept)
@@ -1888,10 +1906,10 @@ def chat_widget(napari_viewer=None) -> QWidget:
             return "loaded"
 
     def refresh_telemetry_controls():
-        enabled = bool(ui_state.get("telemetry_enabled", False))
-        telemetry_summary_btn.setVisible(enabled)
-        telemetry_view_btn.setVisible(enabled)
-        telemetry_reset_btn.setVisible(enabled)
+        telemetry_summary_btn.setVisible(True)
+        telemetry_report_btn.setVisible(True)
+        telemetry_view_btn.setVisible(True)
+        telemetry_reset_btn.setVisible(True)
 
     def toggle_telemetry(enabled: bool):
         ui_state["telemetry_enabled"] = bool(enabled)
@@ -6125,11 +6143,47 @@ def chat_widget(napari_viewer=None) -> QWidget:
         start_wait_indicator(phase="Thinking")
         set_status(f"Status: sending to {model_name}", ok=None)
         response_holder: dict = {}
+        request_metadata_holder: dict = {}
+        response_metadata_holder: dict = {}
         stop_event = threading.Event()
+
+        def model_request_performance_payload(reply_text: str = "") -> dict:
+            output_text = str(reply_text or "")
+            payload = {
+                **dict(request_metadata_holder),
+                **dict(response_metadata_holder),
+            }
+            if output_text:
+                payload.update(
+                    {
+                        "output_chars": len(output_text),
+                        "output_bytes": len(output_text.encode("utf-8")),
+                        "estimated_output_tokens": max(1, round(len(output_text) / 4)),
+                    }
+                )
+            return payload
+
+        def append_model_performance_log(metrics: dict) -> None:
+            prompt_tokens = metrics.get("prompt_eval_count") or metrics.get("estimated_input_tokens")
+            prompt_tps = metrics.get("prompt_eval_tokens_per_second")
+            generation_tps = metrics.get("generation_tokens_per_second")
+            parts = [
+                f"input≈{metrics.get('estimated_input_tokens', 0)} tokens",
+            ]
+            if prompt_tokens:
+                parts.append(f"prompt_eval={prompt_tokens} tokens")
+            if prompt_tps:
+                parts.append(f"prompt_eval={float(prompt_tps):.1f} tok/s")
+            if generation_tps:
+                parts.append(f"generation={float(generation_tps):.1f} tok/s")
+            total_ms = metrics.get("total_duration_ms")
+            if total_ms:
+                parts.append(f"ollama_total={float(total_ms):.0f} ms")
+            append_log("Model telemetry: " + " | ".join(parts))
 
         @thread_worker(ignore_errors=True)
         def run_chat():
-            viewer_payload = layer_context_json(viewer)
+            viewer_payload = layer_context_for_model(viewer)
             return chat_ollama(
                 base_url,
                 model_name,
@@ -6146,6 +6200,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 options=dict(generation_defaults),
                 timeout=1800,
                 response_holder=response_holder,
+                request_metadata_holder=request_metadata_holder,
+                response_metadata_holder=response_metadata_holder,
                 stop_event=stop_event,
             )
 
@@ -6174,6 +6230,8 @@ def chat_widget(napari_viewer=None) -> QWidget:
             if stop_event.is_set():
                 finish()
                 return
+            model_perf_payload = model_request_performance_payload(reply)
+            append_model_performance_log(model_perf_payload)
             try:
                 parsed = normalize_model_response(reply)
             except Exception as exc:
@@ -6191,6 +6249,21 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     actual_route="error",
                     outcome_type="error",
                     success=False,
+                )
+                record_telemetry(
+                    "turn_completed",
+                    {
+                        "turn_id": turn_id,
+                        "model": model_name,
+                        "base_url": base_url,
+                        "prompt_hash": turn_prompt_hash,
+                        "prompt_category": turn_prompt_category,
+                        "response_action": "parse_error",
+                        "latency_ms": int((time.perf_counter() - request_started_at) * 1000),
+                        "error": str(exc),
+                        **model_perf_payload,
+                        **turn_layer_snapshot,
+                    },
                 )
                 finish()
                 return
@@ -6282,6 +6355,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             "tool_name": tool_name,
                             "tool_success": True,
                             "latency_ms": latency_ms,
+                            **model_perf_payload,
                             **turn_layer_snapshot,
                         },
                     )
@@ -6352,6 +6426,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             "tool_name": tool_name,
                             "tool_success": True,
                             "latency_ms": latency_ms,
+                            **model_perf_payload,
                             **turn_layer_snapshot,
                         },
                     )
@@ -6405,6 +6480,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                             "tool_success": False,
                             "latency_ms": latency_ms,
                             "error": error_text,
+                            **model_perf_payload,
                             **turn_layer_snapshot,
                         },
                     )
@@ -6494,6 +6570,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                         "response_action": "code",
                         "pending_code_generated": True,
                         "latency_ms": latency_ms,
+                        **model_perf_payload,
                         **turn_layer_snapshot,
                     },
                 )
@@ -6535,6 +6612,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "prompt_category": turn_prompt_category,
                     "response_action": "reply",
                     "latency_ms": latency_ms,
+                    **model_perf_payload,
                     **turn_layer_snapshot,
                 },
             )
@@ -6580,6 +6658,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "response_action": "error",
                     "latency_ms": latency_ms,
                     "error": error_text,
+                    **model_request_performance_payload(""),
                     **turn_layer_snapshot,
                 },
             )
@@ -7015,6 +7094,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
     help_about_action.triggered.connect(show_about_assistant)
     help_report_bug_action.triggered.connect(show_report_bug)
     telemetry_summary_btn.clicked.connect(show_telemetry_summary)
+    telemetry_report_btn.clicked.connect(show_telemetry_report)
     telemetry_view_btn.clicked.connect(show_telemetry_viewer)
     telemetry_reset_btn.clicked.connect(reset_telemetry_log)
     telemetry_toggle.toggled.connect(toggle_telemetry)

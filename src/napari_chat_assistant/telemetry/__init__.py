@@ -7,7 +7,7 @@ from .logging_utils import (
     enable_fault_logging,
     get_plugin_logger,
 )
-from .report import format_markdown_telemetry_report
+from .report import format_chat_telemetry_report, format_markdown_telemetry_report
 from .summary import (
     format_telemetry_summary,
     load_telemetry_events,
@@ -28,4 +28,5 @@ __all__ = [
     "load_telemetry_events",
     "read_telemetry_tail",
     "format_markdown_telemetry_report",
+    "format_chat_telemetry_report",
 ]

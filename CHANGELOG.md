@@ -2,6 +2,15 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.3.1
+
+- Added Ollama prompt-evaluation and generation metadata to local telemetry, including prompt token counts, prompt-eval duration, generation duration, total duration, and tokens-per-second metrics.
+- Added request-size telemetry for system prompt, user payload, full request, output size, and estimated token counts.
+- Added tokenization and local-model performance sections to telemetry summaries and reports.
+- Added `Copy Report` for copying a full shareable Markdown telemetry report to the clipboard.
+- Changed Telemetry Log views to show newest records first for easier inspection.
+- Reduced model request payload size by sending compact viewer context to the LLM while keeping full layer profiles available for internal/debug paths.
+
 ## 2.3.0
 
 - Added an optional `Advanced -> Voice Input` workflow for local speech-to-text prompt entry inside napari.

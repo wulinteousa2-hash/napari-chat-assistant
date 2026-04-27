@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from napari_chat_assistant.telemetry import format_markdown_telemetry_report, summarize_telemetry_events
+from napari_chat_assistant.telemetry import (
+    format_chat_telemetry_report,
+    format_markdown_telemetry_report,
+    summarize_telemetry_events,
+)
 
 
 def test_format_markdown_telemetry_report_renders_publishable_table():
@@ -92,3 +96,46 @@ def test_format_markdown_telemetry_report_renders_publishable_table():
     assert "Weakest routing fit: `workflow` at 0% success over 1 captures" in rendered
     assert "## Recent Errors" in rendered
     assert "- request boom" in rendered
+
+
+def test_format_chat_telemetry_report_avoids_markdown_tables():
+    events = [
+        {
+            "timestamp": "2026-03-30T10:00:01+00:00",
+            "event_type": "turn_completed",
+            "model": "m1",
+            "response_action": "reply",
+            "latency_ms": 120,
+            "input_chars": 40000,
+            "estimated_input_tokens": 10000,
+            "system_prompt_chars": 30000,
+            "user_payload_chars": 9000,
+            "prompt_eval_count": 9500,
+            "prompt_eval_duration_ms": 1000,
+            "eval_duration_ms": 3000,
+            "total_duration_ms": 4200,
+            "prompt_eval_tokens_per_second": 9500,
+            "generation_tokens_per_second": 33.3,
+        },
+        {
+            "timestamp": "2026-03-30T10:04:10+00:00",
+            "event_type": "intent_captured",
+            "intent_category": "analysis",
+            "intent_description": "measure roi intensity on image layer",
+            "success": True,
+            "duration_ms": 2400,
+            "feedback": "helpful",
+        },
+    ]
+
+    summary = summarize_telemetry_events(events)
+    rendered = format_chat_telemetry_report(summary)
+
+    assert "**Telemetry Report**" in rendered
+    assert "**Tokenization And Local Model Performance**" in rendered
+    assert "**Per-Model Summary**" in rendered
+    assert "**Intent Routing Signals**" in rendered
+    assert "- `analysis`: 1 captures; share 100%; success 100%;" in rendered
+    assert "| Intent |" not in rendered
+    assert "| Model |" not in rendered
+    assert "| ---" not in rendered
