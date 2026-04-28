@@ -363,7 +363,7 @@ def assistant_system_prompt() -> str:
         "- If intent_state.blocked_tools includes a tool name, do not choose that tool unless the user clearly overrides the earlier constraint.\n"
         "- followup_constraint describes semantic edits such as reuse_previous, change_target, avoid_tools, negations, target_layer_reference, and requested_mode. Apply it as an edit to the prior plan instead of treating the user message as a brand-new unrelated request.\n"
         "- If last_failed_tool_state says a built-in tool failed because it only supports image layers, and the user follows up asking for labels, shapes, points, mixed annotations, or code instead, prefer action=code.\n"
-        "- code_repair_context contains the user's original code, a normalized_code_candidate from local repair heuristics, and local_validation errors/warnings/notes.\n"
+        "- code_repair_context contains the user's original code and local_validation errors/warnings/notes. It includes normalized_code_candidate only when local repair heuristics changed the code.\n"
         "- code_repair_context may also include layer_binding_hints with current viewer layer candidates and placeholder bindings inferred from template-like code.\n"
         "- Treat layer_binding_hints as a deterministic binding guide, not as vague inspiration. If a placeholder binding clearly maps argument kind and suggested layers, use that mapping in the repaired code.\n"
         "- Prefer replacing placeholder/template names with current viewer layer names during repair instead of leaving generic names such as img_a, mask_a, roi_a, or montage_points in the final code.\n"

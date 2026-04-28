@@ -87,10 +87,9 @@ def build_code_repair_context(user_text: str, *, viewer=None) -> dict | None:
         intent = "explain"
     elif not any(signal in lowered for signal in repair_signals):
         intent = "analyze"
-    return {
+    context = {
         "intent": intent,
         "original_code": code,
-        "normalized_code_candidate": normalized_code,
         "layer_binding_hints": _build_layer_binding_hints(normalized_code, viewer=viewer),
         "local_validation": {
             "errors": list(report.errors),
@@ -98,6 +97,24 @@ def build_code_repair_context(user_text: str, *, viewer=None) -> dict | None:
             "notes": list(report.notes),
         },
     }
+    if normalized_code != code:
+        context["normalized_code_candidate"] = normalized_code
+    return context
+
+
+def compact_code_repair_user_message(user_text: str, code_repair_context: dict | None) -> str:
+    text = str(user_text or "").strip()
+    if not text or not code_repair_context:
+        return text
+
+    original_code = str(code_repair_context.get("original_code") or "")
+    if not original_code:
+        return text
+
+    compacted = text.replace(original_code, "[code omitted: see code_repair_context.original_code]", 1).strip()
+    if len(compacted) < len(text):
+        return compacted
+    return "Code repair request. Use code_repair_context for the pasted code and validation details."
 
 
 def _repair_generated_code(code: str, *, viewer=None) -> tuple[str, list[str]]:

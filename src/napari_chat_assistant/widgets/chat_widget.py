@@ -54,6 +54,7 @@ from napari_chat_assistant.agent.code_validation import (
     ValidationMode,
     ValidationReport,
     build_code_repair_context,
+    compact_code_repair_user_message,
     normalize_generated_code_if_needed,
     validate_generated_code,
 )
@@ -6205,7 +6206,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "last_failed_tool_state": last_failed_tool_state,
                     "followup_constraint": followup_constraint,
                     "code_repair_context": code_repair_context,
-                    "user_message": text,
+                    "user_message": compact_code_repair_user_message(text, code_repair_context),
                 },
                 options=dict(generation_defaults),
                 timeout=1800,

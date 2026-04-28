@@ -18,6 +18,9 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _ORDERED_LIST_RE = re.compile(r"(\d+)\.\s+(.*)")
+_INLINE_MATH_RE = re.compile(r"\$([^$\n]+)\$")
+_TEX_FRAC_RE = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
+_TEX_SQRT_RE = re.compile(r"\\sqrt\{([^{}]+)\}")
 _PYTHON_BUILTINS = {name for name in dir(builtins) if not name.startswith("_")}
 _PYTHON_KEYWORDS = set(keyword.kwlist)
 _PYTHON_SOFT_KEYWORDS = {"match", "case"}
@@ -104,7 +107,7 @@ def _render_legacy_markdown_html(source: str) -> str:
             index += 1
         blocks.append("<p>" + "<br>".join(_render_inline_html(line) for line in paragraph_lines) + "</p>")
 
-    return "".join(blocks) or "<p></p>"
+    return _style_inline_math_html("".join(blocks) or "<p></p>")
 
 
 def _render_markdown_html(source: str) -> str:
@@ -185,7 +188,69 @@ def _style_markdown_html(rendered: str) -> str:
     }
     for src, dst in replacements.items():
         styled = styled.replace(src, dst)
-    return styled
+    return _style_inline_math_html(styled)
+
+
+def _style_inline_math_html(rendered: str) -> str:
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        token = f"__HTML_BLOCK_{len(protected)}__"
+        protected.append(match.group(0))
+        return token
+
+    text = re.sub(r"(?is)<(code|pre)\b.*?</\1>", protect, rendered)
+
+    def replace_math(match: re.Match[str]) -> str:
+        expression = html.unescape(match.group(1).strip())
+        if not _looks_like_math_expression(expression):
+            return match.group(0)
+        friendly = html.escape(_format_inline_math_expression(expression))
+        return (
+            '<span style="font-family: \'Cambria Math\', \'STIX Two Math\', \'DejaVu Serif\', serif; '
+            'background: rgba(79,193,255,0.10); color: #eaf4ff; padding: 1px 4px; '
+            f'border-radius: 4px;">{friendly}</span>'
+        )
+
+    text = _INLINE_MATH_RE.sub(replace_math, text)
+    for index, block in enumerate(protected):
+        text = text.replace(f"__HTML_BLOCK_{index}__", block)
+    return text
+
+
+def _looks_like_math_expression(expression: str) -> bool:
+    return bool(re.search(r"\\[A-Za-z]+|[=^_]|[+\-*/]", expression))
+
+
+def _format_inline_math_expression(expression: str) -> str:
+    formatted = str(expression or "").strip()
+    previous = None
+    while previous != formatted:
+        previous = formatted
+        formatted = _TEX_FRAC_RE.sub(lambda m: f"{m.group(1).strip()}/{m.group(2).strip()}", formatted)
+        formatted = _TEX_SQRT_RE.sub(lambda m: f"√({m.group(1).strip()})", formatted)
+    replacements = {
+        r"\times": "×",
+        r"\cdot": "·",
+        r"\pm": "±",
+        r"\leq": "≤",
+        r"\geq": "≥",
+        r"\neq": "≠",
+        r"\alpha": "α",
+        r"\beta": "β",
+        r"\gamma": "γ",
+        r"\delta": "δ",
+        r"\Delta": "Δ",
+        r"\mu": "μ",
+        r"\sigma": "σ",
+        r"\pi": "π",
+    }
+    for src, dst in replacements.items():
+        formatted = formatted.replace(src, dst)
+    formatted = formatted.replace(r"\left", "").replace(r"\right", "")
+    formatted = re.sub(r"\\([A-Za-z]+)", r"\1", formatted)
+    formatted = re.sub(r"\s+", " ", formatted)
+    return formatted.strip()
 
 
 def _restore_code_block(token: str, segments: list[tuple[str, str, str]]) -> str:

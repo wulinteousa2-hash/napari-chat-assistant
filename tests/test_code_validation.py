@@ -6,6 +6,7 @@ import pytest
 
 from napari_chat_assistant.agent.code_validation import (
     build_code_repair_context,
+    compact_code_repair_user_message,
     normalize_generated_code_if_needed,
     validate_generated_code,
 )
@@ -264,6 +265,7 @@ print(selected_layer.type)
     assert context is not None
     assert context["intent"] == "repair"
     assert "selected_layer = viewer.layers.selection.active" in context["original_code"]
+    assert "normalized_code_candidate" not in context
     assert any("selected_layer.type" in warning for warning in context["local_validation"]["warnings"])
 
 
@@ -278,6 +280,24 @@ viewer.add_histogram(data)
     assert context is not None
     assert context["intent"] == "explain"
     assert "viewer.add_histogram(data)" in context["original_code"]
+    assert "normalized_code_candidate" not in context
+
+
+def test_compact_code_repair_user_message_omits_duplicate_pasted_code():
+    text = """
+Please fix this code and keep the output name:
+```python
+selected_layer = viewer.layers.selection.active
+print(selected_layer.type)
+```
+"""
+    context = build_code_repair_context(text)
+
+    message = compact_code_repair_user_message(text, context)
+
+    assert "selected_layer = viewer.layers.selection.active" not in message
+    assert "code_repair_context.original_code" in message
+    assert "keep the output name" in message
 
 
 def test_build_code_repair_context_ignores_regular_non_code_requests():

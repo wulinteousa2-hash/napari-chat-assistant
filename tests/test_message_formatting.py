@@ -47,3 +47,34 @@ def test_render_assistant_message_html_joins_paragraph_lines_with_breaks():
     rendered = render_assistant_message_html("first line\nsecond line")
 
     assert "<p>first line<br>second line</p>" == rendered
+
+
+def test_render_assistant_message_html_formats_common_inline_math():
+    rendered = render_assistant_message_html(
+        r"Impact: Since $SNR = \frac{Signal}{Noise} = \frac{N}{\sqrt{N}} = \sqrt{N}$, SNR improves slowly."
+    )
+
+    assert "Cambria Math" in rendered
+    assert "SNR = Signal/Noise = N/√(N) = √(N)" in rendered
+    assert r"\frac" not in rendered
+
+
+def test_render_assistant_message_html_supports_markdown_tables():
+    rendered = render_assistant_message_html(
+        "| Term | Meaning |\n"
+        "| --- | --- |\n"
+        "| Signal | photons collected |\n"
+        "| Noise | shot noise |\n"
+    )
+
+    assert "<table" in rendered
+    assert "<th" in rendered
+    assert "<td" in rendered
+    assert "photons collected" in rendered
+
+
+def test_render_assistant_message_html_does_not_format_math_inside_code():
+    rendered = render_assistant_message_html("```text\n$SNR = \\sqrt{N}$\n```")
+
+    assert "Cambria Math" not in rendered
+    assert "$SNR = \\sqrt{N}$" in rendered
