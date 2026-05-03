@@ -476,7 +476,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     sam2_setup_action = pending_code_panel.sam2_setup_action
     sam2_live_action = pending_code_panel.sam2_live_action
     text_annotation_action = pending_code_panel.text_annotation_action
-    atlas_stitch_action = pending_code_panel.atlas_stitch_action
     run_code_btn = pending_code_panel.run_code_btn
     run_my_code_btn = pending_code_panel.run_my_code_btn
     refine_my_code_btn = pending_code_panel.refine_my_code_btn
@@ -1097,7 +1096,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 "5. Show selected layer name overlay.\n"
                 "```\n"
                 "- Say `undo last workflow` to restore the viewer-control state from before the previous quick-control workflow.\n"
-                "- Atlas Stitch source/export options and local code refinement repair were also improved.\n"
                 "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
             )
         if current == "2.0.3":
@@ -1798,13 +1796,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
             module_name="napari_chat_assistant.widgets.relabel_mask_widget",
             function_name="open_relabel_mask_widget",
             feature_name="Relabel Mask Values",
-        )
-
-    def show_atlas_stitch(*_args):
-        _open_optional_widget(
-            module_name="napari_chat_assistant.atlas_stitch.widget",
-            function_name="open_atlas_stitch_widget",
-            feature_name="Atlas Stitch",
         )
 
     def show_voice_input(*_args):
@@ -7100,7 +7091,6 @@ def chat_widget(napari_viewer=None) -> QWidget:
     sam2_setup_action.triggered.connect(show_sam2_setup_dialog)
     sam2_live_action.triggered.connect(show_sam2_live_dialog)
     text_annotation_action.triggered.connect(show_text_annotation_editor)
-    atlas_stitch_action.triggered.connect(show_atlas_stitch)
     help_whats_new_action.triggered.connect(show_whats_new)
     help_about_action.triggered.connect(show_about_assistant)
     help_report_bug_action.triggered.connect(show_report_bug)

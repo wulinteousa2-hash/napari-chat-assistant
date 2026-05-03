@@ -50,7 +50,6 @@ class PendingCodePanel(QWidget):
         self.sam2_setup_action = self.advanced_menu.addAction("SAM2 Setup")
         self.sam2_live_action = self.advanced_menu.addAction("SAM2 Live")
         self.text_annotation_action = self.advanced_menu.addAction("Text Annotation")
-        self.atlas_stitch_action = self.advanced_menu.addAction("Atlas Stitch")
         self.advanced_btn.setMenu(self.advanced_menu)
 
         self.run_code_btn = QPushButton("Run Code")

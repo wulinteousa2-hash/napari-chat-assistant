@@ -1,23 +1,26 @@
 cff-version: 1.2.0
 message: "If you use napari-chat-assistant in research, please cite this software."
-title: "napari-chat-assistant"
-version: "2.3.1"
-date-released: "2026-04-27"
 type: software
-license: MIT
+title: "napari-chat-assistant"
+version: "2.3.2"
+date-released: "2026-05-03"
 authors:
   - family-names: "Teo"
     given-names: "Wulin"
+    orcid: "https://orcid.org/0000-0001-7815-7014"
 repository-code: "https://github.com/wulinteousa2-hash/napari-chat-assistant"
 url: "https://github.com/wulinteousa2-hash/napari-chat-assistant"
+license: "MIT"
+keywords:
+  - "napari"
+  - "image analysis"
+  - "microscopy"
+  - "client-server architecture"
+  - "local llm"
+  - "ollama"
+  - "scientific software"
+  - "AI assistant"
 abstract: >
   napari-chat-assistant is a local Ollama-powered AI and deterministic
   workbench for napari image-analysis workflows, combining prompts, code,
   templates, actions, learning content, and reusable local automation.
-keywords:
-  - napari
-  - image analysis
-  - microscopy
-  - local llm
-  - ollama
-  - scientific software

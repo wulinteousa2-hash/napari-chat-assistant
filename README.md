@@ -131,7 +131,6 @@ Current workflows include:
 - use built-in synthetic data generators for repeatable testing, teaching, and workflow development
 - learn from built-in content for microscopy, electron microscopy, imaging physics, quantitative imaging, statistics, academic prompting, and language support
 - save and restore workspace state with a JSON manifest plus OME-Zarr assets for generated image and labels data
-- use `Atlas Stitch` from the advanced menu for specialized stitching and export workflows
 - use optional local `Voice Input` from `Advanced` for microphone recording, transcript review, and direct prompt execution
 
 Example requests:
@@ -290,7 +289,7 @@ Built-in workflows include:
 - annotation overlays, including free text, particle labels, callouts, and boxed titles
 - workspace save/restore with a JSON manifest plus OME-Zarr assets for generated image and labels data
 - deterministic `Actions`, reusable `Templates`, and user-defined `Shortcuts`
-- optional advanced workflows such as Voice Input, SAM2, and Atlas Stitch
+- optional advanced workflows such as Voice Input and SAM2
 
 ### Code generation workflows
 

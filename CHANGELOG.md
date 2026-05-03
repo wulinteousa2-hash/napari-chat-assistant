@@ -2,6 +2,11 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.3.2
+
+- Removed the bundled Atlas Stitch advanced-menu integration and package code now that Atlas Stitch is maintained independently.
+- Updated citation metadata for version 2.3.2.
+
 ## 2.3.1
 
 - Added Ollama prompt-evaluation and generation metadata to local telemetry, including prompt token counts, prompt-eval duration, generation duration, total duration, and tokens-per-second metrics.
