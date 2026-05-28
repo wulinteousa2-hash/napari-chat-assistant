@@ -2,6 +2,15 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.3.3
+
+- Refactored the assistant prompt builder into smaller prompt profiles for tool routing, code generation, and code repair.
+- Stopped appending the UI-help facts block to every model request by default.
+- Routed code-generation turns to a smaller code-focused prompt instead of the full tool-routing prompt.
+- Routed code-repair turns to a smaller repair-focused prompt that uses local validation and layer-binding hints without paying for the full tool-routing prompt.
+- Added prompt-profile regression tests covering optional UI-help inclusion and smaller code prompt paths.
+- Updated package and citation metadata for version 2.3.3.
+
 ## 2.3.2
 
 - Removed the bundled Atlas Stitch advanced-menu integration and package code now that Atlas Stitch is maintained independently.

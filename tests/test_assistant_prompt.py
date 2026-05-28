@@ -3,6 +3,32 @@ from __future__ import annotations
 from napari_chat_assistant.agent.tools import assistant_system_prompt
 
 
+def test_assistant_system_prompt_excludes_ui_help_by_default():
+    prompt = assistant_system_prompt()
+
+    assert "UI help facts:" not in prompt
+    assert "Library: stores built-in, recent, saved, pinned prompts and code snippets." not in prompt
+
+
+def test_assistant_system_prompt_can_include_ui_help_block():
+    prompt = assistant_system_prompt(include_ui_help=True)
+
+    assert "UI help facts:" in prompt
+    assert "Library: stores built-in, recent, saved, pinned prompts and code snippets." in prompt
+
+
+def test_code_profiles_are_smaller_than_tool_routing_prompt():
+    tool_prompt = assistant_system_prompt()
+    code_prompt = assistant_system_prompt(prompt_profile="code_generation")
+    repair_prompt = assistant_system_prompt(prompt_profile="code_repair")
+
+    assert len(code_prompt) < len(tool_prompt)
+    assert len(repair_prompt) < len(tool_prompt)
+    assert "Allowed tools:" not in code_prompt
+    assert "Allowed tools:" not in repair_prompt
+
+
+
 def test_assistant_system_prompt_includes_response_examples():
     prompt = assistant_system_prompt()
 

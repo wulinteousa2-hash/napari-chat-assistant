@@ -11,6 +11,15 @@ Local, Ollama-powered AI and deterministic workbench for napari image-analysis w
 
 The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
+## What's New In 2.3.3
+
+Version `2.3.3` reduces prompt overhead for local models.
+
+Quick feature summary:
+- UI-help prompt facts are no longer appended to every model request
+- model requests now use smaller prompt profiles for tool routing, code generation, and code repair
+- code-heavy turns send much less prompt text to Ollama
+
 ## What's New In 2.3.1
 
 Version `2.3.1` improves local-model performance diagnostics and reduces the live viewer context sent to Ollama.

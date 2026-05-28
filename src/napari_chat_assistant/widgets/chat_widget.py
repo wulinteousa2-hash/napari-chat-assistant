@@ -6183,13 +6183,19 @@ def chat_widget(napari_viewer=None) -> QWidget:
                 parts.append(f"ollama_total={float(total_ms):.0f} ms")
             append_log("Model telemetry: " + " | ".join(parts))
 
+        model_prompt_profile = "tool_routing"
+        if code_repair_context is not None:
+            model_prompt_profile = "code_repair"
+        elif str(intent_state.get("mode_preference", "")).strip().lower() == "code":
+            model_prompt_profile = "code_generation"
+
         @thread_worker(ignore_errors=True)
         def run_chat():
             viewer_payload = layer_context_for_model(viewer)
             return chat_ollama(
                 base_url,
                 model_name,
-                system_prompt=assistant_system_prompt(),
+                system_prompt=assistant_system_prompt(prompt_profile=model_prompt_profile),
                 user_payload={
                     "viewer_context": viewer_payload,
                     "session_memory": build_session_memory_payload(session_memory_state, viewer_payload.get("selected_layer_profile")),
