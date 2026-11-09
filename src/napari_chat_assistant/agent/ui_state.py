@@ -8,6 +8,7 @@ DEFAULT_UI_STATE = {
     "welcome_dismissed": False,
     "last_seen_version": "",
     "telemetry_enabled": False,
+    "fast_mode": False,
     "ui_help_enabled": False,
     "assistant_splitter_ratio": 0.45,
     "shortcuts_action_ids": [],
@@ -49,6 +50,7 @@ def load_ui_state() -> dict:
         "welcome_dismissed": bool(payload.get("welcome_dismissed", DEFAULT_UI_STATE["welcome_dismissed"])),
         "last_seen_version": str(payload.get("last_seen_version", DEFAULT_UI_STATE["last_seen_version"])).strip(),
         "telemetry_enabled": bool(payload.get("telemetry_enabled", DEFAULT_UI_STATE["telemetry_enabled"])),
+        "fast_mode": bool(payload.get("fast_mode", DEFAULT_UI_STATE["fast_mode"])),
         "ui_help_enabled": bool(payload.get("ui_help_enabled", DEFAULT_UI_STATE["ui_help_enabled"])),
         "assistant_splitter_ratio": float(
             payload.get("assistant_splitter_ratio", DEFAULT_UI_STATE["assistant_splitter_ratio"])
@@ -74,6 +76,7 @@ def save_ui_state(data: dict) -> None:
         "welcome_dismissed": bool(data.get("welcome_dismissed", DEFAULT_UI_STATE["welcome_dismissed"])),
         "last_seen_version": str(data.get("last_seen_version", DEFAULT_UI_STATE["last_seen_version"])).strip(),
         "telemetry_enabled": bool(data.get("telemetry_enabled", DEFAULT_UI_STATE["telemetry_enabled"])),
+        "fast_mode": bool(data.get("fast_mode", DEFAULT_UI_STATE["fast_mode"])),
         "ui_help_enabled": bool(data.get("ui_help_enabled", DEFAULT_UI_STATE["ui_help_enabled"])),
         "assistant_splitter_ratio": float(
             data.get("assistant_splitter_ratio", DEFAULT_UI_STATE["assistant_splitter_ratio"])

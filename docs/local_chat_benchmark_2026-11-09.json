@@ -1,0 +1,237 @@
+{
+  "date": "2026-11-09",
+  "hardware": "NVIDIA GB10",
+  "ollama_version": "0.20.2",
+  "initial_context": 262144,
+  "configurations": [
+    {
+      "model": "nemotron-cascade-2:30b",
+      "context": null,
+      "think": "default",
+      "system_prompt_chars": 41795,
+      "options": {
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.95,
+        "repeat_penalty": 1.5,
+        "seed": 42
+      },
+      "runs": [
+        {
+          "repeat": 0,
+          "prompt_index": 0,
+          "wall_s": 8.362,
+          "content_chars": 347,
+          "thinking_chars": 838,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 8.3457,
+          "load_duration_s": 0.0992,
+          "prompt_eval_duration_s": 3.9642,
+          "eval_duration_s": 4.206,
+          "prompt_eval_count": 9488,
+          "eval_count": 259
+        },
+        {
+          "repeat": 0,
+          "prompt_index": 1,
+          "wall_s": 5.001,
+          "content_chars": 299,
+          "thinking_chars": 889,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 4.9994,
+          "load_duration_s": 0.1066,
+          "prompt_eval_duration_s": 0.5368,
+          "eval_duration_s": 4.2806,
+          "prompt_eval_count": 9490,
+          "eval_count": 255
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 0,
+          "wall_s": 2.7,
+          "content_chars": 337,
+          "thinking_chars": 246,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 2.6983,
+          "load_duration_s": 0.1232,
+          "prompt_eval_duration_s": 0.5155,
+          "eval_duration_s": 2.0102,
+          "prompt_eval_count": 9488,
+          "eval_count": 125
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 1,
+          "wall_s": 4.457,
+          "content_chars": 218,
+          "thinking_chars": 815,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 4.4556,
+          "load_duration_s": 0.0757,
+          "prompt_eval_duration_s": 0.5192,
+          "eval_duration_s": 3.7891,
+          "prompt_eval_count": 9490,
+          "eval_count": 235
+        }
+      ],
+      "median_wall_s": 4.729
+    },
+    {
+      "model": "nemotron-cascade-2:30b",
+      "context": null,
+      "think": "off",
+      "system_prompt_chars": 41795,
+      "options": {
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.95,
+        "repeat_penalty": 1.5,
+        "seed": 42
+      },
+      "runs": [
+        {
+          "repeat": 0,
+          "prompt_index": 0,
+          "wall_s": 1.963,
+          "content_chars": 349,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 1.9574,
+          "load_duration_s": 0.1077,
+          "prompt_eval_duration_s": 0.5396,
+          "eval_duration_s": 1.2601,
+          "prompt_eval_count": 9488,
+          "eval_count": 78
+        },
+        {
+          "repeat": 0,
+          "prompt_index": 1,
+          "wall_s": 2.089,
+          "content_chars": 409,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 2.088,
+          "load_duration_s": 0.0981,
+          "prompt_eval_duration_s": 0.5199,
+          "eval_duration_s": 1.4236,
+          "prompt_eval_count": 9490,
+          "eval_count": 87
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 0,
+          "wall_s": 1.827,
+          "content_chars": 333,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 1.8251,
+          "load_duration_s": 0.0754,
+          "prompt_eval_duration_s": 0.5049,
+          "eval_duration_s": 1.1988,
+          "prompt_eval_count": 9488,
+          "eval_count": 72
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 1,
+          "wall_s": 1.787,
+          "content_chars": 290,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 1.7856,
+          "load_duration_s": 0.078,
+          "prompt_eval_duration_s": 0.5385,
+          "eval_duration_s": 1.1342,
+          "prompt_eval_count": 9490,
+          "eval_count": 70
+        }
+      ],
+      "median_wall_s": 1.895
+    },
+    {
+      "model": "nemotron-cascade-2:30b",
+      "context": 16384,
+      "think": "off",
+      "system_prompt_chars": 41795,
+      "options": {
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.95,
+        "repeat_penalty": 1.5,
+        "seed": 42,
+        "num_ctx": 16384
+      },
+      "runs": [
+        {
+          "repeat": 0,
+          "prompt_index": 0,
+          "wall_s": 10.42,
+          "content_chars": 370,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 10.4138,
+          "load_duration_s": 3.5106,
+          "prompt_eval_duration_s": 5.4131,
+          "eval_duration_s": 1.4132,
+          "prompt_eval_count": 9488,
+          "eval_count": 87
+        },
+        {
+          "repeat": 0,
+          "prompt_index": 1,
+          "wall_s": 1.466,
+          "content_chars": 206,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 1.4648,
+          "load_duration_s": 0.0945,
+          "prompt_eval_duration_s": 0.51,
+          "eval_duration_s": 0.8135,
+          "prompt_eval_count": 9490,
+          "eval_count": 51
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 0,
+          "wall_s": 1.92,
+          "content_chars": 378,
+          "thinking_chars": 0,
+          "valid_action_json": true,
+          "done_reason": "stop",
+          "total_duration_s": 1.9183,
+          "load_duration_s": 0.1253,
+          "prompt_eval_duration_s": 0.513,
+          "eval_duration_s": 1.2372,
+          "prompt_eval_count": 9488,
+          "eval_count": 77
+        },
+        {
+          "repeat": 1,
+          "prompt_index": 1,
+          "wall_s": 1.969,
+          "content_chars": 306,
+          "thinking_chars": 0,
+          "valid_action_json": false,
+          "done_reason": "stop",
+          "total_duration_s": 1.9667,
+          "load_duration_s": 0.0869,
+          "prompt_eval_duration_s": 0.5232,
+          "eval_duration_s": 1.3076,
+          "prompt_eval_count": 9490,
+          "eval_count": 80
+        }
+      ],
+      "median_wall_s": 1.9445000000000001
+    }
+  ]
+}

@@ -243,6 +243,22 @@ def chat_widget(napari_viewer=None) -> QWidget:
     model_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
     model_bar_layout.addWidget(model_combo, 1)
 
+    fast_mode_toggle = QCheckBox("Fast mode")
+    fast_mode_toggle.setObjectName("fast_mode_toggle")
+    fast_mode_toggle.setChecked(bool(ui_state.get("fast_mode", False)))
+    fast_mode_toggle.setToolTip(
+        "On: disable reasoning where supported, or use the model's lowest reasoning level. "
+        "Off: use the model's default reasoning. Turn off for complex coding and analysis. "
+        "Changes apply to the next request."
+    )
+
+    def toggle_fast_mode(enabled: bool) -> None:
+        ui_state["fast_mode"] = bool(enabled)
+        save_ui_state(ui_state)
+
+    fast_mode_toggle.toggled.connect(toggle_fast_mode)
+    model_bar_layout.addWidget(fast_mode_toggle)
+
     connection_status = QLabel("Status: not connected")
     connection_status.setWordWrap(True)
     connection_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -1042,6 +1058,14 @@ def chat_widget(napari_viewer=None) -> QWidget:
 
     def whats_new_message(version: str) -> str:
         current = str(version or "").strip()
+        if current == "2.3.4":
+            return (
+                f"**What's New In {current}**\n"
+                "- Added `Fast mode` beside the model selector for quicker routine responses.\n"
+                "- On disables reasoning where supported, or uses the lowest supported reasoning level. Off uses the model's default reasoning.\n"
+                "- The preference is saved across sessions and applies to the next request. Turn it off for complex coding and analysis.\n"
+                "- Updates: https://github.com/wulinteousa2-hash/napari-chat-assistant/blob/main/CHANGELOG.md"
+            )
         if current == "2.3.1":
             return (
                 f"**What's New In {current}**\n"
@@ -6184,6 +6208,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
             append_log("Model telemetry: " + " | ".join(parts))
 
         model_prompt_profile = "tool_routing"
+        request_fast_mode = fast_mode_toggle.isChecked()
         if code_repair_context is not None:
             model_prompt_profile = "code_repair"
         elif str(intent_state.get("mode_preference", "")).strip().lower() == "code":
@@ -6206,6 +6231,7 @@ def chat_widget(napari_viewer=None) -> QWidget:
                     "user_message": compact_code_repair_user_message(text, code_repair_context),
                 },
                 options=dict(generation_defaults),
+                fast_mode=request_fast_mode,
                 timeout=1800,
                 response_holder=response_holder,
                 request_metadata_holder=request_metadata_holder,

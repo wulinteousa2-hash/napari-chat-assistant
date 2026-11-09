@@ -11,6 +11,17 @@ Local, Ollama-powered AI and deterministic workbench for napari image-analysis w
 
 The goal is not to bolt a generic chatbot onto a viewer. The goal is to turn napari into a more practical analysis workspace for people who work with microscopy and other large multidimensional imaging datasets, especially users who want local AI help, reproducible workflows, direct control over their data, and fewer clicks per task.
 
+## What's New In 2.3.4
+
+Version `2.3.4` adds a saved `Fast mode` toggle beside the model selector.
+
+- On: disable reasoning where supported, or use the model's lowest reasoning level for quicker routine responses.
+- Off: use the model's default reasoning behavior for complex coding and analysis.
+- Changes apply to the next request, and the preference is remembered across sessions. Fast mode starts off.
+- Models without reasoning controls keep their normal behavior.
+
+In a small local test of `nemotron-cascade-2:30b` on NVIDIA GB10, disabling reasoning reduced median response time from 4.73 to 1.90 seconds across four brief-question requests per setting. This does not establish equivalent quality for complex tasks. See the [performance validation and reproduction steps](docs/local_chat_performance_2026-11-09.md).
+
 ## What's New In 2.3.3
 
 Version `2.3.3` reduces prompt overhead for local models.
@@ -234,6 +245,8 @@ The plugin does not bundle Ollama or model weights. Larger models may require su
 4. Choose a model from the `Model` dropdown or type a model tag manually.
 5. Use `Load` if you want to warm the selected model before the first request.
 6. Start chatting, or use the Library for repeatable tasks and reusable code.
+
+Use `Fast mode` beside the model selector for quicker routine responses. On disables reasoning where supported, or selects the model's lowest reasoning level. Off uses the model's default reasoning behavior and is useful for complex coding and analysis. The preference is saved and applies to the next request; models without reasoning controls keep their normal behavior.
 
 The assistant works best when prompts describe a concrete action. If you already have Python code, paste it into the Prompt box and use `Run My Code`. If pasted code fails or needs adaptation to the current viewer, use `Refine My Code`.
 

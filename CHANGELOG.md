@@ -2,6 +2,17 @@
 
 All notable user-facing changes to `napari-chat-assistant` should be documented in this file.
 
+## 2.3.4
+
+- Added a `Fast mode` checkbox beside the model selector, with a tooltip explaining the speed/reasoning tradeoff. It starts off, preserves the model's default reasoning when off, and applies changes to the next request without changing an in-flight request.
+- Saved the Fast mode preference across sessions.
+- When Fast mode is on, send top-level `think: false` for models that support disabling reasoning, or `think: "low"` for models with a supported low reasoning level. Leave models without reasoning controls unchanged.
+- Added cached model-capability discovery, compatibility with older Ollama thinking metadata (including GPT-OSS), and fallback to normal chat if model metadata is unavailable.
+- Added the requested Fast mode state and applied thinking setting to request telemetry.
+- Added regression coverage for supported reasoning controls, models without controls, metadata failures, default behavior, and preference persistence. Validated the checkbox and saved states in an offscreen UI check.
+- Added a reproducible local benchmark script, raw measurements, and performance findings. Four brief-question requests per setting on NVIDIA GB10 with `nemotron-cascade-2:30b` measured a median of 4.73 seconds with defaults and 1.90 seconds with thinking disabled; complex-task quality was not evaluated.
+- Updated the README, package version, and citation metadata for 2.3.4.
+
 ## 2.3.3
 
 - Refactored the assistant prompt builder into smaller prompt profiles for tool routing, code generation, and code repair.

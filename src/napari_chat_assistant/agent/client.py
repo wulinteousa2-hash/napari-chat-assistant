@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib import request
 
@@ -211,6 +212,26 @@ def load_ollama_model(base_url: str, model_name: str, *, keep_alive: str = "30m"
     )
 
 
+@lru_cache(maxsize=32)
+def _fast_reasoning_setting(base_url: str, model_name: str) -> bool | str | None:
+    """Choose only thinking controls supported by this model/server."""
+    info = http_json(f"{base_url.rstrip('/')}/api/show", {"model": model_name})
+    thinking = info.get("thinking")
+    if isinstance(thinking, dict) and isinstance(thinking.get("values"), list):
+        values = thinking["values"]
+        if any(value is False for value in values):
+            return False
+        if "low" in values:
+            return "low"
+        return None
+    if "thinking" not in info.get("capabilities", []):
+        return None
+    # Older servers expose capabilities but omit the supported-value metadata.
+    if model_name.split(":", 1)[0].rsplit("/", 1)[-1] == "gpt-oss":
+        return "low"
+    return False
+
+
 def chat_ollama(
     base_url: str,
     model_name: str,
@@ -218,6 +239,7 @@ def chat_ollama(
     system_prompt: str,
     user_payload: dict,
     options: dict,
+    fast_mode: bool = False,
     timeout: int = 1800,
     response_holder: dict | None = None,
     request_metadata_holder: dict | None = None,
@@ -233,9 +255,19 @@ def chat_ollama(
         "stream": False,
         "options": options,
     }
+    if fast_mode:
+        try:
+            thinking = _fast_reasoning_setting(base_url, model_name)
+        except (RuntimeError, OSError, ValueError):
+            # Keep chat available when a compatible server lacks /api/show.
+            thinking = None
+        if thinking is not None:
+            payload["think"] = thinking
     if request_metadata_holder is not None:
         request_metadata_holder.clear()
         request_metadata_holder.update(ollama_chat_request_stats(payload))
+        request_metadata_holder["fast_mode"] = bool(fast_mode)
+        request_metadata_holder["thinking_setting"] = payload.get("think", "default")
     result = http_json(
         f"{base_url.rstrip('/')}/api/chat",
         payload,
