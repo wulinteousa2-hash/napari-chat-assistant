@@ -182,7 +182,7 @@ This makes it a better fit for research and facility environments where users wa
 ## Installation
 
 Requirements:
-- Python 3.9+
+- Python 3.11+
 - napari
 - Ollama running locally
 - one local Ollama model, such as `nemotron-cascade-2:30b`
