@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="2080" viewBox="0 0 2400 2080" role="img" aria-labelledby="title desc">
+<title id="title">napari-chat-assistant system design</title><desc id="desc">Architecture poster with request routing, local model, tool execution, viewer data, code review, storage, voice, SAM2 and diagnostics.</desc>
+<defs>
+<marker id="9dd8b5" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#9dd8b5"/></marker>
+<marker id="e8c76d" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#e8c76d"/></marker>
+<marker id="9bcadf" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#9bcadf"/></marker>
+<marker id="e49c8d" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#e49c8d"/></marker>
+</defs>
+<rect width="2400" height="2080" fill="#171d1b"/>
+<g font-family="DejaVu Sans, sans-serif">
+<text x="30" y="57" fill="#edf2e8" font-size="44" font-weight="bold">napari-chat-assistant / System Design</text>
+<text x="32" y="92" fill="#9dd8b5" font-size="23" font-weight="normal">Local imaging workbench · live viewer context · deterministic actions · Ollama assistance</text>
+<text x="32" y="124" fill="#b5c3b9" font-size="18" font-weight="normal">Implementation map | v2.3.4 | committed source at 2ed1876 | 10 November 2026</text>
+<path d="M1530,118 L1585,118" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<text x="1598" y="124" fill="#9dd8b5" font-size="17" font-weight="normal">request / result</text>
+<path d="M1795,118 L1850,118" fill="none" stroke="#e8c76d" stroke-width="2" marker-end="url(#e8c76d)" stroke-dasharray="7 6"/>
+<text x="1863" y="124" fill="#e8c76d" font-size="17" font-weight="normal">optional / fallback</text>
+<text x="2100" y="124" fill="#e49c8d" font-size="17" font-weight="normal">red = boundary</text>
+<rect x="32" y="169" width="355" height="109" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="47" y="197" fill="#9dd8b5" font-size="21" font-weight="bold">1  User + live viewer</text>
+<text x="47" y="223" fill="#edf2e8" font-size="18" font-weight="normal">Prompt, code, action, shortcut</text>
+<text x="47" y="246" fill="#edf2e8" font-size="18" font-weight="normal">Layer names, selection, ROI</text>
+<rect x="444" y="169" width="355" height="109" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="459" y="197" fill="#9dd8b5" font-size="21" font-weight="bold">2  Dock orchestrator</text>
+<text x="459" y="223" fill="#edf2e8" font-size="18" font-weight="normal">Intent + follow-up state</text>
+<text x="459" y="246" fill="#edf2e8" font-size="18" font-weight="normal">Local routing before model</text>
+<rect x="856" y="154" width="390" height="109" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="871" y="182" fill="#9dd8b5" font-size="21" font-weight="bold">3a  Direct / local route</text>
+<text x="871" y="208" fill="#edf2e8" font-size="18" font-weight="normal">Actions, tools, workflow plans</text>
+<text x="871" y="231" fill="#edf2e8" font-size="18" font-weight="normal">No model request for matches</text>
+<rect x="856" y="288" width="390" height="94" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="871" y="316" fill="#e8c76d" font-size="21" font-weight="bold">3b  Ollama fallback</text>
+<text x="871" y="342" fill="#edf2e8" font-size="18" font-weight="normal">Compact context + prompt profile</text>
+<text x="871" y="365" fill="#edf2e8" font-size="18" font-weight="normal">Reply / tool / pending code</text>
+<rect x="1304" y="169" width="440" height="109" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="1319" y="197" fill="#9dd8b5" font-size="21" font-weight="bold">4  Execute or review</text>
+<text x="1319" y="223" fill="#edf2e8" font-size="18" font-weight="normal">Tool: prepare → execute → apply</text>
+<text x="1319" y="246" fill="#edf2e8" font-size="18" font-weight="normal">Code: validate → review → Run</text>
+<rect x="1802" y="169" width="558" height="109" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="1817" y="197" fill="#9bcadf" font-size="21" font-weight="bold">5  Result in the same workspace</text>
+<text x="1817" y="223" fill="#edf2e8" font-size="18" font-weight="normal">Layers, labels, overlays, tables, widgets</text>
+<text x="1817" y="246" fill="#edf2e8" font-size="18" font-weight="normal">Refresh context + record local diagnostics</text>
+<path d="M387,223 L444,223" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<path d="M799,208 L856,208" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<path d="M799,251 L856,330" fill="none" stroke="#e8c76d" stroke-width="2" marker-end="url(#e8c76d)" stroke-dasharray="7 6"/>
+<path d="M1246,208 L1304,208" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<path d="M1246,330 L1304,251" fill="none" stroke="#e8c76d" stroke-width="2" marker-end="url(#e8c76d)" stroke-dasharray="7 6"/>
+<path d="M1744,223 L1802,223" fill="none" stroke="#9bcadf" stroke-width="2" marker-end="url(#9bcadf)"/>
+<text x="1318" y="323" fill="#edf2e8" font-size="18" font-weight="normal">Reply → transcript     Tool → dispatcher     Code → review panel</text>
+<text x="1318" y="355" fill="#9dd8b5" font-size="18" font-weight="normal">Viewer state feeds the next turn; the model does not own the viewer.</text>
+<rect x="28" y="405" width="764" height="376" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="46" y="437" fill="#9dd8b5" font-size="23" font-weight="bold">A / CLIENT &amp; WORKBENCH</text>
+<text x="46" y="464" fill="#b5c3b9" font-size="17" font-weight="normal">napari.yaml → widgets/chat_widget.py</text>
+<rect x="46" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="61" y="511" fill="#9dd8b5" font-size="21" font-weight="bold">Qt dock widget</text>
+<text x="61" y="537" fill="#edf2e8" font-size="18" font-weight="normal">Connection + model + Fast mode</text>
+<text x="61" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Chat transcript + prompt editor</text>
+<rect x="419" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="434" y="511" fill="#9dd8b5" font-size="21" font-weight="bold">Interaction surfaces</text>
+<text x="434" y="537" fill="#edf2e8" font-size="18" font-weight="normal">Library / Templates / Actions</text>
+<text x="434" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Shortcuts / Session / Advanced</text>
+<text x="46" y="626" fill="#edf2e8" font-size="18" font-weight="normal">Prompt → natural language request</text>
+<text x="46" y="651" fill="#edf2e8" font-size="18" font-weight="normal">Run My Code → execute user Python after preflight</text>
+<text x="46" y="676" fill="#edf2e8" font-size="18" font-weight="normal">Refine My Code → model-assisted repair</text>
+<text x="46" y="701" fill="#edf2e8" font-size="18" font-weight="normal">Actions / Shortcuts → direct, repeatable execution</text>
+<text x="46" y="726" fill="#edf2e8" font-size="18" font-weight="normal">Optional Voice Input → editable prompt text</text>
+<rect x="818" y="405" width="764" height="376" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="836" y="437" fill="#9dd8b5" font-size="23" font-weight="bold">B / CONTEXT &amp; SESSION STATE</text>
+<text x="836" y="464" fill="#b5c3b9" font-size="17" font-weight="normal">agent/context.py · profiler.py · session_memory.py</text>
+<rect x="836" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="851" y="511" fill="#9bcadf" font-size="21" font-weight="bold">Live viewer context</text>
+<text x="851" y="537" fill="#edf2e8" font-size="18" font-weight="normal">Names, types, shapes, dtype</text>
+<text x="851" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Selection, ROI, layer profiles</text>
+<rect x="1209" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="1224" y="511" fill="#9bcadf" font-size="21" font-weight="bold">Conversation state</text>
+<text x="1224" y="537" fill="#edf2e8" font-size="18" font-weight="normal">Intent + follow-up constraints</text>
+<text x="1224" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Recent action + failure context</text>
+<text x="836" y="626" fill="#edf2e8" font-size="18" font-weight="normal">Compact viewer payload goes to the model.</text>
+<text x="836" y="651" fill="#edf2e8" font-size="18" font-weight="normal">Layer profiling uses local image information.</text>
+<text x="836" y="676" fill="#edf2e8" font-size="18" font-weight="normal">Session memory binds follow-ups to prior outcomes.</text>
+<text x="836" y="701" fill="#edf2e8" font-size="18" font-weight="normal">Pending actions and pending code remain explicit.</text>
+<text x="836" y="726" fill="#edf2e8" font-size="18" font-weight="normal">Context is refreshed after tools change the viewer.</text>
+<rect x="1608" y="405" width="764" height="376" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="1626" y="437" fill="#9dd8b5" font-size="23" font-weight="bold">C / ROUTING &amp; WORKFLOW PLANNING</text>
+<text x="1626" y="464" fill="#b5c3b9" font-size="17" font-weight="normal">agent/prompt_routing.py · intent_state.py · workflow_planner.py</text>
+<rect x="1626" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="1641" y="511" fill="#9dd8b5" font-size="21" font-weight="bold">Local request handling</text>
+<text x="1641" y="537" fill="#edf2e8" font-size="18" font-weight="normal">UI help + recognized operations</text>
+<text x="1641" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Intent guards + route selection</text>
+<rect x="1999" y="483" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="2014" y="511" fill="#9dd8b5" font-size="21" font-weight="bold">Workflow routes</text>
+<text x="2014" y="537" fill="#edf2e8" font-size="18" font-weight="normal">Plan / execute / report</text>
+<text x="2014" y="560" fill="#edf2e8" font-size="18" font-weight="normal">Safe viewer-control sequences</text>
+<text x="1626" y="626" fill="#edf2e8" font-size="18" font-weight="normal">Matched local routes can avoid Ollama entirely.</text>
+<text x="1626" y="651" fill="#edf2e8" font-size="18" font-weight="normal">Code / repair intent can skip local workflow routing.</text>
+<text x="1626" y="676" fill="#edf2e8" font-size="18" font-weight="normal">Conservative binary-segmentation plan is supported.</text>
+<text x="1626" y="701" fill="#edf2e8" font-size="18" font-weight="normal">Workflow executor assesses and refines mask quality.</text>
+<text x="1626" y="726" fill="#edf2e8" font-size="18" font-weight="normal">Unmatched requests continue to the model path.</text>
+<rect x="28" y="805" width="764" height="376" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="46" y="837" fill="#e8c76d" font-size="23" font-weight="bold">D / LOCAL MODEL SERVICE</text>
+<text x="46" y="864" fill="#b5c3b9" font-size="17" font-weight="normal">agent/client.py · tools.py · widgets/chat_widget.py</text>
+<rect x="46" y="883" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="61" y="911" fill="#e8c76d" font-size="21" font-weight="bold">Request builder</text>
+<text x="61" y="937" fill="#edf2e8" font-size="18" font-weight="normal">tool_routing / code_generation</text>
+<text x="61" y="960" fill="#edf2e8" font-size="18" font-weight="normal">code_repair prompt profiles</text>
+<rect x="419" y="883" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="434" y="911" fill="#e8c76d" font-size="21" font-weight="bold">Ollama HTTP API</text>
+<text x="434" y="937" fill="#edf2e8" font-size="18" font-weight="normal">Configured base URL + model</text>
+<text x="434" y="960" fill="#edf2e8" font-size="18" font-weight="normal">POST /api/chat; stream=false</text>
+<text x="46" y="1026" fill="#edf2e8" font-size="18" font-weight="normal">Payload: compact context + memory + user request.</text>
+<text x="46" y="1051" fill="#edf2e8" font-size="18" font-weight="normal">Background request keeps model I/O off the UI thread.</text>
+<text x="46" y="1076" fill="#edf2e8" font-size="18" font-weight="normal">Fast mode adjusts reasoning for supported models.</text>
+<text x="46" y="1101" fill="#edf2e8" font-size="18" font-weight="normal">Normalized response: reply, tool, or code.</text>
+<text x="46" y="1126" fill="#edf2e8" font-size="18" font-weight="normal">Model loading / unloading and pull progress are available.</text>
+<rect x="818" y="805" width="764" height="376" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="836" y="837" fill="#9dd8b5" font-size="23" font-weight="bold">E / TOOL EXECUTION CONTRACT</text>
+<text x="836" y="864" fill="#b5c3b9" font-size="17" font-weight="normal">agent/dispatcher.py · tool_registry.py · tool_types.py</text>
+<rect x="836" y="883" width="224" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="851" y="911" fill="#9dd8b5" font-size="21" font-weight="bold">1  prepare</text>
+<text x="851" y="937" fill="#edf2e8" font-size="18" font-weight="normal">Resolve tool name</text>
+<text x="851" y="960" fill="#edf2e8" font-size="18" font-weight="normal">Bind viewer + args</text>
+<path d="M1060,937 L1086,937" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<rect x="1086" y="883" width="224" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="1101" y="911" fill="#9dd8b5" font-size="21" font-weight="bold">2  execute</text>
+<text x="1101" y="937" fill="#edf2e8" font-size="18" font-weight="normal">Compute tool result</text>
+<text x="1101" y="960" fill="#edf2e8" font-size="18" font-weight="normal">Immediate or worker</text>
+<path d="M1310,937 L1336,937" fill="none" stroke="#9dd8b5" stroke-width="2" marker-end="url(#9dd8b5)"/>
+<rect x="1336" y="883" width="224" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="1351" y="911" fill="#9dd8b5" font-size="21" font-weight="bold">3  apply</text>
+<text x="1351" y="937" fill="#edf2e8" font-size="18" font-weight="normal">Update viewer / UI</text>
+<text x="1351" y="960" fill="#edf2e8" font-size="18" font-weight="normal">Return result message</text>
+<text x="836" y="1026" fill="#edf2e8" font-size="18" font-weight="normal">ToolSpec describes parameters, layer types and mode.</text>
+<text x="836" y="1051" fill="#edf2e8" font-size="18" font-weight="normal">PreparedJob → ToolResult carries computation payloads.</text>
+<text x="836" y="1076" fill="#edf2e8" font-size="18" font-weight="normal">Worker tools compute through napari thread_worker.</text>
+<text x="836" y="1101" fill="#edf2e8" font-size="18" font-weight="normal">Returned results are applied through the UI callback.</text>
+<text x="836" y="1126" fill="#edf2e8" font-size="18" font-weight="normal">Direct actions and model-selected tools share dispatch.</text>
+<rect x="1608" y="805" width="764" height="376" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="1626" y="837" fill="#9dd8b5" font-size="23" font-weight="bold">F / IMAGE ANALYSIS &amp; VIEWER TOOLS</text>
+<text x="1626" y="864" fill="#b5c3b9" font-size="17" font-weight="normal">agent/tools_builtin/ · image_ops.py · analysis widgets</text>
+<rect x="1626" y="883" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="1641" y="911" fill="#9dd8b5" font-size="21" font-weight="bold">Pixels + masks</text>
+<text x="1641" y="937" fill="#edf2e8" font-size="18" font-weight="normal">CLAHE / Gaussian / projection</text>
+<text x="1641" y="960" fill="#edf2e8" font-size="18" font-weight="normal">Threshold / cleanup / labels</text>
+<rect x="1999" y="883" width="350" height="108" rx="11" fill="#1c2421" stroke="#9dd8b5" stroke-width="1.6"/>
+<text x="2014" y="911" fill="#9dd8b5" font-size="21" font-weight="bold">Measures + layout</text>
+<text x="2014" y="937" fill="#edf2e8" font-size="18" font-weight="normal">ROI values / label tables</text>
+<text x="2014" y="960" fill="#edf2e8" font-size="18" font-weight="normal">Montage / overlays / visibility</text>
+<text x="1626" y="1026" fill="#edf2e8" font-size="18" font-weight="normal">NumPy, SciPy, scikit-image and matplotlib support analysis.</text>
+<text x="1626" y="1051" fill="#edf2e8" font-size="18" font-weight="normal">Interactive tools: intensity, line profile, group comparison.</text>
+<text x="1626" y="1076" fill="#edf2e8" font-size="18" font-weight="normal">Layer outputs stay attached to the live viewer.</text>
+<text x="1626" y="1101" fill="#edf2e8" font-size="18" font-weight="normal">Built-ins include inspection and synthetic examples.</text>
+<text x="1626" y="1126" fill="#edf2e8" font-size="18" font-weight="normal">Some registered workflow / SAM names are placeholders.</text>
+<rect x="28" y="1205" width="764" height="376" rx="11" fill="#1c2421" stroke="#e49c8d" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="46" y="1237" fill="#e49c8d" font-size="23" font-weight="bold">G / PYTHON GENERATION &amp; REVIEW</text>
+<text x="46" y="1264" fill="#b5c3b9" font-size="17" font-weight="normal">agent/code_validation.py · pending_code_panel.py</text>
+<rect x="46" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="61" y="1311" fill="#e8c76d" font-size="21" font-weight="bold">Generate / refine</text>
+<text x="61" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">Normalize code + inspect AST</text>
+<text x="61" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">Layer/API checks + diagnostics</text>
+<rect x="419" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#e49c8d" stroke-width="1.6"/>
+<text x="434" y="1311" fill="#e49c8d" font-size="21" font-weight="bold">Review → Run Code</text>
+<text x="434" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">Blocked issues prevent running</text>
+<text x="434" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">Warnings / repair feedback</text>
+<text x="46" y="1426" fill="#e49c8d" font-size="18" font-weight="normal">Execution namespace: viewer, selected_layer, np, napari.</text>
+<text x="46" y="1451" fill="#e49c8d" font-size="18" font-weight="normal">exec(compile(...)) runs inside the napari process.</text>
+<text x="46" y="1476" fill="#e49c8d" font-size="18" font-weight="normal">run_in_background(compute, apply) supports heavy work.</text>
+<text x="46" y="1501" fill="#e49c8d" font-size="18" font-weight="normal">Captured stdout and errors appear in the transcript.</text>
+<text x="46" y="1526" fill="#e49c8d" font-size="18" font-weight="normal">Validation is a preflight check, not a security sandbox.</text>
+<rect x="818" y="1205" width="764" height="376" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="836" y="1237" fill="#9bcadf" font-size="23" font-weight="bold">H / WORKSPACE SAVE &amp; RESTORE</text>
+<text x="836" y="1264" fill="#b5c3b9" font-size="17" font-weight="normal">agent/workspace_state.py</text>
+<rect x="836" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="851" y="1311" fill="#9bcadf" font-size="21" font-weight="bold">JSON manifest</text>
+<text x="851" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">Layers + viewer display state</text>
+<text x="851" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">Source references + metadata</text>
+<rect x="1209" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="1224" y="1311" fill="#9bcadf" font-size="21" font-weight="bold">Workspace assets</text>
+<text x="1224" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">OME-Zarr image / labels data</text>
+<text x="1224" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">Inline records where suitable</text>
+<text x="836" y="1426" fill="#edf2e8" font-size="18" font-weight="normal">Capture source information, transforms and layer state.</text>
+<text x="836" y="1451" fill="#edf2e8" font-size="18" font-weight="normal">Generated image data can be stored beside the manifest.</text>
+<text x="836" y="1476" fill="#edf2e8" font-size="18" font-weight="normal">Shapes / points and display properties are serialized.</text>
+<text x="836" y="1501" fill="#edf2e8" font-size="18" font-weight="normal">Restore reopens sources or loads saved layer assets.</text>
+<text x="836" y="1526" fill="#edf2e8" font-size="18" font-weight="normal">This is workspace persistence, not a model memory DB.</text>
+<rect x="1608" y="1205" width="764" height="376" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="1626" y="1237" fill="#9bcadf" font-size="23" font-weight="bold">I / LIBRARY &amp; LOCAL PREFERENCES</text>
+<text x="1626" y="1264" fill="#b5c3b9" font-size="17" font-weight="normal">agent/prompt_library.py · ui_state.py · action_library.py</text>
+<rect x="1626" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="1641" y="1311" fill="#9bcadf" font-size="21" font-weight="bold">Reusable content</text>
+<text x="1641" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">Saved prompts + code snippets</text>
+<text x="1641" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">Built-in templates + actions</text>
+<rect x="1999" y="1283" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="2014" y="1311" fill="#9bcadf" font-size="21" font-weight="bold">Local state</text>
+<text x="2014" y="1337" fill="#edf2e8" font-size="18" font-weight="normal">prompt_library.json</text>
+<text x="2014" y="1360" fill="#edf2e8" font-size="18" font-weight="normal">ui_state.json + shortcuts</text>
+<text x="1626" y="1426" fill="#edf2e8" font-size="18" font-weight="normal">Default location: ~/.napari-chat-assistant/</text>
+<text x="1626" y="1451" fill="#edf2e8" font-size="18" font-weight="normal">Pin, tag, rename and reuse prompts or code.</text>
+<text x="1626" y="1476" fill="#edf2e8" font-size="18" font-weight="normal">Action definitions describe direct execution targets.</text>
+<text x="1626" y="1501" fill="#edf2e8" font-size="18" font-weight="normal">UI state remembers layouts and selected preferences.</text>
+<text x="1626" y="1526" fill="#edf2e8" font-size="18" font-weight="normal">Templates are curated starting points, not RAG retrieval.</text>
+<rect x="28" y="1605" width="764" height="376" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="46" y="1637" fill="#e8c76d" font-size="23" font-weight="bold">J / OPTIONAL VOICE INPUT</text>
+<text x="46" y="1664" fill="#b5c3b9" font-size="17" font-weight="normal">voice/controller.py · audio_recorder.py · backends/</text>
+<rect x="46" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="61" y="1711" fill="#e8c76d" font-size="21" font-weight="bold">Record → transcribe</text>
+<text x="61" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">Qt multimedia microphone</text>
+<text x="61" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">Local faster-whisper backend</text>
+<rect x="419" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="434" y="1711" fill="#e8c76d" font-size="21" font-weight="bold">Review → submit</text>
+<text x="434" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">Editable transcript preview</text>
+<text x="434" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">Run via shared prompt callback</text>
+<text x="46" y="1826" fill="#edf2e8" font-size="18" font-weight="normal">Input-device selection + live recording level meter.</text>
+<text x="46" y="1851" fill="#edf2e8" font-size="18" font-weight="normal">Transcription runs in a background worker.</text>
+<text x="46" y="1876" fill="#edf2e8" font-size="18" font-weight="normal">Voice window stays available during viewer work.</text>
+<text x="46" y="1901" fill="#edf2e8" font-size="18" font-weight="normal">Requires optional dependencies and local model assets.</text>
+<text x="46" y="1926" fill="#edf2e8" font-size="18" font-weight="normal">Submitted speech follows the ordinary request routes.</text>
+<rect x="818" y="1605" width="764" height="376" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="836" y="1637" fill="#e8c76d" font-size="23" font-weight="bold">K / OPTIONAL SAM2 SEGMENTATION</text>
+<text x="836" y="1664" fill="#b5c3b9" font-size="17" font-weight="normal">agent/sam2_backend.py · integrations/sam2_adapter.py</text>
+<rect x="836" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="851" y="1711" fill="#e8c76d" font-size="21" font-weight="bold">Prompt geometry</text>
+<text x="851" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">Box / foreground-background points</text>
+<text x="851" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">Interactive preview + 3D tools</text>
+<rect x="1209" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#e8c76d" stroke-width="1.6"/>
+<text x="1224" y="1711" fill="#e8c76d" font-size="21" font-weight="bold">Local SAM2 predictor</text>
+<text x="1224" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">Configured checkpoint + config</text>
+<text x="1224" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">PyTorch; CUDA when available</text>
+<text x="836" y="1826" fill="#edf2e8" font-size="18" font-weight="normal">Adapter prepares 2D numeric grayscale input as RGB.</text>
+<text x="836" y="1851" fill="#edf2e8" font-size="18" font-weight="normal">SAM2 produces segmentation masks for viewer results.</text>
+<text x="836" y="1876" fill="#edf2e8" font-size="18" font-weight="normal">Backend setup checks environment and model assets.</text>
+<text x="836" y="1901" fill="#edf2e8" font-size="18" font-weight="normal">3D propagation is exposed through the tool layer.</text>
+<text x="836" y="1926" fill="#edf2e8" font-size="18" font-weight="normal">SAM2 is a separate optional model from the chat LLM.</text>
+<rect x="1608" y="1605" width="764" height="376" rx="11" fill="#1c2421" stroke="#e49c8d" stroke-width="1.6" stroke-dasharray="9 7"/>
+<text x="1626" y="1637" fill="#e49c8d" font-size="23" font-weight="bold">L / DIAGNOSTICS &amp; SYSTEM LIMITS</text>
+<text x="1626" y="1664" fill="#b5c3b9" font-size="17" font-weight="normal">telemetry/ · logging_utils.py · summary.py · report.py</text>
+<rect x="1626" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="1641" y="1711" fill="#9bcadf" font-size="21" font-weight="bold">Local observability</text>
+<text x="1641" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">assistant.log / crash.log</text>
+<text x="1641" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">model_telemetry.jsonl</text>
+<rect x="1999" y="1683" width="350" height="108" rx="11" fill="#1c2421" stroke="#9bcadf" stroke-width="1.6"/>
+<text x="2014" y="1711" fill="#9bcadf" font-size="21" font-weight="bold">Reports + controls</text>
+<text x="2014" y="1737" fill="#edf2e8" font-size="18" font-weight="normal">Opt-in telemetry UI setting</text>
+<text x="2014" y="1760" fill="#edf2e8" font-size="18" font-weight="normal">Latency / tokens / outcomes</text>
+<text x="1626" y="1826" fill="#e49c8d" font-size="18" font-weight="normal">Local model by default; base URL is configurable.</text>
+<text x="1626" y="1851" fill="#e49c8d" font-size="18" font-weight="normal">Model payload contains text context, not image uploads.</text>
+<text x="1626" y="1876" fill="#e49c8d" font-size="18" font-weight="normal">Large arrays and synchronous steps can still block UI.</text>
+<text x="1626" y="1901" fill="#e49c8d" font-size="18" font-weight="normal">Undo snapshots cover viewer controls, not all operations.</text>
+<text x="1626" y="1926" fill="#e49c8d" font-size="18" font-weight="normal">Uncommitted remote-execution work is outside this map.</text>
+<text x="32" y="2038" fill="#9dd8b5" font-size="20" font-weight="normal">Read with system-design.md for request examples, source links, implementation boundaries and regeneration instructions.</text>
+<text x="32" y="2068" fill="#b5c3b9" font-size="17" font-weight="normal">Architecture documentation only · no runtime code changes · SVG remains editable and sharp at any zoom</text>
+</g></svg>
